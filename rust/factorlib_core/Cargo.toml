@@ -1,0 +1,29 @@
+[package]
+name = "factorlib_core"
+version = "0.1.0"
+edition = "2021"
+description = "FactorLibrary Rust 极速向量化因子计算内核"
+
+[lib]
+name = "factorlib_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py310"] }
+numpy = "0.22"
+ndarray = { version = "0.16", features = ["rayon"] }
+rayon = "1.10"
+ahash = "0.8"
+thiserror = "1.0"
+
+[dev-dependencies]
+proptest = "1.5"
+approx = "0.5"
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[[bench]]
+name = "eval_bench"
+harness = false

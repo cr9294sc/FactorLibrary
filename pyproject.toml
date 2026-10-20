@@ -12,17 +12,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6",
+    "maturin>=1.7",
+]
 
-# 注意: P2 阶段引入 factorlib_core (maturin/PyO3) 后, 构建后端将切换为 maturin。
-# 当前 P1 仅包含纯 Python ETL 管道, 使用 setuptools 声明 python/factorlib 包。
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
 
-[tool.setuptools.packages.find]
-where = ["python"]
-include = ["factorlib*"]
+[tool.maturin]
+manifest-path = "rust/factorlib_core/Cargo.toml"
+python-source = "python"
+python-packages = ["factorlib", "factorlib_core"]
+module-name = "factorlib_core.factorlib_core"
+features = ["extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

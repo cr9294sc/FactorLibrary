@@ -1219,12 +1219,12 @@ gantt
 - [x] **验收测试**：执行“未来扰动测试（Perturbation Test）”——篡改 $T$ 日之后原始文件，校验生成的 $T$ 日面板特征完全不变。
 
 ### P2：Rust 计算内核开发（factorlib_core）（5–7 天）
-- [ ] 实现 `panel.rs`：构建列优先 Fortran 矩阵容器与多线程借用机制。
-- [ ] 实现 `ops/{elem, ts, cs}.rs`：实现 50+ 个基本算子，时序算子全量采用增量或单调队列算法。
-- [ ] 实现 `expr/{lexer, parser, ast, typecheck, canon, eval}.rs`：完整的 DSL 递归下降语法解析与代数规范化去重。
-- [ ] 实现 `expr/cache.rs`：基于 `ahash` 的全局子表达式 LRU 缓存系统。
-- [ ] 实现 `py.rs`：使用 PyO3 包装暴露 `Engine`，彻底释放 Python GIL。
-- [ ] **验收测试**：编写 `proptest` 性质测试，对比纯 NumPy 实现（`ops_ref.py`），50+ 算子在随机矩阵（含大量 NaN）上误差必须 $< 10^{-9}$；压测吞吐量达 1000 表达式/秒。
+- [x] 实现 `panel.rs`：构建列优先 Fortran 矩阵容器与多线程借用机制。
+- [x] 实现 `ops/{elem, ts, cs}.rs`：实现 50+ 个基本算子，时序算子全量采用增量或单调队列算法。
+- [x] 实现 `expr/{lexer, parser, ast, typecheck, canon, eval}.rs`：完整的 DSL 递归下降语法解析与代数规范化去重。
+- [x] 实现 `expr/cache.rs`：基于 `ahash` 的全局子表达式 LRU 缓存系统。
+- [x] 实现 `py.rs`：使用 PyO3 包装暴露 `Engine`，彻底释放 Python GIL。
+- [x] **验收测试**：编写 `proptest` 性质测试，对比纯 NumPy 实现（`ops_ref.py`），50+ 算子在随机矩阵（含大量 NaN）上误差必须 $< 10^{-9}$；压测吞吐量达 1000 表达式/秒。
 
 ### P3：评估指标库、SQLite 因子注册表与种子因子验证（3–4 天）
 - [ ] 实现 `metrics/{ic, quantile, turnover, corr}.rs`：Rust 原生高速指标库。

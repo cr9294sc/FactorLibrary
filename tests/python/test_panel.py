@@ -50,9 +50,12 @@ def test_panel_direct_initialization():
     with pytest.raises(KeyError, match="未找到标签"):
         p.get_label("non_existent_label")
 
-    # to_rust_engine 抛出友好提示
-    with pytest.raises(NotImplementedError, match="factorlib_core"):
-        p.to_rust_engine()
+    # to_rust_engine 成功构建 Rust 计算内核 Engine
+    eng = p.to_rust_engine(cache_mb=64, n_threads=2)
+    assert eng.shape == (3, 3)
+    assert eng.symbols == ["AG", "AU", "CU"]
+    res = eng.eval("addc(close, 1.0)")
+    np.testing.assert_allclose(res, c_arr + 1.0)
 
 
 def test_panel_dimension_mismatch():

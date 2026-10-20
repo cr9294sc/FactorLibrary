@@ -1211,12 +1211,12 @@ gantt
   - 输出 `data/derived/futures/audit_report.md`，对确认项给出确凿数字。
 
 ### P1：期货 ETL 管道与标准化研究面板构建（4–6 天）
-- [ ] 实现 `etl/dominant.py`：构建严密的 rule=3, rank=1 主力映射表，精准记录换月日与新旧合约。
-- [ ] 实现 `etl/exec_price.py`：流式解析 `bar_1m`，计算各品种每日开盘前 30m 的真实 VWAP。
-- [ ] 实现 `etl/minute_features.py`：高性能流式聚合日内 10 项微观结构特征。
-- [ ] 实现 `etl/aux_*.py`：清洗展期收益率、仓单库存变动率、龙虎榜会员净多头占比。
-- [ ] 实现 `etl/build.py`：多表关联，组装长表 `panel_daily.parquet`，生成 `fields.json` 字段规格书。
-- [ ] **验收测试**：执行“未来扰动测试（Perturbation Test）”——篡改 $T$ 日之后原始文件，校验生成的 $T$ 日面板特征完全不变。
+- [x] 实现 `etl/dominant.py`：构建严密的 rule=3, rank=1 主力映射表，精准记录换月日与新旧合约。
+- [x] 实现 `etl/exec_price.py`：流式解析 `bar_1m`，计算各品种每日开盘前 30m 的真实 VWAP。
+- [x] 实现 `etl/minute_features.py`：高性能流式聚合日内 10 项微观结构特征。
+- [x] 实现 `etl/aux_*.py`：清洗展期收益率、仓单库存变动率、龙虎榜会员净多头占比。
+- [x] 实现 `etl/build.py`：多表关联，组装长表 `panel_daily.parquet`，生成 `fields.json` 字段规格书。
+- [x] **验收测试**：执行“未来扰动测试（Perturbation Test）”——篡改 $T$ 日之后原始文件，校验生成的 $T$ 日面板特征完全不变。
 
 ### P2：Rust 计算内核开发（factorlib_core）（5–7 天）
 - [ ] 实现 `panel.rs`：构建列优先 Fortran 矩阵容器与多线程借用机制。

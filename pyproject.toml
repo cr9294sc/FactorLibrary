@@ -1,0 +1,32 @@
+[project]
+name = "factorlib"
+version = "0.1.0"
+description = "FactorLibrary: 期货因子挖掘与回测平台 (Python 研究层 + Rust 计算内核)"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "polars>=1.0",
+    "pyarrow>=15",
+    "pyyaml>=6",
+    "tqdm>=4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+# 注意: P2 阶段引入 factorlib_core (maturin/PyO3) 后, 构建后端将切换为 maturin。
+# 当前 P1 仅包含纯 Python ETL 管道, 使用 setuptools 声明 python/factorlib 包。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["factorlib*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+pythonpath = ["python"]
+markers = [
+    "realdata: 依赖本地 exports/ 真实数据资产的验收测试 (默认跳过, 使用 --realdata 开启)",
+]

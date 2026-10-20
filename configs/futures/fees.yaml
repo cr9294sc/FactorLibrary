@@ -1,0 +1,227 @@
+default:
+  fee_type: "rate"
+  open: 0.00005
+  close: 0.00005
+  close_today: 0.00005
+  tick_size: 1.0
+  slip_ticks: 1
+  multiplier: 10.0
+  margin_rate: 0.10
+
+products:
+  # 黑色系
+  RB:
+    fee_type: "rate"
+    open: 0.0001
+    close: 0.0001
+    close_today: 0.0001
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.09
+  I:
+    fee_type: "rate"
+    open: 0.0001
+    close: 0.0001
+    close_today: 0.0001
+    tick_size: 0.5
+    slip_ticks: 1
+    multiplier: 100.0
+    margin_rate: 0.11
+  J:
+    fee_type: "rate"
+    open: 0.00014
+    close: 0.00014
+    close_today: 0.00014
+    tick_size: 0.5
+    slip_ticks: 1
+    multiplier: 100.0
+    margin_rate: 0.12
+  JM:
+    fee_type: "rate"
+    open: 0.00014
+    close: 0.00014
+    close_today: 0.00014
+    tick_size: 0.5
+    slip_ticks: 1
+    multiplier: 60.0
+    margin_rate: 0.12
+  HC:
+    fee_type: "rate"
+    open: 0.0001
+    close: 0.0001
+    close_today: 0.0001
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.09
+
+  # 有色与贵金属
+  CU:
+    fee_type: "rate"
+    open: 0.00005
+    close: 0.00005
+    close_today: 0.0001
+    tick_size: 10.0
+    slip_ticks: 1
+    multiplier: 5.0
+    margin_rate: 0.10
+  AL:
+    fee_type: "rate"
+    open: 0.00003
+    close: 0.00003
+    close_today: 0.00003
+    tick_size: 5.0
+    slip_ticks: 1
+    multiplier: 5.0
+    margin_rate: 0.09
+  ZN:
+    fee_type: "rate"
+    open: 0.00003
+    close: 0.00003
+    close_today: 0.00003
+    tick_size: 5.0
+    slip_ticks: 1
+    multiplier: 5.0
+    margin_rate: 0.09
+  AU:
+    fee_type: "fixed"
+    open: 10.0
+    close: 10.0
+    close_today: 0.0
+    tick_size: 0.02
+    slip_ticks: 1
+    multiplier: 1000.0
+    margin_rate: 0.08
+  AG:
+    fee_type: "rate"
+    open: 0.00005
+    close: 0.00005
+    close_today: 0.00005
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 15.0
+    margin_rate: 0.12
+
+  # 能化系
+  TA:
+    fee_type: "fixed"
+    open: 3.0
+    close: 3.0
+    close_today: 0.0
+    tick_size: 2.0
+    slip_ticks: 1
+    multiplier: 5.0
+    margin_rate: 0.09
+  MA:
+    fee_type: "rate"
+    open: 0.0001
+    close: 0.0001
+    close_today: 0.0001
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.10
+  PP:
+    fee_type: "rate"
+    open: 0.00006
+    close: 0.00006
+    close_today: 0.00006
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 5.0
+    margin_rate: 0.09
+  RU:
+    fee_type: "rate"
+    open: 0.000045
+    close: 0.000045
+    close_today: 0.000045
+    tick_size: 5.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.10
+
+  # 农产品
+  M:
+    fee_type: "fixed"
+    open: 1.5
+    close: 1.5
+    close_today: 1.5
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.08
+  Y:
+    fee_type: "fixed"
+    open: 2.5
+    close: 2.5
+    close_today: 2.5
+    tick_size: 2.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.08
+  P:
+    fee_type: "fixed"
+    open: 2.5
+    close: 2.5
+    close_today: 2.5
+    tick_size: 2.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.08
+  SR:
+    fee_type: "fixed"
+    open: 3.0
+    close: 3.0
+    close_today: 0.0
+    tick_size: 1.0
+    slip_ticks: 1
+    multiplier: 10.0
+    margin_rate: 0.08
+  CF:
+    fee_type: "fixed"
+    open: 4.3
+    close: 4.3
+    close_today: 0.0
+    tick_size: 5.0
+    slip_ticks: 1
+    multiplier: 5.0
+    margin_rate: 0.08
+
+  # 金融股指
+  IF:
+    fee_type: "rate"
+    open: 0.000023
+    close: 0.000023
+    close_today: 0.000345 # 股指平今惩罚费率 (15倍)
+    tick_size: 0.2
+    slip_ticks: 1
+    multiplier: 300.0
+    margin_rate: 0.12
+  IH:
+    fee_type: "rate"
+    open: 0.000023
+    close: 0.000023
+    close_today: 0.000345
+    tick_size: 0.2
+    slip_ticks: 1
+    multiplier: 300.0
+    margin_rate: 0.12
+  IC:
+    fee_type: "rate"
+    open: 0.000023
+    close: 0.000023
+    close_today: 0.000345
+    tick_size: 0.2
+    slip_ticks: 1
+    multiplier: 200.0
+    margin_rate: 0.12
+  IM:
+    fee_type: "rate"
+    open: 0.000023
+    close: 0.000023
+    close_today: 0.000345
+    tick_size: 0.2
+    slip_ticks: 1
+    multiplier: 200.0
+    margin_rate: 0.15

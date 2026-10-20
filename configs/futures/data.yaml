@@ -1,0 +1,54 @@
+raw_dir: "./exports"
+derived_dir: "./data/derived/futures"
+panel_version: "v1"
+
+# 主力合约规则 (米筐 dominant_mapping: rule=3 排除最后交易日, rank=1 主力)
+dominant:
+  rule: 3
+  rank: 1
+
+# 复权规则
+adjust:
+  method: "prev_close_ratio"     # 比例复权 (因果锚定, 见 docs 5.1)
+  verify_with_ex_factor: true    # 与米筐 dominant_ex_factor 对账
+  verify_tolerance: 0.0005       # 累计复权因子相对误差阈值 0.05%
+
+# 撮合成交价格定义
+exec_price:
+  window_minutes: 30             # 开盘后 30 分钟窗口内的 1m bar
+  calc_method: "vwap_close_volume"  # sum(close*volume)/sum(volume)
+
+# 时间跨度
+timeline:
+  start_date: "2010-01-01"
+  end_date: "2026-08-31"
+
+# 特征开关
+features:
+  intraday_minute_features: true
+  roll_yield: true
+  warehouse_stocks: true
+  member_rank:
+    enabled: true
+    top_n: 20
+
+# 分钟微观结构特征参数
+minute_features:
+  max_gap_minutes: 60            # 相邻 bar 间隔超过该值(夜盘->日盘/午休)的收益不计入 RV 与高阶矩
+  night_start_hour: 18           # 小时 >= 18 或 < 3 的 bar 归入夜盘
+  night_end_hour: 3
+
+# 仓单库存标准化参数
+warehouse:
+  chg_lag: 5                     # 变动率回看交易日数
+  z_window: 60                   # 时序 Z-Score 窗口
+  z_min_samples: 30              # 窗口内最少有效样本数
+  eps: 1.0                       # 分母平滑项 (仓单单位为吨/张等计数量级, 取 1 个单位)
+
+# 会员持仓龙虎榜参数
+member_rank:
+  delta_lag: 5                   # net_ratio 变动量回看交易日数
+
+# 链式前向收益标签
+labels:
+  horizons: [1, 3, 5, 10, 20]

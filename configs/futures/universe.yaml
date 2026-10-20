@@ -1,0 +1,9 @@
+# 品种流动性筛选规则
+liquidity:
+  min_adv20_turnover: 50000000.0  # 过去20日平均成交额 >= 5000 万
+  min_listed_days: 60             # 品种上市天数 >= 60 天
+  min_days_to_expiry: 5           # 距离合约到期日 >= 5 天 (避免交割月流动性枯竭)
+
+# 截面有效性要求
+evaluation:
+  min_names_per_day: 10           # 截面至少有 10 个品种在池才纳入评估

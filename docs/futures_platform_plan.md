@@ -1227,10 +1227,10 @@ gantt
 - [x] **验收测试**：编写 `proptest` 性质测试，对比纯 NumPy 实现（`ops_ref.py`），50+ 算子在随机矩阵（含大量 NaN）上误差必须 $< 10^{-9}$；压测吞吐量达 1000 表达式/秒。
 
 ### P3：评估指标库、SQLite 因子注册表与种子因子验证（3–4 天）
-- [ ] 实现 `metrics/{ic, quantile, turnover, corr}.rs`：Rust 原生高速指标库。
-- [ ] 实现 `factorlib/core/registry.py`：创建 `factors.sqlite` 数据库与增删查改 ORM。
-- [ ] 录入经典经典文献种子因子（动量、展期收益率、仓单时序变化、会员净多变动）。
-- [ ] **验收测试**：验证种子因子在 2011–2018 训练集的 RankIC 统计方向与学术界共识完全一致。
+- [x] 实现 `metrics/{ic, quantile, turnover, corr}.rs`：Rust 原生高速指标库。
+- [x] 实现 `factorlib/core/registry.py`：创建 `factors.sqlite` 数据库与增删查改 ORM。
+- [x] 录入经典经典文献种子因子（动量、展期收益率、仓单时序变化、会员净多变动）。
+- [x] **验收测试**：验证种子因子在 2011–2018 训练集的 RankIC 统计方向与学术界共识完全一致。
 
 ### P4：强类型遗传规划（STGP）批量挖掘引擎（5–7 天）
 - [ ] 实现 `gp/primitives.py` 与 `gp/generate.py`：强类型原语集与 Ramped Half-and-Half 生成器。

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -1124,3 +1125,350 @@ OPS_REF_REGISTRY: dict[str, Callable[..., np.ndarray]] = {
     "group_rank": group_rank,
     "group_zscore": group_zscore,
 }
+
+
+# ==============================================================================
+# 白皮书 P3 评估指标库纯 NumPy 高精度参考实现
+# ==============================================================================
+
+
+def ref_pearson_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    """纯 NumPy Pearson 相关系数参考实现。"""
+    n = len(x)
+    if n < 2 or n != len(y):
+        return float(np.nan)
+    mx = float(np.mean(x))
+    my = float(np.mean(y))
+    dx = x - mx
+    dy = y - my
+    cov = float(np.sum(dx * dy))
+    var_x = float(np.sum(dx * dx))
+    var_y = float(np.sum(dy * dy))
+    if var_x <= 1e-14 or var_y <= 1e-14:
+        return float(np.nan)
+    r = cov / np.sqrt(var_x * var_y)
+    return float(np.clip(r, -1.0, 1.0))
+
+
+def ref_fractional_ranks(vals: np.ndarray) -> np.ndarray:
+    """纯 NumPy 并列平均排名 (1-based 平均秩) 参考实现。"""
+    k = len(vals)
+    if k == 0:
+        return np.empty(0, dtype=np.float64)
+    if k == 1:
+        return np.array([1.0], dtype=np.float64)
+    order = np.argsort(vals, kind="mergesort")
+    sorted_vals = vals[order]
+    ranks = np.zeros(k, dtype=np.float64)
+    i = 0
+    while i < k:
+        vi = sorted_vals[i]
+        tol = STD_EPS * max(1.0, abs(float(vi)))
+        j = i + 1
+        while j < k and abs(sorted_vals[j] - vi) <= tol:
+            j += 1
+        avg_rank = 0.5 * (i + 1 + j)
+        for idx in range(i, j):
+            ranks[order[idx]] = avg_rank
+        i = j
+    return ranks
+
+
+def ref_rank_ic(
+    factor: np.ndarray,
+    label: np.ndarray,
+    mask: np.ndarray,
+    min_names: int = 5,
+    rank: bool = True,
+    horizon: int = 1,
+) -> dict[str, Any]:
+    """截面 IC 纯 NumPy 参考实现。"""
+    T, N = factor.shape
+    daily_ic = np.full(T, np.nan, dtype=np.float64)
+
+    valid_f = 0
+    total_univ = 0
+
+    for t in range(T):
+        m_row = mask[t]
+        f_row = factor[t]
+        l_row = label[t]
+
+        valid_idx = np.where(m_row & np.isfinite(f_row) & np.isfinite(l_row))[0]
+        total_univ += int(np.sum(m_row))
+        valid_f += int(np.sum(m_row & np.isfinite(f_row)))
+
+        if len(valid_idx) < min_names or len(valid_idx) < 2:
+            continue
+
+        x_vals = f_row[valid_idx]
+        y_vals = l_row[valid_idx]
+
+        if rank:
+            rx = ref_fractional_ranks(x_vals)
+            ry = ref_fractional_ranks(y_vals)
+            daily_ic[t] = ref_pearson_correlation(rx, ry)
+        else:
+            daily_ic[t] = ref_pearson_correlation(x_vals, y_vals)
+
+    valid_ic = daily_ic[np.isfinite(daily_ic)]
+    m = len(valid_ic)
+    coverage = float(valid_f / total_univ) if total_univ > 0 else (m / T if T > 0 else 0.0)
+
+    if m == 0:
+        return {
+            "ic_mean": 0.0,
+            "ic_std": 0.0,
+            "ic_ir": 0.0,
+            "ic_t": 0.0,
+            "ic_win_rate": 0.0,
+            "coverage": coverage,
+            "valid_days": 0,
+            "daily_ic": daily_ic,
+        }
+
+    mean = float(np.mean(valid_ic))
+    std = float(np.std(valid_ic, ddof=1)) if m > 1 else 0.0
+    ir = float(mean / std) if std > 1e-12 else 0.0
+    h = max(horizon, 1)
+    t_stat = ir * np.sqrt(m / h)
+
+    if mean > 0:
+        wins = int(np.sum(valid_ic > 0))
+    elif mean < 0:
+        wins = int(np.sum(valid_ic < 0))
+    else:
+        wins = int(np.sum(valid_ic == 0))
+    win_rate = float(wins / m)
+
+    return {
+        "ic_mean": mean,
+        "ic_std": std,
+        "ic_ir": ir,
+        "ic_t": float(t_stat),
+        "ic_win_rate": win_rate,
+        "coverage": coverage,
+        "valid_days": m,
+        "daily_ic": daily_ic,
+    }
+
+
+def ref_quantile_returns(
+    factor: np.ndarray,
+    forward_ret: np.ndarray,
+    mask: np.ndarray,
+    n_quantiles: int = 5,
+    min_names: int = 5,
+    sign: int = 1,
+) -> dict[str, Any]:
+    """分位数分组与多空收益纯 NumPy 参考实现。"""
+    T, N = factor.shape
+    group_daily_returns = [np.full(T, np.nan, dtype=np.float64) for _ in range(n_quantiles)]
+    ls_daily_returns = np.full(T, np.nan, dtype=np.float64)
+
+    for t in range(T):
+        m_row = mask[t]
+        f_row = factor[t]
+        r_row = forward_ret[t]
+
+        valid_idx = np.where(m_row & np.isfinite(f_row) & np.isfinite(r_row))[0]
+        k_names = len(valid_idx)
+        if k_names < min_names or k_names < n_quantiles or n_quantiles < 2:
+            continue
+
+        # 稳定排序: 因子值升序，相同时按标的下标排序
+        sub_f = f_row[valid_idx]
+        sorted_pos = np.argsort(sub_f, kind="mergesort")
+        sorted_idx = valid_idx[sorted_pos]
+
+        g_rets = []
+        for q in range(n_quantiles):
+            i_start = int(np.floor(q * k_names / n_quantiles))
+            i_end = int(np.floor((q + 1) * k_names / n_quantiles))
+            q_idx = sorted_idx[i_start:i_end]
+            if len(q_idx) == 0:
+                g_rets.append(np.nan)
+            else:
+                g_rets.append(float(np.mean(r_row[q_idx])))
+            group_daily_returns[q][t] = g_rets[-1]
+
+        r_bottom = g_rets[0]
+        r_top = g_rets[-1]
+        if np.isfinite(r_bottom) and np.isfinite(r_top):
+            ls_daily_returns[t] = (r_top - r_bottom) if sign >= 0 else (r_bottom - r_top)
+
+    valid_mask = np.isfinite(ls_daily_returns)
+    m = int(np.sum(valid_mask))
+
+    if m == 0:
+        return {
+            "n_quantiles": n_quantiles,
+            "group_returns": [0.0] * n_quantiles,
+            "group_annual_returns": [0.0] * n_quantiles,
+            "ls_daily_returns": ls_daily_returns,
+            "ls_mean": 0.0,
+            "ls_std": 0.0,
+            "ls_annual_ret": 0.0,
+            "ls_sharpe": 0.0,
+            "ls_max_dd": 0.0,
+            "monotonicity": 0.0,
+            "valid_days": 0,
+            "group_daily_returns": group_daily_returns,
+        }
+
+    group_returns = [float(np.mean(g[valid_mask])) for g in group_daily_returns]
+    group_annual_returns = [r * 252.0 for r in group_returns]
+
+    valid_ls = ls_daily_returns[valid_mask]
+    ls_mean = float(np.mean(valid_ls))
+    ls_std = float(np.std(valid_ls, ddof=1)) if m > 1 else 0.0
+    ls_annual_ret = ls_mean * 252.0
+    ls_sharpe = float(np.sqrt(252.0) * ls_mean / ls_std) if ls_std > 1e-12 else 0.0
+
+    # 累计复利最大回撤
+    wealth = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for r in valid_ls:
+        wealth = max(wealth * (1.0 + r), 0.0)
+        if wealth > peak:
+            peak = wealth
+        if peak > 0.0:
+            dd = (peak - wealth) / peak
+            if dd > max_dd:
+                max_dd = dd
+
+    # 单调性得分
+    expected_order = group_annual_returns if sign >= 0 else list(reversed(group_annual_returns))
+    q_indices = np.arange(n_quantiles, dtype=np.float64)
+    rq = ref_fractional_ranks(q_indices)
+    rr = ref_fractional_ranks(np.array(expected_order, dtype=np.float64))
+    mono = ref_pearson_correlation(rq, rr)
+    monotonicity = float(mono) if np.isfinite(mono) else 0.0
+
+    return {
+        "n_quantiles": n_quantiles,
+        "group_returns": group_returns,
+        "group_annual_returns": group_annual_returns,
+        "ls_daily_returns": ls_daily_returns,
+        "ls_mean": ls_mean,
+        "ls_std": ls_std,
+        "ls_annual_ret": ls_annual_ret,
+        "ls_sharpe": ls_sharpe,
+        "ls_max_dd": float(max_dd),
+        "monotonicity": monotonicity,
+        "valid_days": m,
+        "group_daily_returns": group_daily_returns,
+    }
+
+
+def ref_turnover(
+    factor: np.ndarray,
+    mask: np.ndarray,
+    min_names: int = 5,
+) -> dict[str, Any]:
+    """因子截面排名自相关与换手率纯 NumPy 参考实现。"""
+    T, N = factor.shape
+    if T < 2:
+        return {
+            "turnover": 0.0,
+            "rank_autocorr": 1.0,
+            "daily_autocorr": np.empty(0, dtype=np.float64),
+            "valid_days": 0,
+        }
+
+    daily_autocorr = np.full(T - 1, np.nan, dtype=np.float64)
+
+    for t in range(1, T):
+        m_prev = mask[t - 1]
+        m_curr = mask[t]
+        f_prev = factor[t - 1]
+        f_curr = factor[t]
+
+        valid_idx = np.where(m_prev & m_curr & np.isfinite(f_prev) & np.isfinite(f_curr))[0]
+        if len(valid_idx) < min_names or len(valid_idx) < 2:
+            continue
+
+        rx = ref_fractional_ranks(f_prev[valid_idx])
+        ry = ref_fractional_ranks(f_curr[valid_idx])
+        daily_autocorr[t - 1] = ref_pearson_correlation(rx, ry)
+
+    valid_vals = daily_autocorr[np.isfinite(daily_autocorr)]
+    m = len(valid_vals)
+
+    if m == 0:
+        return {
+            "turnover": 1.0,
+            "rank_autocorr": 0.0,
+            "daily_autocorr": daily_autocorr,
+            "valid_days": 0,
+        }
+
+    mean_autocorr = float(np.mean(valid_vals))
+    turnover = float(1.0 - mean_autocorr)
+
+    return {
+        "turnover": turnover,
+        "rank_autocorr": mean_autocorr,
+        "daily_autocorr": daily_autocorr,
+        "valid_days": m,
+    }
+
+
+def ref_pairwise_correlation(
+    factor_a: np.ndarray,
+    factor_b: np.ndarray,
+    mask: np.ndarray,
+    min_names: int = 5,
+    rank: bool = True,
+) -> float:
+    """双因子截面平均相关系数纯 NumPy 参考实现。"""
+    T, N = factor_a.shape
+    daily_corrs = []
+
+    for t in range(T):
+        m_row = mask[t]
+        fa = factor_a[t]
+        fb = factor_b[t]
+
+        valid_idx = np.where(m_row & np.isfinite(fa) & np.isfinite(fb))[0]
+        if len(valid_idx) < min_names or len(valid_idx) < 2:
+            continue
+
+        xa = fa[valid_idx]
+        xb = fb[valid_idx]
+
+        if rank:
+            ra = ref_fractional_ranks(xa)
+            rb = ref_fractional_ranks(xb)
+            rho = ref_pearson_correlation(ra, rb)
+        else:
+            rho = ref_pearson_correlation(xa, xb)
+
+        if np.isfinite(rho):
+            daily_corrs.append(rho)
+
+    if not daily_corrs:
+        return 0.0
+    return float(np.mean(daily_corrs))
+
+
+def ref_correlation_matrix(
+    factors: list[np.ndarray],
+    mask: np.ndarray,
+    min_names: int = 5,
+    rank: bool = True,
+) -> np.ndarray:
+    """多因子截面相关系数矩阵纯 NumPy 参考实现。"""
+    M = len(factors)
+    mat = np.zeros((M, M), dtype=np.float64)
+    for i in range(M):
+        mat[i, i] = 1.0
+
+    for i in range(M):
+        for j in range(i + 1, M):
+            rho = ref_pairwise_correlation(factors[i], factors[j], mask, min_names, rank)
+            mat[i, j] = rho
+            mat[j, i] = rho
+
+    return mat

@@ -10,6 +10,7 @@
 #![allow(clippy::useless_conversion)]
 
 pub mod expr;
+pub mod metrics;
 pub mod nan;
 pub mod ops;
 pub mod panel;
@@ -23,5 +24,10 @@ fn factorlib_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py::parse_and_canonicalize, m)?)?;
     m.add_function(wrap_pyfunction!(py::check_expr, m)?)?;
     m.add_function(wrap_pyfunction!(py::list_operators, m)?)?;
+    m.add_function(wrap_pyfunction!(py::calc_ic, m)?)?;
+    m.add_function(wrap_pyfunction!(py::calc_quantile_returns, m)?)?;
+    m.add_function(wrap_pyfunction!(py::calc_turnover, m)?)?;
+    m.add_function(wrap_pyfunction!(py::calc_pairwise_correlation, m)?)?;
+    m.add_function(wrap_pyfunction!(py::calc_correlation_matrix, m)?)?;
     Ok(())
 }

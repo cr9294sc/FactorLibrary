@@ -11,10 +11,14 @@ use crate::expr::canon::{canonicalize, CanonResult};
 use crate::expr::eval::{eval_batch_str, eval_expr_str};
 use crate::expr::parser::parse_expr;
 use crate::expr::typecheck::{infer_type, typecheck_factor_expr};
+use crate::metrics::corr::{cross_correlation_matrix, cross_correlation_pairwise};
+use crate::metrics::ic::{calc_ic_metrics, calc_ic_series, IcMetrics};
+use crate::metrics::quantile::{calc_quantile_metrics, QuantileMetrics};
+use crate::metrics::turnover::{calc_turnover_metrics, TurnoverMetrics};
 use crate::ops::list_all_operators;
 use crate::panel::Panel;
 use ndarray::{Array2, ArrayView2, ShapeBuilder};
-use numpy::{PyArray2, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -77,6 +81,64 @@ fn canon_result_to_pydict<'py>(
     d.set_item("n_nodes", cr.n_nodes)?;
     d.set_item("depth", cr.depth)?;
     d.set_item("return_type", ret_type)?;
+    Ok(d)
+}
+
+fn ic_metrics_to_pydict<'py>(py: Python<'py>, m: &IcMetrics) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("ic_mean", m.ic_mean)?;
+    d.set_item("ic_std", m.ic_std)?;
+    d.set_item("ic_ir", m.ic_ir)?;
+    d.set_item("ic_t", m.ic_t)?;
+    d.set_item("ic_win_rate", m.ic_win_rate)?;
+    d.set_item("coverage", m.coverage)?;
+    d.set_item("valid_days", m.valid_days)?;
+    d.set_item("daily_ic", PyArray1::from_slice_bound(py, &m.daily_ic))?;
+    Ok(d)
+}
+
+fn quantile_metrics_to_pydict<'py>(
+    py: Python<'py>,
+    m: &QuantileMetrics,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("n_quantiles", m.n_quantiles)?;
+    d.set_item("group_returns", PyList::new_bound(py, &m.group_returns))?;
+    d.set_item(
+        "group_annual_returns",
+        PyList::new_bound(py, &m.group_annual_returns),
+    )?;
+    d.set_item("ls_mean", m.ls_mean)?;
+    d.set_item("ls_std", m.ls_std)?;
+    d.set_item("ls_annual_ret", m.ls_annual_ret)?;
+    d.set_item("ls_sharpe", m.ls_sharpe)?;
+    d.set_item("ls_max_dd", m.ls_max_dd)?;
+    d.set_item("monotonicity", m.monotonicity)?;
+    d.set_item("valid_days", m.valid_days)?;
+    d.set_item(
+        "ls_daily_returns",
+        PyArray1::from_slice_bound(py, &m.ls_daily_returns),
+    )?;
+    let g_daily_list = PyList::empty_bound(py);
+    for g in &m.group_daily_returns {
+        g_daily_list.append(PyArray1::from_slice_bound(py, g))?;
+    }
+    d.set_item("group_daily_returns", g_daily_list)?;
+    Ok(d)
+}
+
+fn turnover_metrics_to_pydict<'py>(
+    py: Python<'py>,
+    m: &TurnoverMetrics,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("turnover", m.turnover)?;
+    d.set_item("rank_autocorr", m.rank_autocorr)?;
+    d.set_item("valid_days", m.valid_days)?;
+    d.set_item(
+        "daily_autocorr",
+        PyArray1::from_slice_bound(py, &m.daily_autocorr),
+    )?;
     Ok(d)
 }
 
@@ -417,6 +479,235 @@ impl PyEngine {
     pub fn clear_cache(&self) {
         self.cache.clear();
     }
+
+    /// 评估因子截面 Spearman Rank IC 或 Pearson IC 时序与多维统计指标。
+    #[pyo3(signature = (factor, label_name="y_5", min_names=5, rank=true, horizon=1))]
+    pub fn rank_ic<'py>(
+        &self,
+        py: Python<'py>,
+        factor: &Bound<'_, PyAny>,
+        label_name: &str,
+        min_names: usize,
+        rank: bool,
+        horizon: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let label_arc = self
+            .panel
+            .labels
+            .get(label_name)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!("未在面板中找到预测标签: '{label_name}'"))
+            })?
+            .clone();
+        let mask = self.panel.universe_mask.clone();
+
+        let metrics = py.allow_threads(move || {
+            let (t, n) = f_mat.dim();
+            let mut valid_f = 0;
+            let mut total_univ = 0;
+            for row in 0..t {
+                for col in 0..n {
+                    if mask[[row, col]] {
+                        total_univ += 1;
+                        if f_mat[[row, col]].is_finite() {
+                            valid_f += 1;
+                        }
+                    }
+                }
+            }
+            let daily = calc_ic_series(&f_mat, &label_arc, &mask, min_names, rank);
+            calc_ic_metrics(&daily, horizon, t, valid_f, total_univ)
+        });
+
+        ic_metrics_to_pydict(py, &metrics)
+    }
+
+    /// 评估因子分位数分组收益与多空对冲收益时序指标。
+    #[pyo3(signature = (factor, ret_name=None, n_quantiles=5, min_names=5, sign=1))]
+    pub fn quantile_returns<'py>(
+        &self,
+        py: Python<'py>,
+        factor: &Bound<'_, PyAny>,
+        ret_name: Option<&str>,
+        n_quantiles: usize,
+        min_names: usize,
+        sign: i32,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let r_name = ret_name.unwrap_or("r_exec_next");
+        let ret_arc = self
+            .panel
+            .labels
+            .get(r_name)
+            .or_else(|| self.panel.labels.get("y_1"))
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "未在面板中找到用于分位数评估的收益标签: '{r_name}'"
+                ))
+            })?
+            .clone();
+        let mask = self.panel.universe_mask.clone();
+
+        let metrics = py.allow_threads(move || {
+            calc_quantile_metrics(&f_mat, &ret_arc, &mask, n_quantiles, min_names, sign)
+        });
+
+        quantile_metrics_to_pydict(py, &metrics)
+    }
+
+    /// 评估因子横截面排名自相关与日度换手率代理指标。
+    #[pyo3(signature = (factor, min_names=5))]
+    pub fn factor_turnover<'py>(
+        &self,
+        py: Python<'py>,
+        factor: &Bound<'_, PyAny>,
+        min_names: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let mask = self.panel.universe_mask.clone();
+
+        let metrics = py.allow_threads(move || calc_turnover_metrics(&f_mat, &mask, min_names));
+
+        turnover_metrics_to_pydict(py, &metrics)
+    }
+
+    /// 因子多维度综合评估（单次调用同时计算 IC、分位数多空、换手率，全程释放 GIL）。
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (factor, label_name="y_5", ret_name=None, horizon=5, n_quantiles=5, min_names=5, sign=1))]
+    pub fn factor_metrics<'py>(
+        &self,
+        py: Python<'py>,
+        factor: &Bound<'_, PyAny>,
+        label_name: &str,
+        ret_name: Option<&str>,
+        horizon: usize,
+        n_quantiles: usize,
+        min_names: usize,
+        sign: i32,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let label_arc = self
+            .panel
+            .labels
+            .get(label_name)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!("未在面板中找到预测标签: '{label_name}'"))
+            })?
+            .clone();
+        let r_name = ret_name.unwrap_or("r_exec_next");
+        let ret_arc = self
+            .panel
+            .labels
+            .get(r_name)
+            .or_else(|| self.panel.labels.get("y_1"))
+            .unwrap_or(&label_arc)
+            .clone();
+        let mask = self.panel.universe_mask.clone();
+
+        let (ic_m, q_m, to_m) = py.allow_threads(move || {
+            let (t, n) = f_mat.dim();
+            let mut valid_f = 0;
+            let mut total_univ = 0;
+            for row in 0..t {
+                for col in 0..n {
+                    if mask[[row, col]] {
+                        total_univ += 1;
+                        if f_mat[[row, col]].is_finite() {
+                            valid_f += 1;
+                        }
+                    }
+                }
+            }
+            let daily = calc_ic_series(&f_mat, &label_arc, &mask, min_names, true);
+            let ic_res = calc_ic_metrics(&daily, horizon, t, valid_f, total_univ);
+            let q_res =
+                calc_quantile_metrics(&f_mat, &ret_arc, &mask, n_quantiles, min_names, sign);
+            let to_res = calc_turnover_metrics(&f_mat, &mask, min_names);
+            (ic_res, q_res, to_res)
+        });
+
+        let d = PyDict::new_bound(py);
+        d.set_item("ic", ic_metrics_to_pydict(py, &ic_m)?)?;
+        d.set_item("quantile", quantile_metrics_to_pydict(py, &q_m)?)?;
+        d.set_item("turnover", turnover_metrics_to_pydict(py, &to_m)?)?;
+        d.set_item("ic_mean", ic_m.ic_mean)?;
+        d.set_item("ic_std", ic_m.ic_std)?;
+        d.set_item("ic_ir", ic_m.ic_ir)?;
+        d.set_item("ic_t", ic_m.ic_t)?;
+        d.set_item("ic_win_rate", ic_m.ic_win_rate)?;
+        d.set_item("coverage", ic_m.coverage)?;
+        d.set_item("turnover_val", to_m.turnover)?;
+        d.set_item("ls_sharpe", q_m.ls_sharpe)?;
+        d.set_item("ls_annual_ret", q_m.ls_annual_ret)?;
+        d.set_item("ls_max_dd", q_m.ls_max_dd)?;
+        d.set_item("monotonicity", q_m.monotonicity)?;
+        Ok(d)
+    }
+
+    /// 计算两个因子在有效标的池上的平均横截面相关系数。
+    #[pyo3(signature = (factor_a, factor_b, min_names=5, rank=true))]
+    pub fn cross_correlation<'py>(
+        &self,
+        py: Python<'py>,
+        factor_a: &Bound<'_, PyAny>,
+        factor_b: &Bound<'_, PyAny>,
+        min_names: usize,
+        rank: bool,
+    ) -> PyResult<f64> {
+        let fa = self.resolve_factor_mat(py, factor_a)?;
+        let fb = self.resolve_factor_mat(py, factor_b)?;
+        let mask = self.panel.universe_mask.clone();
+
+        let rho =
+            py.allow_threads(move || cross_correlation_pairwise(&fa, &fb, &mask, min_names, rank));
+        Ok(rho)
+    }
+
+    /// 并行计算一组因子的 M x M 截面相关系数矩阵。
+    #[pyo3(signature = (factors, min_names=5, rank=true))]
+    pub fn factor_correlation_matrix<'py>(
+        &self,
+        py: Python<'py>,
+        factors: Vec<PyReadonlyArray2<'_, f64>>,
+        min_names: usize,
+        rank: bool,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let f_mats: Vec<Array2<f64>> = factors
+            .into_iter()
+            .map(|f| view_to_fortran_f64(f.as_array()))
+            .collect();
+        let mask = self.panel.universe_mask.clone();
+
+        let mat = py.allow_threads(move || {
+            let refs: Vec<&Array2<f64>> = f_mats.iter().collect();
+            cross_correlation_matrix(&refs, &mask, min_names, rank)
+        });
+
+        Ok(PyArray2::from_owned_array_bound(py, mat))
+    }
+}
+
+impl PyEngine {
+    fn resolve_factor_mat<'py>(
+        &self,
+        py: Python<'py>,
+        factor_obj: &Bound<'py, PyAny>,
+    ) -> PyResult<Array2<f64>> {
+        if let Ok(expr_str) = factor_obj.extract::<String>() {
+            let p = Arc::clone(&self.panel);
+            let c = Arc::clone(&self.cache);
+            let res = py.allow_threads(move || eval_expr_str(&expr_str, &p, Some(&c), false));
+            let arc_mat = res.map_err(|e| PyValueError::new_err(e.to_string()))?;
+            Ok((*arc_mat).clone())
+        } else if let Ok(ro_arr) = factor_obj.extract::<PyReadonlyArray2<'_, f64>>() {
+            Ok(view_to_fortran_f64(ro_arr.as_array()))
+        } else {
+            Err(PyValueError::new_err(
+                "factor 必须为 DSL 表达式文本或二维 float64 NumPy 数组",
+            ))
+        }
+    }
 }
 
 /// 无需实例化 `Engine` 的静态表达式解析与代数规范化函数。
@@ -497,4 +788,160 @@ pub fn list_operators<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         out.append(d)?;
     }
     Ok(out)
+}
+
+/// 计算两个矩阵在指定掩码下的截面 IC 序列与多维评价指标。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (factor, label, mask, min_names=5, rank=true, horizon=1))]
+pub fn calc_ic<'py>(
+    py: Python<'py>,
+    factor: PyReadonlyArray2<'_, f64>,
+    label: PyReadonlyArray2<'_, f64>,
+    mask: PyReadonlyArray2<'_, bool>,
+    min_names: usize,
+    rank: bool,
+    horizon: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let f_mat = view_to_fortran_f64(factor.as_array());
+    let l_mat = view_to_fortran_f64(label.as_array());
+    let m_mat = view_to_fortran_bool(mask.as_array());
+
+    let (t, n) = f_mat.dim();
+    if l_mat.dim() != (t, n) || m_mat.dim() != (t, n) {
+        return Err(PyValueError::new_err(
+            "factor, label 与 mask 矩阵维度必须完全一致",
+        ));
+    }
+
+    let metrics = py.allow_threads(move || {
+        let mut valid_f = 0;
+        let mut total_univ = 0;
+        for row in 0..t {
+            for col in 0..n {
+                if m_mat[[row, col]] {
+                    total_univ += 1;
+                    if f_mat[[row, col]].is_finite() {
+                        valid_f += 1;
+                    }
+                }
+            }
+        }
+        let daily = calc_ic_series(&f_mat, &l_mat, &m_mat, min_names, rank);
+        calc_ic_metrics(&daily, horizon, t, valid_f, total_univ)
+    });
+
+    ic_metrics_to_pydict(py, &metrics)
+}
+
+/// 计算因子矩阵在指定收益标签下的分位数分组与多空组合指标。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (factor, forward_ret, mask, n_quantiles=5, min_names=5, sign=1))]
+pub fn calc_quantile_returns<'py>(
+    py: Python<'py>,
+    factor: PyReadonlyArray2<'_, f64>,
+    forward_ret: PyReadonlyArray2<'_, f64>,
+    mask: PyReadonlyArray2<'_, bool>,
+    n_quantiles: usize,
+    min_names: usize,
+    sign: i32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let f_mat = view_to_fortran_f64(factor.as_array());
+    let r_mat = view_to_fortran_f64(forward_ret.as_array());
+    let m_mat = view_to_fortran_bool(mask.as_array());
+
+    let (t, n) = f_mat.dim();
+    if r_mat.dim() != (t, n) || m_mat.dim() != (t, n) {
+        return Err(PyValueError::new_err(
+            "factor, forward_ret 与 mask 矩阵维度必须完全一致",
+        ));
+    }
+
+    let metrics = py.allow_threads(move || {
+        calc_quantile_metrics(&f_mat, &r_mat, &m_mat, n_quantiles, min_names, sign)
+    });
+
+    quantile_metrics_to_pydict(py, &metrics)
+}
+
+/// 计算因子横截面排名自相关与日度换手率代理指标。
+#[pyfunction]
+#[pyo3(signature = (factor, mask, min_names=5))]
+pub fn calc_turnover<'py>(
+    py: Python<'py>,
+    factor: PyReadonlyArray2<'_, f64>,
+    mask: PyReadonlyArray2<'_, bool>,
+    min_names: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let f_mat = view_to_fortran_f64(factor.as_array());
+    let m_mat = view_to_fortran_bool(mask.as_array());
+
+    let (t, n) = f_mat.dim();
+    if m_mat.dim() != (t, n) {
+        return Err(PyValueError::new_err("factor 与 mask 矩阵维度必须完全一致"));
+    }
+
+    let metrics = py.allow_threads(move || calc_turnover_metrics(&f_mat, &m_mat, min_names));
+
+    turnover_metrics_to_pydict(py, &metrics)
+}
+
+/// 计算两个因子矩阵之间的横截面相关系数均值。
+#[pyfunction]
+#[pyo3(signature = (factor_a, factor_b, mask, min_names=5, rank=true))]
+pub fn calc_pairwise_correlation<'py>(
+    py: Python<'py>,
+    factor_a: PyReadonlyArray2<'_, f64>,
+    factor_b: PyReadonlyArray2<'_, f64>,
+    mask: PyReadonlyArray2<'_, bool>,
+    min_names: usize,
+    rank: bool,
+) -> PyResult<f64> {
+    let fa = view_to_fortran_f64(factor_a.as_array());
+    let fb = view_to_fortran_f64(factor_b.as_array());
+    let m = view_to_fortran_bool(mask.as_array());
+
+    let (t, n) = fa.dim();
+    if fb.dim() != (t, n) || m.dim() != (t, n) {
+        return Err(PyValueError::new_err(
+            "factor_a, factor_b 与 mask 矩阵维度必须完全一致",
+        ));
+    }
+
+    let rho = py.allow_threads(move || cross_correlation_pairwise(&fa, &fb, &m, min_names, rank));
+
+    Ok(rho)
+}
+
+/// 计算多个因子矩阵之间的 M x M 截面相关系数矩阵。
+#[pyfunction]
+#[pyo3(signature = (factors, mask, min_names=5, rank=true))]
+pub fn calc_correlation_matrix<'py>(
+    py: Python<'py>,
+    factors: Vec<PyReadonlyArray2<'_, f64>>,
+    mask: PyReadonlyArray2<'_, bool>,
+    min_names: usize,
+    rank: bool,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let m_mat = view_to_fortran_bool(mask.as_array());
+    let (t, n) = m_mat.dim();
+
+    let mut f_mats: Vec<Array2<f64>> = Vec::with_capacity(factors.len());
+    for f in factors {
+        let mat = view_to_fortran_f64(f.as_array());
+        if mat.dim() != (t, n) {
+            return Err(PyValueError::new_err(
+                "所有因子矩阵的维度必须与 mask 矩阵严格一致",
+            ));
+        }
+        f_mats.push(mat);
+    }
+
+    let mat = py.allow_threads(move || {
+        let refs: Vec<&Array2<f64>> = f_mats.iter().collect();
+        cross_correlation_matrix(&refs, &m_mat, min_names, rank)
+    });
+
+    Ok(PyArray2::from_owned_array_bound(py, mat))
 }

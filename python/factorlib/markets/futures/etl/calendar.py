@@ -7,9 +7,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Sequence
 
 import polars as pl
 
@@ -22,7 +22,9 @@ def load_calendar(raw_dir: Path) -> pl.DataFrame:
     return cal.with_row_index("date_idx").with_columns(pl.col("date_idx").cast(pl.Int64))
 
 
-def add_date_idx(df: pl.DataFrame, cal: pl.DataFrame, date_col: str = "trading_date") -> pl.DataFrame:
+def add_date_idx(
+    df: pl.DataFrame, cal: pl.DataFrame, date_col: str = "trading_date"
+) -> pl.DataFrame:
     """为 ``df`` 附加 ``date_idx`` 列; 日期不在日历内则报错 (审计已确认行情日期 100% 落在日历内)。"""
     out = df.join(cal, left_on=date_col, right_on="trading_date", how="left")
     if out["date_idx"].null_count() > 0:
@@ -76,6 +78,10 @@ def lag_by_idx(
     """取 ``date_idx - n`` 处的取值 (按日历索引而非行偏移), 新增列名为 ``{col}{suffix}``。"""
     suffix = suffix if suffix is not None else f"_lag{n}"
     right = df.select(
-        [key, (pl.col("date_idx") + n).alias("date_idx"), *[pl.col(c).alias(f"{c}{suffix}") for c in cols]]
+        [
+            key,
+            (pl.col("date_idx") + n).alias("date_idx"),
+            *[pl.col(c).alias(f"{c}{suffix}") for c in cols],
+        ]
     )
     return df.join(right, on=[key, "date_idx"], how="left")

@@ -35,23 +35,39 @@ def build_warehouse_features(
     """返回 ``symbol, trading_date, wh_chg5, wh_z60`` (与 ``daily`` 的 symbol-date 行一一对应)。"""
     wcfg = cfg.warehouse
     stock = (
-        scan_dataset(raw_dir, "warehouse_stocks", ["trading_date", "underlying_symbol", "on_warrant"])
+        scan_dataset(
+            raw_dir, "warehouse_stocks", ["trading_date", "underlying_symbol", "on_warrant"]
+        )
         .filter(pl.col("trading_date").is_between(cfg.start_date, end_date))
         .rename({"underlying_symbol": "symbol", "on_warrant": "stock"})
         .unique(subset=["symbol", "trading_date"], keep="first")
         .collect()
     )
     keys = daily.select(["symbol", "trading_date", "date_idx"])
-    grid = dense_grid(keys, cal).join(stock, on=["symbol", "trading_date"], how="left").sort(["symbol", "date_idx"])
+    grid = (
+        dense_grid(keys, cal)
+        .join(stock, on=["symbol", "trading_date"], how="left")
+        .sort(["symbol", "date_idx"])
+    )
 
     grid = lag_by_idx(grid, ["stock"], wcfg.chg_lag, suffix="_lag")
     grid = grid.with_columns(
         wh_chg5=(pl.col("stock") - pl.col("stock_lag")) / (pl.col("stock_lag") + wcfg.eps),
         _mu=pl.col("stock")
-        .rolling_mean_by("date_idx", window_size=f"{wcfg.z_window}i", min_samples=wcfg.z_min_samples, closed="right")
+        .rolling_mean_by(
+            "date_idx",
+            window_size=f"{wcfg.z_window}i",
+            min_samples=wcfg.z_min_samples,
+            closed="right",
+        )
         .over("symbol"),
         _sd=pl.col("stock")
-        .rolling_std_by("date_idx", window_size=f"{wcfg.z_window}i", min_samples=wcfg.z_min_samples, closed="right")
+        .rolling_std_by(
+            "date_idx",
+            window_size=f"{wcfg.z_window}i",
+            min_samples=wcfg.z_min_samples,
+            closed="right",
+        )
         .over("symbol"),
     ).with_columns(wh_z60=(pl.col("stock") - pl.col("_mu")) / (pl.col("_sd") + wcfg.eps))
     return keys.select(["symbol", "trading_date"]).join(

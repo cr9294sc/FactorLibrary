@@ -11,9 +11,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -42,11 +43,11 @@ class Panel:
     """
 
     dates: np.ndarray
-    symbols: List[str]
-    fields: Dict[str, np.ndarray]
+    symbols: list[str]
+    fields: dict[str, np.ndarray]
     mask: np.ndarray
-    labels: Dict[str, np.ndarray] = field(default_factory=dict)
-    meta: Dict[str, Any] = field(default_factory=dict)
+    labels: dict[str, np.ndarray] = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         T = len(self.dates)
@@ -68,7 +69,7 @@ class Panel:
                 self.labels[k] = np.asfortranarray(v)
 
     @property
-    def shape(self) -> Tuple[int, int]:
+    def shape(self) -> tuple[int, int]:
         """(T, N): 交易日天数 x 品种数。"""
         return len(self.dates), len(self.symbols)
 
@@ -95,10 +96,10 @@ class Panel:
     @classmethod
     def load(
         cls,
-        path: Union[str, Path],
-        fields_subset: Optional[Sequence[str]] = None,
+        path: str | Path,
+        fields_subset: Sequence[str] | None = None,
         load_labels: bool = True,
-    ) -> "Panel":
+    ) -> Panel:
         """从标准派生数据目录 (包含 panel_daily.parquet) 加载面板。
 
         Parameters
@@ -118,7 +119,7 @@ class Panel:
         if not panel_file.exists():
             raise FileNotFoundError(f"未找到面板文件: {panel_file}")
 
-        meta: Dict[str, Any] = {}
+        meta: dict[str, Any] = {}
         if meta_file.exists():
             with meta_file.open("r", encoding="utf-8") as fh:
                 meta = json.load(fh)
@@ -129,7 +130,16 @@ class Panel:
 
         # 确定需要读取的列
         all_cols = list(schema.names())
-        ignore_cols = {"trading_date", "symbol", "contract", "prev_contract", "is_roll", "date_idx", "sector", "in_universe"}
+        ignore_cols = {
+            "trading_date",
+            "symbol",
+            "contract",
+            "prev_contract",
+            "is_roll",
+            "date_idx",
+            "sector",
+            "in_universe",
+        }
 
         if fields_subset is not None:
             load_cols = [c for c in fields_subset if c in all_cols]
@@ -160,23 +170,35 @@ class Panel:
             mask[row_indices, col_indices] = mask_vals
 
         # 构建各字段宽矩阵
-        fields_dict: Dict[str, np.ndarray] = {}
+        fields_dict: dict[str, np.ndarray] = {}
         for col_name in load_cols:
             col_series = df[col_name]
             # 仅处理数值型与布尔型
-            if col_series.dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64, pl.UInt32, pl.UInt64, pl.Boolean):
+            if col_series.dtype in (
+                pl.Float32,
+                pl.Float64,
+                pl.Int32,
+                pl.Int64,
+                pl.UInt32,
+                pl.UInt64,
+                pl.Boolean,
+            ):
                 arr = np.full((T, N), np.nan, dtype=np.float64, order="F")
                 vals = col_series.cast(pl.Float64).to_numpy()
                 arr[row_indices, col_indices] = vals
                 fields_dict[col_name] = arr
 
         # 加载标签
-        labels_dict: Dict[str, np.ndarray] = {}
+        labels_dict: dict[str, np.ndarray] = {}
         if load_labels and labels_file.exists():
             ldf = pl.read_parquet(labels_file).sort(["trading_date", "symbol"])
             l_dates = ldf["trading_date"].to_list()
             l_syms = ldf["symbol"].to_list()
-            valid_idx = [i for i, (d, s) in enumerate(zip(l_dates, l_syms)) if d in date_map and s in symbol_map]
+            valid_idx = [
+                i
+                for i, (d, s) in enumerate(zip(l_dates, l_syms, strict=True))
+                if d in date_map and s in symbol_map
+            ]
             l_row_idx = np.array([date_map[l_dates[i]] for i in valid_idx], dtype=np.int32)
             l_col_idx = np.array([symbol_map[l_syms[i]] for i in valid_idx], dtype=np.int32)
 
@@ -197,7 +219,7 @@ class Panel:
             meta=meta,
         )
 
-    def to_rust_engine(self, cache_mb: int = 4096, n_threads: Optional[int] = None) -> Any:
+    def to_rust_engine(self, cache_mb: int = 4096, n_threads: int | None = None) -> Any:
         """将内存矩阵零拷贝传递给 Rust 计算内核 (factorlib_core)。
 
         注意: factorlib_core 将在工程计划 P2 阶段构建提供。

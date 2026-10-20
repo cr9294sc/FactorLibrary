@@ -301,11 +301,7 @@ impl TwoStackBivariateWelford {
 
 /// 计算有限切片上的平均排名（归一化到 $[0, 1]$，若仅 1 个有效元素则为 $0.5$）。
 /// `indices_and_vals` 作为临时可重用缓冲区传入以避免循环分配。
-pub fn compute_normalized_ranks(
-    row: &[f64],
-    out: &mut [f64],
-    buf: &mut Vec<(usize, f64)>,
-) {
+pub fn compute_normalized_ranks(row: &[f64], out: &mut [f64], buf: &mut Vec<(usize, f64)>) {
     buf.clear();
     for (j, &v) in row.iter().enumerate() {
         if v.is_finite() {

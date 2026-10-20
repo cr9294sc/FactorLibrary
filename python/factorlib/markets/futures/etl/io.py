@@ -12,15 +12,15 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import polars as pl
 
 _MONTH_RE = re.compile(r"_(\d{4})_(\d{2})\.parquet$")
 
 #: 分钟线读取的最小字段集 (投影下推, 降低 IO)
-MINUTE_COLUMNS: Tuple[str, ...] = (
+MINUTE_COLUMNS: tuple[str, ...] = (
     "order_book_id",
     "trading_date",
     "datetime",
@@ -36,7 +36,7 @@ class RawDataError(RuntimeError):
     """原始数据缺失或布局异常。"""
 
 
-def dataset_files(raw_dir: Path, name: str) -> List[Path]:
+def dataset_files(raw_dir: Path, name: str) -> list[Path]:
     """返回数据集 ``name`` 的全部 Parquet 文件 (按文件名升序)。
 
     仅读取 ``full/`` 子目录; 单文件数据集 (calendar / instruments_info / industry_mapping)
@@ -53,7 +53,7 @@ def dataset_files(raw_dir: Path, name: str) -> List[Path]:
     return files
 
 
-def scan_dataset(raw_dir: Path, name: str, columns: Optional[Sequence[str]] = None) -> pl.LazyFrame:
+def scan_dataset(raw_dir: Path, name: str, columns: Sequence[str] | None = None) -> pl.LazyFrame:
     """惰性扫描整个数据集 (适用于日线及以下体量的数据集, 不适用于 ``bar_1m``)。"""
     if name == "bar_1m":
         raise RawDataError("bar_1m 禁止一次性全量扫描, 请使用 iter_minute_months()")
@@ -71,9 +71,9 @@ def read_single(raw_dir: Path, name: str) -> pl.DataFrame:
     return pl.read_parquet(files[0])
 
 
-def monthly_files(raw_dir: Path, name: str) -> Dict[Tuple[int, int], Path]:
+def monthly_files(raw_dir: Path, name: str) -> dict[tuple[int, int], Path]:
     """解析 ``<name>_YYYY_MM.parquet`` 文件名, 返回 ``{(年, 月): 路径}``。"""
-    out: Dict[Tuple[int, int], Path] = {}
+    out: dict[tuple[int, int], Path] = {}
     for path in dataset_files(raw_dir, name):
         m = _MONTH_RE.search(path.name)
         if m is None:
@@ -86,7 +86,7 @@ def iter_minute_months(
     raw_dir: Path,
     pairs: pl.DataFrame,
     columns: Sequence[str] = MINUTE_COLUMNS,
-) -> Iterator[Tuple[Tuple[int, int], pl.DataFrame]]:
+) -> Iterator[tuple[tuple[int, int], pl.DataFrame]]:
     """按月流式迭代 1 分钟 bar, 仅保留 ``pairs`` 指定的 (合约, 交易日) 子集。
 
     Parameters
@@ -107,13 +107,10 @@ def iter_minute_months(
         raise ValueError("pairs 的 (order_book_id, trading_date) 键必须唯一")
 
     files = monthly_files(raw_dir, "bar_1m")
-    by_month = (
-        pairs.with_columns(
-            _y=pl.col("trading_date").dt.year().cast(pl.Int32),
-            _m=pl.col("trading_date").dt.month().cast(pl.Int32),
-        )
-        .partition_by(["_y", "_m"], as_dict=True)
-    )
+    by_month = pairs.with_columns(
+        _y=pl.col("trading_date").dt.year().cast(pl.Int32),
+        _m=pl.col("trading_date").dt.month().cast(pl.Int32),
+    ).partition_by(["_y", "_m"], as_dict=True)
     for (year, month), part in sorted(by_month.items()):
         path = files.get((int(year), int(month)))
         if path is None:
@@ -129,9 +126,7 @@ def iter_minute_months(
                 & pl.col("trading_date").is_between(lo, hi)
             )
             .join(part.lazy(), on=["order_book_id", "trading_date"], how="inner")
-            .with_columns(
-                pl.col(["open", "high", "low", "close", "volume"]).cast(pl.Float64)
-            )
+            .with_columns(pl.col(["open", "high", "low", "close", "volume"]).cast(pl.Float64))
             .sort(["order_book_id", "trading_date", "datetime"])
             .collect()
         )
@@ -145,7 +140,7 @@ def source_fingerprint(raw_dir: Path, names: Sequence[str]) -> str:
     for name in sorted(names):
         for path in dataset_files(root, name):
             st = path.stat()
-            h.update(f"{path.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}\n".encode("utf-8"))
+            h.update(f"{path.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
     return h.hexdigest()
 
 

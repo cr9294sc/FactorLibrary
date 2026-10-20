@@ -59,3 +59,111 @@
 4. **文档与注释规范**：
    - 保持代码文档与架构设计（`docs/futures_platform_plan.md`）严格同步。
    - 提交代码必须遵循上方的 Git Commit 规范。
+
+---
+
+## 代码提交前检查认证规范（Pre-Commit Verification Gates）
+
+所有智能体与开发者在完成任务、执行 `git commit` 之前，**必须**完整运行并通过以下质量认证门禁。任何一项未通过均严禁提交代码！
+
+### 一键全量认证命令
+
+```bash
+# 全量门禁校验（推荐在 git commit 前执行）
+bash scripts/verify.sh --all
+
+# 快速校验（日常开发快速反馈：格式、静态 Lint 与配置检查）
+bash scripts/verify.sh --fast
+```
+
+### 分语言与分资产认证逻辑
+
+#### 1. Rust 内核代码认证（Rust Gate）
+- **`rust-analyzer` 静态诊断与 LSP 扫描**：
+  ```bash
+  rust-analyzer diagnostics rust/factorlib_core
+  ```
+  要求：全 Crate 扫描必须 0 致命诊断错误，杜绝无效类型、未决宏或死锁隐患。
+- **编译器静态语法与类型检查**：
+  ```bash
+  cargo check --manifest-path rust/factorlib_core/Cargo.toml --all-targets
+  ```
+- **Clippy 静态分析（零警告准入）**：
+  ```bash
+  cargo clippy --manifest-path rust/factorlib_core/Cargo.toml --all-targets -- -D warnings
+  ```
+  要求：严格禁止任何 Warning 入库，保证最高级别的内存安全与最佳实践。
+- **代码排版风格规范**：
+  ```bash
+  cargo fmt --manifest-path rust/factorlib_core/Cargo.toml -- --check
+  ```
+- **单元测试与 Proptest 属性测试**：
+  ```bash
+  cargo test --manifest-path rust/factorlib_core/Cargo.toml
+  ```
+  要求：包含全部 68 算子注册测试、AST 规范化与化简测试、非法语法阻断测试，以及基于 `proptest` 的双栈 Welford 与单调队列极限性质测试全部 100% 通过。
+
+#### 2. Python 算法层代码认证（Python Gate）
+- **Ruff 静态 Lint 扫描与死代码检测**：
+  ```bash
+  ruff check python/factorlib tests/python scripts
+  ```
+  要求：无未捕获异常、未解析引用、未使用的变量或导入（自动修复可用 `ruff check --fix`）。
+- **Ruff 代码格式一致性检查**：
+  ```bash
+  ruff format --check python/factorlib tests/python scripts
+  ```
+  要求：保持 100 字符行长、双引号等统一代码排版（格式化可用 `ruff format`）。
+- **自动化单元与集成测试套件**：
+  ```bash
+  pytest tests/python
+  ```
+  要求：配置解析、ETL 构建、面板内存容器及 Rust 内核绑定的全部测试用例 100% 通过。
+
+#### 3. 配置文件验证逻辑（YAML / TOML Configs Gate）
+- **语法合规性检查**：
+  - 自动遍历 `configs/futures/*.yaml`、`pyproject.toml` 及 `rust/factorlib_core/Cargo.toml`，确保能够被标准解析器（`yaml.safe_load` 与 `tomllib.load`）正确解析，无缩进或格式畸变。
+- **业务语义与范围规则校验**：
+  ```bash
+  pytest tests/python/test_config.py
+  ```
+  - **主力规则校验**：`dominant.rule` 必须为有效枚举（`[1, 2, 3]`，默认强制采用 `rule=3` 避开交割月流动性枯竭）；
+  - **撮合安全约束**：开盘成交价窗口 `window_minutes > 0`，且 `calc_method` 严格锁定为 `vwap_close_volume`（基于收盘价与成交量加权），**严禁**使用 `turnover/volume` 规避郑商所历史成交额置零除零隐患；
+  - **费率与保证金**：基础费率非负，合约乘数大于 0。
+
+#### 4. 算子跨语言高精度对账逻辑（Operator Parity Gate）
+- **NumPy 参考实现对齐**：
+  - 任何新增或修改的计算内核算子，必须在 `python/factorlib/core/ops_ref.py` 中提供纯 Python/NumPy 高精度参考实现；
+  - 在 `tests/python/test_rust_core.py` 中注册对账测试，并在 `rust/factorlib_core/tests/proptest_ops.rs` 中提供对应性质测试。
+- **极端数值边界检验**：
+  - 必须在高密度 NaN（如 22% 缺失率）、全 NaN 序列、全常量序列、单点有效、±Inf、以及窗口大于历史长度的极端场景下，验证 Rust 内核输出与参考实现的数值差异严格满足：
+    $$\max |y_{\text{rust}} - y_{\text{ref}}| < 10^{-9}$$
+  - 算子内部严禁触发 panic、浮点异常崩溃或未定义行为。
+
+#### 5. 反未来函数与因果摄动审计（Anti-Lookahead Perturbation Gate）
+- **因果摄动回归测试**：
+  ```bash
+  pytest tests/python/test_perturbation.py
+  ```
+  - 在全历史面板中随机选取基准交易日 $T_{\text{perturb}}$，人为篡改 $T > T_{\text{perturb}}$ 的后续行情数据；
+  - 检验 $T \le T_{\text{perturb}}$ 的所有历史因子值、复权因子、截面标签与主力合约映射必须保持 **0 差值（绝对 bit 等价）**；
+- **AST 语法树防未来语法阻断**：
+  - 通过 `rust/factorlib_core/src/expr/typecheck.rs` 静态拦截任何前向未来算子（如 `shift(-k)`、前向移动均值）及未注册未知变量。
+
+#### 6. Git 暂存区与数据安全隔离红线（Data Leakage Gate）
+- **暂存区（Staging Area）自动审计**：
+  ```bash
+  git diff --cached --name-only
+  ```
+- **禁止入库清单**：
+  - 严禁将数据资产目录（`exports/`、`data/`、`runs/`）暂存；
+  - 严禁暂存数据文件：`*.parquet`、`*.sqlite`、`*.arrow`、`*.feather`、`*.h5`、`*.bin`、`*.tar`、`*.zip`；
+  - 严格限制单文件提交大小：任何单个暂存文件不得超过 **1MB**（1,048,576 字节）。
+
+#### 7. 脚本与 CLI 工具健壮性校验（CLI & Scripts Gate）
+- 针对 `scripts/` 目录中的维护与生产脚本（如 `build_panel.py`、`audit_data.py`），验证其 `--help` 命令行入口可正常解析并返回状态码 0，确保生产调用入口健康。
+
+#### 8. 文档与白皮书同步规范（Documentation Consistency Gate）
+- 任何架构升级、算子扩充或配置变更，必须同步更新技术白皮书 `docs/futures_platform_plan.md`；
+- Git Commit Message 必须严格遵循中文 Angular Commit 规范，格式为 `<type>(<scope>): <subject>`。
+

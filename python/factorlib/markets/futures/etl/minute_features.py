@@ -66,7 +66,11 @@ def aggregate_features(df: pl.DataFrame, mcfg: MinuteFeaturesConfig) -> pl.DataF
     hour = pl.col("datetime").dt.hour()
     d = df.with_columns(
         _gap=pl.col("datetime").diff().over(_KEYS),
-        _lr=pl.when(pl.col("close") > 0).then(pl.col("close").log()).otherwise(None).diff().over(_KEYS),
+        _lr=pl.when(pl.col("close") > 0)
+        .then(pl.col("close").log())
+        .otherwise(None)
+        .diff()
+        .over(_KEYS),
         _night=(hour >= mcfg.night_start_hour) | (hour < mcfg.night_end_hour),
     ).with_columns(
         _r=pl.when(pl.col("_gap") <= pl.duration(minutes=mcfg.max_gap_minutes))
@@ -91,10 +95,13 @@ def aggregate_features(df: pl.DataFrame, mcfg: MinuteFeaturesConfig) -> pl.DataF
         .alias("ret_last30"),
         (close.slice(29, 1).first() / close.first() - 1.0).alias("ret_first30"),
         (
-            close.filter(pl.col("_night")).last() / pl.col("open").filter(pl.col("_night")).first() - 1.0
+            close.filter(pl.col("_night")).last() / pl.col("open").filter(pl.col("_night")).first()
+            - 1.0
         ).alias("_ret_night"),
         (
-            close.filter(~pl.col("_night")).last() / pl.col("open").filter(~pl.col("_night")).first() - 1.0
+            close.filter(~pl.col("_night")).last()
+            / pl.col("open").filter(~pl.col("_night")).first()
+            - 1.0
         ).alias("_ret_day"),
         vol.sum().alias("_v"),
         (vol**2).sum().alias("_v2"),
@@ -127,7 +134,9 @@ def aggregate_features(df: pl.DataFrame, mcfg: MinuteFeaturesConfig) -> pl.DataF
         pl.col("_skew").fill_nan(None).alias("skew_intra"),
         pl.col("_kurt").fill_nan(None).alias("kurt_intra"),
         pl.when(has_v)
-        .then((pl.col("_close_last") - pl.col("_pv") / pl.col("_v")) / (pl.col("_pv") / pl.col("_v")))
+        .then(
+            (pl.col("_close_last") - pl.col("_pv") / pl.col("_v")) / (pl.col("_pv") / pl.col("_v"))
+        )
         .otherwise(None)
         .alias("vwap_dev"),
     )

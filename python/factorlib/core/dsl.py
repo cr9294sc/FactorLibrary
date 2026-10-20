@@ -8,8 +8,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any
 
 import factorlib_core
 
@@ -22,7 +23,7 @@ class CanonInfo:
     canon_hash: str
     hash_u64: int
     is_degenerate: bool
-    degenerate_reason: Optional[str]
+    degenerate_reason: str | None
     n_nodes: int
     depth: int
     return_type: str
@@ -50,83 +51,83 @@ class Expr:
         return f"Expr({self._expr!r})"
 
     # 算术运算符重载
-    def __neg__(self) -> "Expr":
+    def __neg__(self) -> Expr:
         return Expr(f"neg({self._expr})")
 
-    def __abs__(self) -> "Expr":
+    def __abs__(self) -> Expr:
         return Expr(f"abs({self._expr})")
 
-    def __add__(self, other: Union["Expr", float, int]) -> "Expr":
+    def __add__(self, other: Expr | float | int) -> Expr:
         if isinstance(other, (int, float)):
             return Expr(f"addc({self._expr}, {float(other)})")
         return Expr(f"add({self._expr}, {other})")
 
-    def __sub__(self, other: Union["Expr", float, int]) -> "Expr":
+    def __sub__(self, other: Expr | float | int) -> Expr:
         if isinstance(other, (int, float)):
             return Expr(f"subc({self._expr}, {float(other)})")
         return Expr(f"sub({self._expr}, {other})")
 
-    def __mul__(self, other: Union["Expr", float, int]) -> "Expr":
+    def __mul__(self, other: Expr | float | int) -> Expr:
         if isinstance(other, (int, float)):
             return Expr(f"mulc({self._expr}, {float(other)})")
         return Expr(f"mul({self._expr}, {other})")
 
-    def __truediv__(self, other: Union["Expr", float, int]) -> "Expr":
+    def __truediv__(self, other: Expr | float | int) -> Expr:
         if isinstance(other, (int, float)):
             return Expr(f"divc({self._expr}, {float(other)})")
         return Expr(f"div({self._expr}, {other})")
 
-    def __gt__(self, other: Union["Expr", float, int]) -> "Expr":
+    def __gt__(self, other: Expr | float | int) -> Expr:
         if isinstance(other, (int, float)):
             return Expr(f"gt_const({self._expr}, {float(other)})")
         return Expr(f"gt({self._expr}, {other})")
 
-    def __lt__(self, other: Union["Expr", float, int]) -> "Expr":
+    def __lt__(self, other: Expr | float | int) -> Expr:
         if isinstance(other, (int, float)):
             return Expr(f"lt_const({self._expr}, {float(other)})")
         return Expr(f"lt({self._expr}, {other})")
 
     # 常用链式算子方法
-    def delay(self, d: int) -> "Expr":
+    def delay(self, d: int) -> Expr:
         return Expr(f"delay({self._expr}, {int(d)})")
 
-    def delta(self, d: int) -> "Expr":
+    def delta(self, d: int) -> Expr:
         return Expr(f"delta({self._expr}, {int(d)})")
 
-    def pct_change(self, d: int) -> "Expr":
+    def pct_change(self, d: int) -> Expr:
         return Expr(f"pct_change({self._expr}, {int(d)})")
 
-    def ts_mean(self, d: int) -> "Expr":
+    def ts_mean(self, d: int) -> Expr:
         return Expr(f"ts_mean({self._expr}, {int(d)})")
 
-    def ts_std(self, d: int) -> "Expr":
+    def ts_std(self, d: int) -> Expr:
         return Expr(f"ts_std({self._expr}, {int(d)})")
 
-    def ts_min(self, d: int) -> "Expr":
+    def ts_min(self, d: int) -> Expr:
         return Expr(f"ts_min({self._expr}, {int(d)})")
 
-    def ts_max(self, d: int) -> "Expr":
+    def ts_max(self, d: int) -> Expr:
         return Expr(f"ts_max({self._expr}, {int(d)})")
 
-    def ts_rank(self, d: int) -> "Expr":
+    def ts_rank(self, d: int) -> Expr:
         return Expr(f"ts_rank({self._expr}, {int(d)})")
 
-    def ts_zscore(self, d: int) -> "Expr":
+    def ts_zscore(self, d: int) -> Expr:
         return Expr(f"ts_zscore({self._expr}, {int(d)})")
 
-    def cs_rank(self) -> "Expr":
+    def cs_rank(self) -> Expr:
         return Expr(f"cs_rank({self._expr})")
 
-    def cs_zscore(self) -> "Expr":
+    def cs_zscore(self) -> Expr:
         return Expr(f"cs_zscore({self._expr})")
 
-    def cs_demean(self) -> "Expr":
+    def cs_demean(self) -> Expr:
         return Expr(f"cs_demean({self._expr})")
 
-    def cs_winsorize(self) -> "Expr":
+    def cs_winsorize(self) -> Expr:
         return Expr(f"cs_winsorize({self._expr})")
 
-    def canonicalize(self, available_fields: Optional[Sequence[str]] = None) -> CanonInfo:
+    def canonicalize(self, available_fields: Sequence[str] | None = None) -> CanonInfo:
         return canonicalize_expr(self._expr, available_fields=available_fields)
 
 
@@ -136,12 +137,12 @@ def F(field_name: str) -> Expr:
 
 
 def canonicalize_expr(
-    expr: Union[str, Expr],
-    available_fields: Optional[Sequence[str]] = None,
+    expr: str | Expr,
+    available_fields: Sequence[str] | None = None,
 ) -> CanonInfo:
     """调用 Rust 内核解析并代数规范化表达式。"""
     fields_list = list(available_fields) if available_fields is not None else None
-    raw: Dict[str, Any] = factorlib_core.parse_and_canonicalize(str(expr), fields_list)
+    raw: dict[str, Any] = factorlib_core.parse_and_canonicalize(str(expr), fields_list)
     return CanonInfo(
         canon_expr=raw["canon_expr"],
         canon_hash=raw["canon_hash"],
@@ -155,15 +156,15 @@ def canonicalize_expr(
 
 
 def validate_expr(
-    expr: Union[str, Expr],
-    available_fields: Optional[Sequence[str]] = None,
+    expr: str | Expr,
+    available_fields: Sequence[str] | None = None,
     require_series_root: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """静态校验表达式语法、强类型签名及防未来函数约束。"""
     fields_list = list(available_fields) if available_fields is not None else None
     return factorlib_core.check_expr(str(expr), fields_list, require_series_root)
 
 
-def get_operator_specs() -> List[Dict[str, Any]]:
+def get_operator_specs() -> list[dict[str, Any]]:
     """获取 Rust 内核注册的全部算子规格列表。"""
     return factorlib_core.list_operators()

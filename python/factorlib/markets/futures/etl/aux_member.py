@@ -65,7 +65,9 @@ def build_member_features(
         _tot=pl.col("_long") + pl.col("_short")
     )
     base = base.with_columns(
-        mr_net_ratio=pl.when(pl.col("_tot") > 0).then((pl.col("_long") - pl.col("_short")) / pl.col("_tot")).otherwise(None),
+        mr_net_ratio=pl.when(pl.col("_tot") > 0)
+        .then((pl.col("_long") - pl.col("_short")) / pl.col("_tot"))
+        .otherwise(None),
         mr_cr20=pl.when((pl.col("_tot") > 0) & (pl.col("open_interest") > 0))
         .then(pl.col("_tot") / pl.col("open_interest"))
         .otherwise(None),

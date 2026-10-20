@@ -93,12 +93,7 @@ fn arc_matrix_to_pyarray<'py>(
     mat_arc: Arc<Array2<f64>>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let ptr: *const Array2<f64> = Arc::as_ptr(&mat_arc);
-    let container = Bound::new(
-        py,
-        PyArcMatrix {
-            inner: mat_arc,
-        },
-    )?;
+    let container = Bound::new(py, PyArcMatrix { inner: mat_arc })?;
     // SAFETY: `container` 持有 `Arc<Array2<f64>>`，且 NumPy 数组的 base 指针绑定到 `container`，
     // 在 Python GC 销毁该 NumPy 数组前，`ptr` 指向的堆内存始终有效且不可变。
     let py_arr = unsafe { PyArray2::borrow_from_array_bound(&*ptr, container.into_any()) };
@@ -140,9 +135,7 @@ impl PyEngine {
         for (k, v) in fields.iter() {
             let key: String = k.extract()?;
             let arr_ro: PyReadonlyArray2<'_, f64> = v.extract().map_err(|_| {
-                PyValueError::new_err(format!(
-                    "字段 '{key}' 必须为二维 float64 NumPy 数组"
-                ))
+                PyValueError::new_err(format!("字段 '{key}' 必须为二维 float64 NumPy 数组"))
             })?;
             let f_mat = view_to_fortran_f64(arr_ro.as_array());
             fields_map.insert(key, Arc::new(f_mat));
@@ -153,9 +146,7 @@ impl PyEngine {
             for (k, v) in lbl_dict.iter() {
                 let key: String = k.extract()?;
                 let arr_ro: PyReadonlyArray2<'_, f64> = v.extract().map_err(|_| {
-                    PyValueError::new_err(format!(
-                        "标签 '{key}' 必须为二维 float64 NumPy 数组"
-                    ))
+                    PyValueError::new_err(format!("标签 '{key}' 必须为二维 float64 NumPy 数组"))
                 })?;
                 let f_mat = view_to_fortran_f64(arr_ro.as_array());
                 labels_map.insert(key, Arc::new(f_mat));
@@ -324,11 +315,7 @@ impl PyEngine {
     }
 
     /// 对表达式执行静态类型检查与代数规范化，返回包含 `canon_expr`、`canon_hash`、`is_degenerate` 等信息的字典。
-    pub fn canonicalize<'py>(
-        &self,
-        py: Python<'py>,
-        expr: &str,
-    ) -> PyResult<Bound<'py, PyDict>> {
+    pub fn canonicalize<'py>(&self, py: Python<'py>, expr: &str) -> PyResult<Bound<'py, PyDict>> {
         let ast = parse_expr(expr).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let fields = self.panel.field_names_set();
         let labels = self.panel.label_names_set();
@@ -348,23 +335,24 @@ impl PyEngine {
         let labels = self.panel.label_names_set();
         let pool = self.pool.clone();
 
-        let results: Vec<Result<(CanonResult, &'static str), String>> = py.allow_threads(move || {
-            let work = || {
-                exprs
-                    .par_iter()
-                    .map(|e| {
-                        let ast = parse_expr(e).map_err(|err| err.to_string())?;
-                        let ty = typecheck_factor_expr(&ast, Some(&fields), Some(&labels))
-                            .map_err(|err| err.to_string())?;
-                        Ok((canonicalize(&ast), ty.as_str()))
-                    })
-                    .collect()
-            };
-            match pool {
-                Some(tp) => tp.install(work),
-                None => work(),
-            }
-        });
+        let results: Vec<Result<(CanonResult, &'static str), String>> =
+            py.allow_threads(move || {
+                let work = || {
+                    exprs
+                        .par_iter()
+                        .map(|e| {
+                            let ast = parse_expr(e).map_err(|err| err.to_string())?;
+                            let ty = typecheck_factor_expr(&ast, Some(&fields), Some(&labels))
+                                .map_err(|err| err.to_string())?;
+                            Ok((canonicalize(&ast), ty.as_str()))
+                        })
+                        .collect()
+                };
+                match pool {
+                    Some(tp) => tp.install(work),
+                    None => work(),
+                }
+            });
 
         let out = PyList::empty_bound(py);
         for item in results {
@@ -375,11 +363,7 @@ impl PyEngine {
     }
 
     /// 校验表达式语法、类型及防未来函数约束（不抛出异常，返回包含 `valid` 与 `error` 的字典）。
-    pub fn validate_expr<'py>(
-        &self,
-        py: Python<'py>,
-        expr: &str,
-    ) -> PyResult<Bound<'py, PyDict>> {
+    pub fn validate_expr<'py>(&self, py: Python<'py>, expr: &str) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new_bound(py);
         match parse_expr(expr) {
             Ok(ast) => {

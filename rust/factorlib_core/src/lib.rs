@@ -7,6 +7,8 @@
 //! - `expr`：DSL 词法/语法分析器、强类型检查、代数规范化与子表达式 LRU 缓存
 //! - `py`：PyO3 导出类 `Engine` 与工具函数
 
+#![allow(clippy::useless_conversion)]
+
 pub mod expr;
 pub mod nan;
 pub mod ops;

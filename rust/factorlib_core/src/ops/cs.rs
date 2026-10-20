@@ -324,9 +324,7 @@ pub fn op_cs_neutralize(y: &Array2<f64>, x: &Array2<f64>) -> Array2<f64> {
         if mx[row].is_finite() && my[row].is_finite() {
             let kf = cnts[row] as f64;
             let sx = 1.0_f64.max(mx[row].abs());
-            if m2_x[row].is_finite()
-                && c_xy[row].is_finite()
-                && m2_x[row] > VAR_EPS * kf * sx * sx
+            if m2_x[row].is_finite() && c_xy[row].is_finite() && m2_x[row] > VAR_EPS * kf * sx * sx
             {
                 betas[row] = c_xy[row] / m2_x[row];
             }

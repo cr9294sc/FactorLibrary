@@ -8,10 +8,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional
 
 import numpy as np
-import polars as pl
 import yaml
 
 from factorlib.core.panel import Panel
@@ -29,9 +27,9 @@ class FuturesMarketAdapter(MarketAdapter):
     ) -> None:
         self.raw_dir = Path(raw_dir)
         self.fees_config_path = Path(fees_config_path)
-        self._fees_cache: Optional[Dict] = None
+        self._fees_cache: dict | None = None
 
-    def _load_fees(self) -> Dict:
+    def _load_fees(self) -> dict:
         if self._fees_cache is None:
             if self.fees_config_path.exists():
                 with self.fees_config_path.open("r", encoding="utf-8") as fh:

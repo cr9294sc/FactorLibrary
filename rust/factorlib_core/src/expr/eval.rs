@@ -257,10 +257,7 @@ pub fn eval_expr_str(
 }
 
 /// 递归收集语法树中所有非叶子求值节点（按深度分层去重）。
-fn collect_dag_nodes_by_depth<'a>(
-    node: &'a ASTNode,
-    levels: &mut Vec<AHashMap<u64, &'a ASTNode>>,
-) {
+fn collect_dag_nodes_by_depth<'a>(node: &'a ASTNode, levels: &mut Vec<AHashMap<u64, &'a ASTNode>>) {
     match node {
         ASTNode::Field(_) | ASTNode::Constant(_) | ASTNode::Window(_) => {}
         ASTNode::UnaryCall { arg, .. } => {
@@ -333,10 +330,8 @@ pub fn eval_batch_str(
     if let Some(c) = cache {
         if exprs.len() >= 2 {
             let mut levels: Vec<AHashMap<u64, &ASTNode>> = Vec::with_capacity(16);
-            for item in &parsed_asts {
-                if let Ok(ast) = item {
-                    collect_dag_nodes_by_depth(ast, &mut levels);
-                }
+            for ast in parsed_asts.iter().flatten() {
+                collect_dag_nodes_by_depth(ast, &mut levels);
             }
             for level_map in levels.iter().skip(2) {
                 if level_map.is_empty() {

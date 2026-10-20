@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
 
@@ -30,7 +30,7 @@ def _parse_date(value: Any, name: str) -> date:
         raise ConfigError(f"{name} 不是合法的 ISO 日期: {value!r}") from exc
 
 
-def _section(raw: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _section(raw: dict[str, Any], key: str) -> dict[str, Any]:
     value = raw.get(key, {})
     if value is None:
         return {}
@@ -124,7 +124,7 @@ class DataConfig:
     features: FeaturesConfig = field(default_factory=FeaturesConfig)
     minute_features: MinuteFeaturesConfig = field(default_factory=MinuteFeaturesConfig)
     warehouse: WarehouseConfig = field(default_factory=WarehouseConfig)
-    label_horizons: Tuple[int, ...] = (1, 3, 5, 10, 20)
+    label_horizons: tuple[int, ...] = (1, 3, 5, 10, 20)
 
     def __post_init__(self) -> None:
         if self.start_date > self.end_date:
@@ -137,7 +137,7 @@ class DataConfig:
         """派生面板输出目录 ``derived_dir/panel_version``。"""
         return self.derived_dir / self.panel_version
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """可 JSON 序列化的完整配置快照 (用于元数据哈希)。"""
         out = asdict(self)
         out["raw_dir"] = str(self.raw_dir)
@@ -169,11 +169,11 @@ class UniverseConfig:
         if self.min_names_per_day < 1:
             raise ConfigError("evaluation.min_names_per_day 必须 >= 1")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def _load_yaml(path: Path) -> Dict[str, Any]:
+def _load_yaml(path: Path) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise ConfigError(f"配置文件不存在: {path}")
@@ -189,7 +189,7 @@ def _resolve(path_str: str, root: Path) -> Path:
     return p if p.is_absolute() else (root / p).resolve()
 
 
-def load_data_config(path: Path, root: Optional[Path] = None) -> DataConfig:
+def load_data_config(path: Path, root: Path | None = None) -> DataConfig:
     """加载 ``data.yaml``。相对路径以 ``root`` (默认当前工作目录) 为基准解析。"""
     root = Path(root) if root is not None else Path.cwd()
     raw = _load_yaml(path)
@@ -223,17 +223,17 @@ def load_data_config(path: Path, root: Optional[Path] = None) -> DataConfig:
         member_rank=member,
     )
 
-    kwargs: Dict[str, Any] = dict(
-        raw_dir=_resolve(raw["raw_dir"], root),
-        derived_dir=_resolve(raw["derived_dir"], root),
-        panel_version=str(raw.get("panel_version", "v1")),
-        dominant=DominantConfig(**dom),
-        adjust=AdjustConfig(**adj),
-        exec_price=ExecPriceConfig(**ex),
-        features=features,
-        minute_features=MinuteFeaturesConfig(**mf),
-        warehouse=WarehouseConfig(**wh),
-    )
+    kwargs: dict[str, Any] = {
+        "raw_dir": _resolve(raw["raw_dir"], root),
+        "derived_dir": _resolve(raw["derived_dir"], root),
+        "panel_version": str(raw.get("panel_version", "v1")),
+        "dominant": DominantConfig(**dom),
+        "adjust": AdjustConfig(**adj),
+        "exec_price": ExecPriceConfig(**ex),
+        "features": features,
+        "minute_features": MinuteFeaturesConfig(**mf),
+        "warehouse": WarehouseConfig(**wh),
+    }
     if "start_date" in tl:
         kwargs["start_date"] = _parse_date(tl["start_date"], "timeline.start_date")
     if "end_date" in tl:

@@ -28,7 +28,7 @@ h 期标签:
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import polars as pl
 
@@ -45,11 +45,15 @@ def build_labels(
     ``panel`` 需含 ``symbol, trading_date, date_idx, exec_vwap, exec_vwap_old``。
     在品种稠密交易日网格上计算, 使得 T+k 严格对应第 k 个交易日而非第 k 行。
     """
-    grid = dense_grid(panel.select(["symbol", "date_idx"]), cal).join(
-        panel.select(["symbol", "date_idx", "exec_vwap", "exec_vwap_old"]),
-        on=["symbol", "date_idx"],
-        how="left",
-    ).sort(["symbol", "date_idx"])
+    grid = (
+        dense_grid(panel.select(["symbol", "date_idx"]), cal)
+        .join(
+            panel.select(["symbol", "date_idx", "exec_vwap", "exec_vwap_old"]),
+            on=["symbol", "date_idx"],
+            how="left",
+        )
+        .sort(["symbol", "date_idx"])
+    )
 
     # r_{d->d+1}: 分子取下一交易日行的 exec_vwap_old (即 c_d 在 d+1 日的价格)
     grid = grid.with_columns(

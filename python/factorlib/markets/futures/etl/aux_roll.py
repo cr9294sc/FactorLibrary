@@ -24,7 +24,9 @@ from factorlib.core.config import DataConfig
 from .io import scan_dataset
 
 
-def build_roll_yield(raw_dir: Path, cfg: DataConfig, daily: pl.DataFrame, end_date: date) -> pl.DataFrame:
+def build_roll_yield(
+    raw_dir: Path, cfg: DataConfig, daily: pl.DataFrame, end_date: date
+) -> pl.DataFrame:
     """返回 ``symbol, trading_date, ry_main_sub, ry_ann, ry_near_main``。"""
     ry = (
         scan_dataset(
@@ -69,6 +71,8 @@ def build_roll_yield(raw_dir: Path, cfg: DataConfig, daily: pl.DataFrame, end_da
         .filter(pl.col("to_contract") == pl.col("contract"))
         .select("symbol", "trading_date", pl.col("roll_yield").alias("ry_near_main"))
     )
-    return keys.select(["symbol", "trading_date"]).join(
-        main_sub, on=["symbol", "trading_date"], how="left"
-    ).join(near_main, on=["symbol", "trading_date"], how="left")
+    return (
+        keys.select(["symbol", "trading_date"])
+        .join(main_sub, on=["symbol", "trading_date"], how="left")
+        .join(near_main, on=["symbol", "trading_date"], how="left")
+    )

@@ -47,7 +47,9 @@ class AdjustVerification:
     n_compared: int
     max_rel_err: float
     failures: pl.DataFrame  # 列: symbol, max_rel_err, first_bad_date
-    fallback_rolls: pl.DataFrame  # 因缺少前收盘价而回退 k=1 的换月, 列: symbol, trading_date, contract, prev_contract
+    fallback_rolls: (
+        pl.DataFrame
+    )  # 因缺少前收盘价而回退 k=1 的换月, 列: symbol, trading_date, contract, prev_contract
 
     @property
     def ok(self) -> bool:
@@ -61,7 +63,9 @@ def compute_roll_ratios(daily: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame
     若新旧合约任一在 s 日之前无有效收盘价 (如死品种的新合约首日), ``k`` 回退为 1.0 并标记
     ``k_fallback=True`` (这类品种成交量为 0, 不会进入品种池)。
     """
-    rolls = daily.filter(pl.col("is_roll")).select(["symbol", "trading_date", "contract", "prev_contract"])
+    rolls = daily.filter(pl.col("is_roll")).select(
+        ["symbol", "trading_date", "contract", "prev_contract"]
+    )
     closes = (
         bars.select(["contract", "trading_date", "close"])
         .filter(pl.col("close") > 0)
@@ -71,10 +75,22 @@ def compute_roll_ratios(daily: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame
     new = closes.rename({"close": "close_new"})
     out = (
         rolls.sort("trading_date")
-        .join_asof(old, on="trading_date", by="prev_contract", strategy="backward",
-                   allow_exact_matches=False, check_sortedness=False)
-        .join_asof(new, on="trading_date", by="contract", strategy="backward",
-                   allow_exact_matches=False, check_sortedness=False)
+        .join_asof(
+            old,
+            on="trading_date",
+            by="prev_contract",
+            strategy="backward",
+            allow_exact_matches=False,
+            check_sortedness=False,
+        )
+        .join_asof(
+            new,
+            on="trading_date",
+            by="contract",
+            strategy="backward",
+            allow_exact_matches=False,
+            check_sortedness=False,
+        )
     )
     out = out.with_columns(
         k_raw=pl.col("close_old") / pl.col("close_new"),
@@ -82,9 +98,9 @@ def compute_roll_ratios(daily: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame
         k_fallback=pl.col("k_raw").is_null(),
         k=pl.col("k_raw").fill_null(1.0),
     )
-    return out.select(["symbol", "trading_date", "contract", "prev_contract", "k", "k_fallback"]).sort(
-        ["symbol", "trading_date"]
-    )
+    return out.select(
+        ["symbol", "trading_date", "contract", "prev_contract", "k", "k_fallback"]
+    ).sort(["symbol", "trading_date"])
 
 
 def apply_adjustment(daily: pl.DataFrame, bars: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -92,12 +108,16 @@ def apply_adjustment(daily: pl.DataFrame, bars: pl.DataFrame) -> tuple[pl.DataFr
     rolls = compute_roll_ratios(daily, bars)
     df = (
         daily.sort(["symbol", "trading_date"])
-        .join(rolls.select(["symbol", "trading_date", "k"]), on=["symbol", "trading_date"], how="left")
+        .join(
+            rolls.select(["symbol", "trading_date", "k"]), on=["symbol", "trading_date"], how="left"
+        )
         .with_columns(pl.col("k").fill_null(1.0))
         .with_columns(adj_factor=pl.col("k").cum_prod().over("symbol"))
         .drop("k")
     )
-    df = df.with_columns([(pl.col(raw) * pl.col("adj_factor")).alias(adj) for raw, adj in PRICE_PAIRS])
+    df = df.with_columns(
+        [(pl.col(raw) * pl.col("adj_factor")).alias(adj) for raw, adj in PRICE_PAIRS]
+    )
     return df.sort(["trading_date", "symbol"]), rolls
 
 
@@ -154,7 +174,9 @@ def verify_against_official(
         )
         .sort("max_rel_err", descending=True)
     )
-    fallback = rolls.filter(pl.col("k_fallback")).select(["symbol", "trading_date", "contract", "prev_contract"])
+    fallback = rolls.filter(pl.col("k_fallback")).select(
+        ["symbol", "trading_date", "contract", "prev_contract"]
+    )
     max_err = float(joined["rel_err"].max()) if joined.height else 0.0
     return AdjustVerification(
         tolerance=tol,

@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import polars as pl
 
@@ -46,7 +46,16 @@ def load_bars_1d(raw_dir: Path, contracts: Sequence[str]) -> pl.DataFrame:
         bars.rename({"order_book_id": "contract"})
         .with_columns(
             pl.col(
-                ["open", "high", "low", "close", "settlement", "prev_settlement", "limit_up", "limit_down"]
+                [
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "settlement",
+                    "prev_settlement",
+                    "limit_up",
+                    "limit_down",
+                ]
             ).cast(pl.Float64),
         )
         .sort(["contract", "trading_date"])

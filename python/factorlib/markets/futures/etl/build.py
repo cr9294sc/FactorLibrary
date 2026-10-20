@@ -19,10 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import polars as pl
 
@@ -48,11 +47,11 @@ logger = logging.getLogger(__name__)
 
 def build_panel(
     cfg: DataConfig,
-    ucfg: Optional[UniverseConfig] = None,
-    universe_path: Optional[Path] = None,
+    ucfg: UniverseConfig | None = None,
+    universe_path: Path | None = None,
     verify_adjust: bool = True,
     show_progress: bool = True,
-) -> Tuple[pl.DataFrame, pl.DataFrame, Dict[str, Any]]:
+) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, Any]]:
     """构建期货标准研究面板并持久化。
 
     Parameters
@@ -128,7 +127,7 @@ def build_panel(
     # 4. 比例复权与官方因子对账
     _step("执行因果比例复权...")
     daily, rolls = apply_adjustment(daily, bars)
-    adjust_report: Dict[str, Any] = {}
+    adjust_report: dict[str, Any] = {}
     if verify_adjust and cfg.adjust.verify_with_ex_factor:
         _step("与米筐官方 ex_cum_factor 对账...")
         verif = verify_against_official(daily, rolls, cfg.raw_dir, cfg)
@@ -148,7 +147,11 @@ def build_panel(
                 verif.tolerance,
             )
         else:
-            logger.info("累计复权因子对账通过! 最大相对误差: %.4e (阈值: %.4e)", verif.max_rel_err, verif.tolerance)
+            logger.info(
+                "累计复权因子对账通过! 最大相对误差: %.4e (阈值: %.4e)",
+                verif.max_rel_err,
+                verif.tolerance,
+            )
 
     # 5. 分钟线流式处理 (执行价 + 微观结构特征)
     _step("按月流式处理分钟线 (开盘 30m VWAP + 微观结构特征)...")
@@ -287,7 +290,10 @@ def build_panel(
         "source_fingerprint": source_fp,
         "panel_sha256": file_sha256(panel_path),
         "labels_sha256": file_sha256(labels_path),
-        "date_range": [str(panel_daily["trading_date"].min()), str(panel_daily["trading_date"].max())],
+        "date_range": [
+            str(panel_daily["trading_date"].min()),
+            str(panel_daily["trading_date"].max()),
+        ],
         "total_trading_days": panel_daily["trading_date"].n_unique(),
         "total_symbols": panel_daily["symbol"].n_unique(),
         "total_records": len(panel_daily),
@@ -300,7 +306,12 @@ def build_panel(
         json.dump(meta_doc, fh, indent=2, ensure_ascii=False)
 
     logger.info("=== 期货标准研究面板构建圆满完成! 耗时: %.2fs ===", total_time)
-    logger.info("面板数据路径: %s (%d 行, %d 品种)", panel_path, len(panel_daily), panel_daily["symbol"].n_unique())
+    logger.info(
+        "面板数据路径: %s (%d 行, %d 品种)",
+        panel_path,
+        len(panel_daily),
+        panel_daily["symbol"].n_unique(),
+    )
     logger.info("多期标签路径: %s", labels_path)
     logger.info("字段规格文件: %s", fields_path)
 

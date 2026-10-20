@@ -33,7 +33,11 @@ def load_dominant(
     """
     end = min(cfg.end_date, end_date) if end_date is not None else cfg.end_date
     dm = (
-        scan_dataset(raw_dir, "dominant_mapping", ["date", "underlying_symbol", "rule", "rank", "order_book_id"])
+        scan_dataset(
+            raw_dir,
+            "dominant_mapping",
+            ["date", "underlying_symbol", "rule", "rank", "order_book_id"],
+        )
         .filter((pl.col("rule") == cfg.dominant.rule) & (pl.col("rank") == cfg.dominant.rank))
         .filter(pl.col("date").is_between(cfg.start_date, end))
         .select(

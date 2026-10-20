@@ -90,10 +90,7 @@ fn order_nodes(a: ASTNode, b: ASTNode) -> (ASTNode, ASTNode) {
     }
 }
 
-fn canonicalize_rec(
-    node: &ASTNode,
-    compress_outer_rank: bool,
-) -> (ASTNode, Option<String>) {
+fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Option<String>) {
     match node {
         ASTNode::Field(_) | ASTNode::Constant(_) | ASTNode::Window(_) => (node.clone(), None),
 
@@ -112,15 +109,33 @@ fn canonicalize_rec(
             // 规则 2 & 3：一元幂等性与单调性化简
             match (op, &c_arg) {
                 // neg(neg(x)) => x
-                (UnaryOp::Neg, ASTNode::UnaryCall { op: UnaryOp::Neg, arg: inner }) => {
+                (
+                    UnaryOp::Neg,
+                    ASTNode::UnaryCall {
+                        op: UnaryOp::Neg,
+                        arg: inner,
+                    },
+                ) => {
                     return (*inner.clone(), None);
                 }
                 // inv(inv(x)) => x
-                (UnaryOp::Inv, ASTNode::UnaryCall { op: UnaryOp::Inv, arg: inner }) => {
+                (
+                    UnaryOp::Inv,
+                    ASTNode::UnaryCall {
+                        op: UnaryOp::Inv,
+                        arg: inner,
+                    },
+                ) => {
                     return (*inner.clone(), None);
                 }
                 // not_cond(not_cond(x)) => x
-                (UnaryOp::NotCond, ASTNode::UnaryCall { op: UnaryOp::NotCond, arg: inner }) => {
+                (
+                    UnaryOp::NotCond,
+                    ASTNode::UnaryCall {
+                        op: UnaryOp::NotCond,
+                        arg: inner,
+                    },
+                ) => {
                     return (*inner.clone(), None);
                 }
                 // abs(abs(x)) => abs(x), abs(neg(x)) => abs(x)
@@ -172,7 +187,13 @@ fn canonicalize_rec(
                     );
                 }
                 // relu(relu(x)) => relu(x)
-                (UnaryOp::Relu, ASTNode::UnaryCall { op: UnaryOp::Relu, arg: inner }) => {
+                (
+                    UnaryOp::Relu,
+                    ASTNode::UnaryCall {
+                        op: UnaryOp::Relu,
+                        arg: inner,
+                    },
+                ) => {
                     return (
                         ASTNode::UnaryCall {
                             op: UnaryOp::Relu,
@@ -182,7 +203,13 @@ fn canonicalize_rec(
                     );
                 }
                 // cs_demean(cs_demean(x)) => cs_demean(x)
-                (UnaryOp::CsDemean, ASTNode::UnaryCall { op: UnaryOp::CsDemean, arg: inner }) => {
+                (
+                    UnaryOp::CsDemean,
+                    ASTNode::UnaryCall {
+                        op: UnaryOp::CsDemean,
+                        arg: inner,
+                    },
+                ) => {
                     return (
                         ASTNode::UnaryCall {
                             op: UnaryOp::CsDemean,
@@ -208,7 +235,13 @@ fn canonicalize_rec(
                     );
                 }
                 // cs_scale(cs_scale(x)) => cs_scale(x)
-                (UnaryOp::CsScale, ASTNode::UnaryCall { op: UnaryOp::CsScale, arg: inner }) => {
+                (
+                    UnaryOp::CsScale,
+                    ASTNode::UnaryCall {
+                        op: UnaryOp::CsScale,
+                        arg: inner,
+                    },
+                ) => {
                     return (
                         ASTNode::UnaryCall {
                             op: UnaryOp::CsScale,
@@ -218,12 +251,17 @@ fn canonicalize_rec(
                     );
                 }
                 // cs_rank(cs_rank(x)) => cs_rank(x) 及内部保序严格单调变换压缩
-                (UnaryOp::CsRank, ASTNode::UnaryCall { op: inner_op, arg: inner })
-                    if *inner_op == UnaryOp::CsRank
-                        || *inner_op == UnaryOp::CsDemean
-                        || *inner_op == UnaryOp::CsZscore
-                        || *inner_op == UnaryOp::CsScale
-                        || inner_op.is_strictly_increasing() =>
+                (
+                    UnaryOp::CsRank,
+                    ASTNode::UnaryCall {
+                        op: inner_op,
+                        arg: inner,
+                    },
+                ) if *inner_op == UnaryOp::CsRank
+                    || *inner_op == UnaryOp::CsDemean
+                    || *inner_op == UnaryOp::CsZscore
+                    || *inner_op == UnaryOp::CsScale
+                    || inner_op.is_strictly_increasing() =>
                 {
                     return (
                         ASTNode::UnaryCall {
@@ -322,8 +360,8 @@ fn canonicalize_rec(
             }
 
             // 规则 3：退化结构阻断
-            let same_operands =
-                c_lhs.canon_hash() == c_rhs.canon_hash() && c_lhs.to_canon_string() == c_rhs.to_canon_string();
+            let same_operands = c_lhs.canon_hash() == c_rhs.canon_hash()
+                && c_lhs.to_canon_string() == c_rhs.to_canon_string();
 
             if same_operands {
                 match op {
@@ -438,11 +476,9 @@ fn canonicalize_rec(
                     }
                 }
                 // mulc(x, 0.0) / spow(x, 0.0) / clip(x, 0.0) => 退化常数
-                (
-                    BinaryOp::Mulc | BinaryOp::Spow | BinaryOp::Clip,
-                    _,
-                    ASTNode::Constant(c),
-                ) if c.abs() < EPS => {
+                (BinaryOp::Mulc | BinaryOp::Spow | BinaryOp::Clip, _, ASTNode::Constant(c))
+                    if c.abs() < EPS =>
+                {
                     let op_name = op.name();
                     return (
                         ASTNode::BinaryCall {
@@ -454,11 +490,9 @@ fn canonicalize_rec(
                     );
                 }
                 // mulc(x, 1.0) / divc(x, 1.0) / spow(x, 1.0) => x
-                (
-                    BinaryOp::Mulc | BinaryOp::Divc | BinaryOp::Spow,
-                    _,
-                    ASTNode::Constant(c),
-                ) if (*c - 1.0).abs() < EPS => {
+                (BinaryOp::Mulc | BinaryOp::Divc | BinaryOp::Spow, _, ASTNode::Constant(c))
+                    if (*c - 1.0).abs() < EPS =>
+                {
                     return (c_lhs, None);
                 }
                 // mulc(x, -1.0) / divc(x, -1.0) => neg(x)

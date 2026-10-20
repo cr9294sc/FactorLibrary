@@ -14,20 +14,24 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Tuple
 
 import numpy as np
 import polars as pl
 import pytest
-
-from factorlib.core.config import DataConfig, DominantConfig, UniverseConfig, load_data_config, load_universe_config
+from factorlib.core.config import (
+    DataConfig,
+    DominantConfig,
+    UniverseConfig,
+    load_data_config,
+    load_universe_config,
+)
 from factorlib.core.panel import Panel
 from factorlib.markets.futures.etl.build import build_panel
 
 
 def _generate_synthetic_raw(
     raw_dir: Path,
-    dates: List[date],
+    dates: list[date],
     perturb_from: date | None = None,
 ) -> None:
     """生成包含主力合约换月、日线量价、分钟高频、期限结构、仓单与会员龙虎榜的自包含微型原始数据集。
@@ -42,36 +46,42 @@ def _generate_synthetic_raw(
     cal.write_parquet(raw_dir / "calendar" / "calendar.parquet")
 
     # 2. instruments_info (RB 涉及 RB2405 与 RB2410 两个合约; CU 为单合约 CU2405)
-    inst = pl.DataFrame({
-        "order_book_id": ["RB2405", "RB2410", "CU2405"],
-        "underlying_symbol": ["RB", "RB", "CU"],
-        "exchange": ["SHFE", "SHFE", "SHFE"],
-        "contract_multiplier": [10.0, 10.0, 5.0],
-        "margin_rate": [0.1, 0.1, 0.1],
-        "listed_date": ["2023-01-01", "2023-06-01", "2023-01-01"],
-        "maturity_date": ["2024-05-15", "2024-10-15", "2024-05-15"],
-    })
+    inst = pl.DataFrame(
+        {
+            "order_book_id": ["RB2405", "RB2410", "CU2405"],
+            "underlying_symbol": ["RB", "RB", "CU"],
+            "exchange": ["SHFE", "SHFE", "SHFE"],
+            "contract_multiplier": [10.0, 10.0, 5.0],
+            "margin_rate": [0.1, 0.1, 0.1],
+            "listed_date": ["2023-01-01", "2023-06-01", "2023-01-01"],
+            "maturity_date": ["2024-05-15", "2024-10-15", "2024-05-15"],
+        }
+    )
     (raw_dir / "instruments_info").mkdir(parents=True, exist_ok=True)
     inst.write_parquet(raw_dir / "instruments_info" / "instruments_info.parquet")
 
     # 3. industry_mapping
-    ind = pl.DataFrame({
-        "underlying_symbol": ["RB", "CU"],
-        "level1_industry": ["Black", "Nonferrous"],
-    })
+    ind = pl.DataFrame(
+        {
+            "underlying_symbol": ["RB", "CU"],
+            "level1_industry": ["Black", "Nonferrous"],
+        }
+    )
     (raw_dir / "industry_mapping").mkdir(parents=True, exist_ok=True)
     ind.write_parquet(raw_dir / "industry_mapping" / "industry_mapping.parquet")
 
     # 4. dominant_mapping (RB 在 dates[5] 换月由 RB2405 切换为 RB2410)
     rb_contracts = ["RB2405"] * 5 + ["RB2410"] * 5
     cu_contracts = ["CU2405"] * 10
-    dm = pl.DataFrame({
-        "date": dates + dates,
-        "underlying_symbol": ["RB"] * 10 + ["CU"] * 10,
-        "order_book_id": rb_contracts + cu_contracts,
-        "rule": [3] * 20,
-        "rank": [1] * 20,
-    })
+    dm = pl.DataFrame(
+        {
+            "date": dates + dates,
+            "underlying_symbol": ["RB"] * 10 + ["CU"] * 10,
+            "order_book_id": rb_contracts + cu_contracts,
+            "rule": [3] * 20,
+            "rank": [1] * 20,
+        }
+    )
     (raw_dir / "dominant_mapping").mkdir(parents=True, exist_ok=True)
     dm.write_parquet(raw_dir / "dominant_mapping" / "dominant_mapping.parquet")
 
@@ -85,62 +95,68 @@ def _generate_synthetic_raw(
 
         # CU2405
         cu_close = (68200.0 + (d.day - 1) * 20.0) * price_scale + price_offset
-        rows_1d.append({
-            "order_book_id": "CU2405",
-            "trading_date": d,
-            "open": cu_close - 50.0,
-            "high": cu_close + 100.0,
-            "low": cu_close - 100.0,
-            "close": cu_close,
-            "settlement": cu_close,
-            "volume": 50000.0 * vol_scale,
-            "total_turnover": 1.7e9 * vol_scale,
-            "open_interest": 100000.0,
-            "prev_settlement": cu_close - 20.0,
-            "limit_up": cu_close * 1.08,
-            "limit_down": cu_close * 0.92,
-            "is_unilateral": 0,
-        })
+        rows_1d.append(
+            {
+                "order_book_id": "CU2405",
+                "trading_date": d,
+                "open": cu_close - 50.0,
+                "high": cu_close + 100.0,
+                "low": cu_close - 100.0,
+                "close": cu_close,
+                "settlement": cu_close,
+                "volume": 50000.0 * vol_scale,
+                "total_turnover": 1.7e9 * vol_scale,
+                "open_interest": 100000.0,
+                "prev_settlement": cu_close - 20.0,
+                "limit_up": cu_close * 1.08,
+                "limit_down": cu_close * 0.92,
+                "is_unilateral": 0,
+            }
+        )
 
         # RB2405 (前 6 天交易, 并在 dates[5] 换月日与 RB2410 重叠交易)
         if d <= dates[5]:
             rb5_close = (3820.0 + (d.day - 1) * 10.0) * price_scale + price_offset
-            rows_1d.append({
-                "order_book_id": "RB2405",
-                "trading_date": d,
-                "open": rb5_close - 10.0,
-                "high": rb5_close + 20.0,
-                "low": rb5_close - 20.0,
-                "close": rb5_close,
-                "settlement": rb5_close,
-                "volume": 200000.0 * vol_scale,
-                "total_turnover": 7.6e9 * vol_scale,
-                "open_interest": 500000.0,
-                "prev_settlement": rb5_close - 10.0,
-                "limit_up": rb5_close * 1.08,
-                "limit_down": rb5_close * 0.92,
-                "is_unilateral": 0,
-            })
+            rows_1d.append(
+                {
+                    "order_book_id": "RB2405",
+                    "trading_date": d,
+                    "open": rb5_close - 10.0,
+                    "high": rb5_close + 20.0,
+                    "low": rb5_close - 20.0,
+                    "close": rb5_close,
+                    "settlement": rb5_close,
+                    "volume": 200000.0 * vol_scale,
+                    "total_turnover": 7.6e9 * vol_scale,
+                    "open_interest": 500000.0,
+                    "prev_settlement": rb5_close - 10.0,
+                    "limit_up": rb5_close * 1.08,
+                    "limit_down": rb5_close * 0.92,
+                    "is_unilateral": 0,
+                }
+            )
 
         # RB2410 (从 dates[4] 之前就上市交易, 在 dates[5] 成为主力)
         if d >= dates[4]:
             rb10_close = (3720.0 + (d.day - 1) * 10.0) * price_scale + price_offset
-            rows_1d.append({
-                "order_book_id": "RB2410",
-                "trading_date": d,
-                "open": rb10_close - 10.0,
-                "high": rb10_close + 20.0,
-                "low": rb10_close - 20.0,
-                "close": rb10_close,
-                "settlement": rb10_close,
-                "volume": 150000.0 * vol_scale,
-                "total_turnover": 5.5e9 * vol_scale,
-                "open_interest": 400000.0,
-                "prev_settlement": rb10_close - 10.0,
-                "limit_up": rb10_close * 1.08,
-                "limit_down": rb10_close * 0.92,
-                "is_unilateral": 0,
-            })
+            rows_1d.append(
+                {
+                    "order_book_id": "RB2410",
+                    "trading_date": d,
+                    "open": rb10_close - 10.0,
+                    "high": rb10_close + 20.0,
+                    "low": rb10_close - 20.0,
+                    "close": rb10_close,
+                    "settlement": rb10_close,
+                    "volume": 150000.0 * vol_scale,
+                    "total_turnover": 5.5e9 * vol_scale,
+                    "open_interest": 400000.0,
+                    "prev_settlement": rb10_close - 10.0,
+                    "limit_up": rb10_close * 1.08,
+                    "limit_down": rb10_close * 0.92,
+                    "is_unilateral": 0,
+                }
+            )
 
     b1d = pl.DataFrame(rows_1d)
     (raw_dir / "bar_1d" / "full").mkdir(parents=True, exist_ok=True)
@@ -152,26 +168,30 @@ def _generate_synthetic_raw(
         d = r["trading_date"]
         dt0 = datetime(d.year, d.month, d.day, 9, 1)
         dt1 = datetime(d.year, d.month, d.day, 9, 2)
-        rows_1m.append({
-            "order_book_id": r["order_book_id"],
-            "trading_date": d,
-            "datetime": dt0,
-            "open": r["open"],
-            "high": r["high"],
-            "low": r["low"],
-            "close": r["close"],
-            "volume": 500.0,
-        })
-        rows_1m.append({
-            "order_book_id": r["order_book_id"],
-            "trading_date": d,
-            "datetime": dt1,
-            "open": r["open"],
-            "high": r["high"],
-            "low": r["low"],
-            "close": r["close"],
-            "volume": 500.0,
-        })
+        rows_1m.append(
+            {
+                "order_book_id": r["order_book_id"],
+                "trading_date": d,
+                "datetime": dt0,
+                "open": r["open"],
+                "high": r["high"],
+                "low": r["low"],
+                "close": r["close"],
+                "volume": 500.0,
+            }
+        )
+        rows_1m.append(
+            {
+                "order_book_id": r["order_book_id"],
+                "trading_date": d,
+                "datetime": dt1,
+                "open": r["open"],
+                "high": r["high"],
+                "low": r["low"],
+                "close": r["close"],
+                "volume": 500.0,
+            }
+        )
     b1m = pl.DataFrame(rows_1m)
     (raw_dir / "bar_1m" / "full").mkdir(parents=True, exist_ok=True)
     b1m.write_parquet(raw_dir / "bar_1m" / "full" / "bar_1m_2024_01.parquet")
@@ -181,26 +201,30 @@ def _generate_synthetic_raw(
     for d in dates:
         is_pert = (perturb_from is not None) and (d > perturb_from)
         scale = 2.5 if is_pert else 1.0
-        ry_rows.append({
-            "trading_date": d,
-            "underlying_symbol": "RB",
-            "roll_type": "main_sub",
-            "rule": 3,
-            "from_contract": "RB2405" if d < dates[5] else "RB2410",
-            "to_contract": "RB2410" if d < dates[5] else "RB2501",
-            "roll_yield": 0.02 * scale,
-            "annualized_yield_trading": 0.08 * scale,
-        })
-        ry_rows.append({
-            "trading_date": d,
-            "underlying_symbol": "RB",
-            "roll_type": "near_main",
-            "rule": 3,
-            "from_contract": "RB2403",
-            "to_contract": "RB2405" if d < dates[5] else "RB2410",
-            "roll_yield": 0.01 * scale,
-            "annualized_yield_trading": 0.04 * scale,
-        })
+        ry_rows.append(
+            {
+                "trading_date": d,
+                "underlying_symbol": "RB",
+                "roll_type": "main_sub",
+                "rule": 3,
+                "from_contract": "RB2405" if d < dates[5] else "RB2410",
+                "to_contract": "RB2410" if d < dates[5] else "RB2501",
+                "roll_yield": 0.02 * scale,
+                "annualized_yield_trading": 0.08 * scale,
+            }
+        )
+        ry_rows.append(
+            {
+                "trading_date": d,
+                "underlying_symbol": "RB",
+                "roll_type": "near_main",
+                "rule": 3,
+                "from_contract": "RB2403",
+                "to_contract": "RB2405" if d < dates[5] else "RB2410",
+                "roll_yield": 0.01 * scale,
+                "annualized_yield_trading": 0.04 * scale,
+            }
+        )
     ry = pl.DataFrame(ry_rows)
     (raw_dir / "roll_yield" / "full").mkdir(parents=True, exist_ok=True)
     ry.write_parquet(raw_dir / "roll_yield" / "full" / "roll_yield_2024_01.parquet")
@@ -210,8 +234,12 @@ def _generate_synthetic_raw(
     for d in dates:
         is_pert = (perturb_from is not None) and (d > perturb_from)
         offset = 50000.0 if is_pert else 0.0
-        wh_rows.append({"trading_date": d, "underlying_symbol": "RB", "on_warrant": 12000.0 + offset})
-        wh_rows.append({"trading_date": d, "underlying_symbol": "CU", "on_warrant": 5000.0 + offset})
+        wh_rows.append(
+            {"trading_date": d, "underlying_symbol": "RB", "on_warrant": 12000.0 + offset}
+        )
+        wh_rows.append(
+            {"trading_date": d, "underlying_symbol": "CU", "on_warrant": 5000.0 + offset}
+        )
     wh = pl.DataFrame(wh_rows)
     (raw_dir / "warehouse_stocks" / "full").mkdir(parents=True, exist_ok=True)
     wh.write_parquet(raw_dir / "warehouse_stocks" / "full" / "warehouse_stocks_2024_01.parquet")
@@ -222,31 +250,37 @@ def _generate_synthetic_raw(
         is_pert = (perturb_from is not None) and (d > perturb_from)
         scale = 3.0 if is_pert else 1.0
         for rk in range(1, 6):
-            mr_rows.append({
-                "trading_date": d,
-                "order_book_id": "RB2405" if d < dates[5] else "RB2410",
-                "rank_by": "long",
-                "member_rank": rk,
-                "volume": 1000.0 * scale,
-            })
-            mr_rows.append({
-                "trading_date": d,
-                "order_book_id": "RB2405" if d < dates[5] else "RB2410",
-                "rank_by": "short",
-                "member_rank": rk,
-                "volume": 800.0 * scale,
-            })
+            mr_rows.append(
+                {
+                    "trading_date": d,
+                    "order_book_id": "RB2405" if d < dates[5] else "RB2410",
+                    "rank_by": "long",
+                    "member_rank": rk,
+                    "volume": 1000.0 * scale,
+                }
+            )
+            mr_rows.append(
+                {
+                    "trading_date": d,
+                    "order_book_id": "RB2405" if d < dates[5] else "RB2410",
+                    "rank_by": "short",
+                    "member_rank": rk,
+                    "volume": 800.0 * scale,
+                }
+            )
     mr = pl.DataFrame(mr_rows)
     (raw_dir / "member_rank" / "full").mkdir(parents=True, exist_ok=True)
     mr.write_parquet(raw_dir / "member_rank" / "full" / "member_rank_2024_01.parquet")
 
     # 10. dominant_ex_factor 占位
     (raw_dir / "dominant_ex_factor" / "full").mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
-        "underlying_symbol": ["RB"],
-        "trading_date": [dates[0]],
-        "ex_cum_factor": [1.0],
-    }).write_parquet(raw_dir / "dominant_ex_factor" / "full" / "dummy.parquet")
+    pl.DataFrame(
+        {
+            "underlying_symbol": ["RB"],
+            "trading_date": [dates[0]],
+            "ex_cum_factor": [1.0],
+        }
+    ).write_parquet(raw_dir / "dominant_ex_factor" / "full" / "dummy.parquet")
 
 
 def test_perturbation_synthetic(tmp_path: Path):
@@ -301,7 +335,9 @@ def test_perturbation_synthetic(tmp_path: Path):
     np.testing.assert_array_equal(p_base.mask[:cutoff_idx, :], p_pert.mask[:cutoff_idx, :])
 
     # 3. T > T0 确实发生变化
-    close_diff = np.nanmax(np.abs(p_base.fields["close"][cutoff_idx:, :] - p_pert.fields["close"][cutoff_idx:, :]))
+    close_diff = np.nanmax(
+        np.abs(p_base.fields["close"][cutoff_idx:, :] - p_pert.fields["close"][cutoff_idx:, :])
+    )
     assert close_diff > 100.0, "T > T0 预期发生显著变化"
 
     # 4. 因果边界验证: T0 处的 y_1 预测标签因未来行情扰动而改变
@@ -414,8 +450,12 @@ def test_perturbation_real_data(tmp_path: Path):
     )
 
     # 断言 3: T > T_0 发生变化
-    close_diff = np.nanmax(np.abs(p_base.fields["close"][cutoff_idx:, :] - p_pert.fields["close"][cutoff_idx:, :]))
-    assert close_diff > 100.0, f"预期 T > T_0 的 close 字段发生明显变化，实际最大差异仅 {close_diff}"
+    close_diff = np.nanmax(
+        np.abs(p_base.fields["close"][cutoff_idx:, :] - p_pert.fields["close"][cutoff_idx:, :])
+    )
+    assert close_diff > 100.0, (
+        f"预期 T > T_0 的 close 字段发生明显变化，实际最大差异仅 {close_diff}"
+    )
 
     # 断言 4: T0 处未来标签因跨入扰动期而改变
     y1_t0_base = p_base.labels["y_1"][cutoff_idx - 1, :]

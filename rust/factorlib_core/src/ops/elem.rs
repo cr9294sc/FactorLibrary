@@ -21,14 +21,22 @@ where
             let mut out = unsafe { Array2::<f64>::uninit((t, n).f()).assume_init() };
             let os = out.as_slice_memory_order_mut().unwrap();
             for (o, &v) in os.iter_mut().zip(xs.iter()) {
-                *o = if v.is_finite() { clean_f64(f(v)) } else { f64::NAN };
+                *o = if v.is_finite() {
+                    clean_f64(f(v))
+                } else {
+                    f64::NAN
+                };
             }
             return out;
         }
     }
     let mut out = alloc_nan_matrix(t, n);
     for ((r, c), &v) in x.indexed_iter() {
-        out[[r, c]] = if v.is_finite() { clean_f64(f(v)) } else { f64::NAN };
+        out[[r, c]] = if v.is_finite() {
+            clean_f64(f(v))
+        } else {
+            f64::NAN
+        };
     }
     out
 }

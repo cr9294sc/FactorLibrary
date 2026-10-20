@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import pytest
-
 from factorlib.core.panel import Panel
 
 
@@ -83,24 +82,27 @@ def test_panel_dimension_mismatch():
 def test_panel_load_from_parquet(tmp_path: Path):
     # 模拟生成 panel_daily.parquet 与 labels.parquet
     dates = [date(2024, 1, 1), date(2024, 1, 2)]
-    symbols = ["AG", "CU"]
 
     # 构造长表，故意让 (date=2024-01-02, symbol=AG) 缺失，测试 NaN 填充
-    panel_df = pl.DataFrame({
-        "trading_date": [dates[0], dates[0], dates[1]],
-        "symbol": ["AG", "CU", "CU"],
-        "in_universe": [True, False, True],
-        "close": [10.0, 20.0, 25.0],
-        "volume": [100.0, 200.0, 250.0],
-        "is_roll": [False, False, True],  # boolean 字段
-        "sector": ["Precious", "Industrial", "Industrial"],  # 字符串辅助列, load 自动忽略
-    })
+    panel_df = pl.DataFrame(
+        {
+            "trading_date": [dates[0], dates[0], dates[1]],
+            "symbol": ["AG", "CU", "CU"],
+            "in_universe": [True, False, True],
+            "close": [10.0, 20.0, 25.0],
+            "volume": [100.0, 200.0, 250.0],
+            "is_roll": [False, False, True],  # boolean 字段
+            "sector": ["Precious", "Industrial", "Industrial"],  # 字符串辅助列, load 自动忽略
+        }
+    )
 
-    labels_df = pl.DataFrame({
-        "trading_date": [dates[0], dates[0], dates[1]],
-        "symbol": ["AG", "CU", "CU"],
-        "y_1": [0.01, -0.02, 0.03],
-    })
+    labels_df = pl.DataFrame(
+        {
+            "trading_date": [dates[0], dates[0], dates[1]],
+            "symbol": ["AG", "CU", "CU"],
+            "y_1": [0.01, -0.02, 0.03],
+        }
+    )
 
     meta_doc = {"version": "test_v1", "author": "factorlib"}
 

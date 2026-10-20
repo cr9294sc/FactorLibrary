@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from typing import Callable, Dict
+from collections.abc import Callable
+
 import numpy as np
 
 EPS: float = 1e-15
@@ -1046,7 +1047,7 @@ def group_zscore(x: np.ndarray, group: np.ndarray) -> np.ndarray:
 
 
 # 算子名称到参考实现函数的映射字典（共 68 个算子）
-OPS_REF_REGISTRY: Dict[str, Callable[..., np.ndarray]] = {
+OPS_REF_REGISTRY: dict[str, Callable[..., np.ndarray]] = {
     # 一元逐元素 (12)
     "neg": neg,
     "abs": abs_,

@@ -15,19 +15,19 @@ from __future__ import annotations
 
 import time
 from datetime import date, timedelta
-from typing import Dict
-
-import numpy as np
-import pytest
-from hypothesis import given, settings, strategies as st
 
 import factorlib_core
+import numpy as np
 from factorlib.core import ops_ref
-from factorlib.core.dsl import Expr, F, canonicalize_expr, get_operator_specs, validate_expr
+from factorlib.core.dsl import F, canonicalize_expr, get_operator_specs, validate_expr
 from factorlib.core.panel import Panel
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 
-def _make_noisy_matrix(rng: np.random.Generator, T: int, N: int, nan_prob: float = 0.22) -> np.ndarray:
+def _make_noisy_matrix(
+    rng: np.random.Generator, T: int, N: int, nan_prob: float = 0.22
+) -> np.ndarray:
     """生成含高密度 NaN、并列值、±Inf 及跨数量级浮点数的 (T, N) Fortran 矩阵。"""
     mat = rng.normal(loc=50.0, scale=25.0, size=(T, N))
     # 注入并列值
@@ -42,7 +42,9 @@ def _make_noisy_matrix(rng: np.random.Generator, T: int, N: int, nan_prob: float
     return np.asfortranarray(mat, dtype=np.float64)
 
 
-def _assert_close_with_nan(actual: np.ndarray, expected: np.ndarray, msg: str, tol: float = 1e-9) -> None:
+def _assert_close_with_nan(
+    actual: np.ndarray, expected: np.ndarray, msg: str, tol: float = 1e-9
+) -> None:
     assert actual.shape == expected.shape, f"{msg}: 形状不匹配 {actual.shape} vs {expected.shape}"
     act_nan = np.isnan(actual)
     exp_nan = np.isnan(expected)
@@ -268,7 +270,7 @@ def test_Throughput_1000_exprs_on_4000x80_panel():
     T, N = 4000, 80
     rng = np.random.default_rng(7)
     field_names = ["open", "high", "low", "close", "volume", "rv", "oi"]
-    fields: Dict[str, np.ndarray] = {
+    fields: dict[str, np.ndarray] = {
         name: np.asfortranarray(100.0 + rng.standard_normal((T, N)) * 10.0, dtype=np.float64)
         for name in field_names
     }
@@ -280,7 +282,16 @@ def test_Throughput_1000_exprs_on_4000x80_panel():
     eng = panel.to_rust_engine(cache_mb=2048, n_threads=0)
 
     windows = [3, 5, 10, 20, 40, 60, 120, 250]
-    ts_ops = ["ts_mean", "ts_std", "ts_min", "ts_max", "ts_zscore", "ts_rank", "delta", "pct_change"]
+    ts_ops = [
+        "ts_mean",
+        "ts_std",
+        "ts_min",
+        "ts_max",
+        "ts_zscore",
+        "ts_rank",
+        "delta",
+        "pct_change",
+    ]
     bin_ops = ["add", "sub", "mul", "div", "max2", "min2"]
     cs_ops = ["cs_rank", "cs_zscore", "cs_demean", "slog", "ssqrt", "tanh"]
 

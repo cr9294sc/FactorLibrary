@@ -54,10 +54,7 @@ def first_listed_dates(instruments: pl.DataFrame) -> pl.DataFrame:
 def load_sectors(raw_dir: Path) -> pl.DataFrame:
     """品种 -> 一级板块 (用于 group 中性化), 列: symbol, sector。"""
     ind = read_single(raw_dir, "industry_mapping")
-    return (
-        ind.select(
-            pl.col("underlying_symbol").alias("symbol"),
-            pl.col("level1_industry").alias("sector"),
-        )
-        .unique(subset=["symbol"], keep="first", maintain_order=True)
-    )
+    return ind.select(
+        pl.col("underlying_symbol").alias("symbol"),
+        pl.col("level1_industry").alias("sector"),
+    ).unique(subset=["symbol"], keep="first", maintain_order=True)

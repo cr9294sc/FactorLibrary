@@ -56,7 +56,9 @@ def build_universe(
         .with_columns(
             pl.col("_anchor_idx").fill_null(pl.col("date_idx").min().over("symbol")),
             adv20_turnover=pl.col("turnover")
-            .rolling_mean_by("date_idx", window_size=f"{ADV_WINDOW}i", min_samples=ADV_WINDOW, closed="right")
+            .rolling_mean_by(
+                "date_idx", window_size=f"{ADV_WINDOW}i", min_samples=ADV_WINDOW, closed="right"
+            )
             .over("symbol"),
             days_to_expiry=(pl.col("maturity_date") - pl.col("trading_date")).dt.total_days(),
         )

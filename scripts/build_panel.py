@@ -129,7 +129,9 @@ def main() -> int:
         print("=" * 60)
         print(f"  版本编号:         {meta['panel_version']}")
         print(f"  总记录数:         {meta['total_records']:,} 行")
-        print(f"  有效交易日:       {meta['total_trading_days']} 天 ({meta['date_range'][0]} ~ {meta['date_range'][1]})")
+        print(
+            f"  有效交易日:       {meta['total_trading_days']} 天 ({meta['date_range'][0]} ~ {meta['date_range'][1]})"
+        )
         print(f"  覆盖品种数:       {meta['total_symbols']} 个")
         print(f"  在池记录数:       {meta['in_universe_records']:,} 行")
         print(f"  特征矩阵字段:     {meta['config']['panel_version']} ({len(panel_df.columns)} 列)")

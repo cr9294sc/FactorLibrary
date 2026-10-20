@@ -3,7 +3,6 @@
 use crate::ops::{BinaryOp, TernaryOp, UnaryOp};
 use ahash::RandomState;
 use std::fmt;
-use std::hash::{BuildHasher, Hash, Hasher};
 
 /// 固定种子的确定性 AHash 状态机，确保跨进程、跨线程生成的 `canon_hash` 100% 恒定。
 const DETERMINISTIC_HASHER: RandomState = RandomState::with_seeds(
@@ -16,9 +15,7 @@ const DETERMINISTIC_HASHER: RandomState = RandomState::with_seeds(
 /// 对规范化字符串计算 64 位确定性 `ahash` 指纹。
 #[inline]
 pub fn hash_canon_str(s: &str) -> u64 {
-    let mut hasher = DETERMINISTIC_HASHER.build_hasher();
-    s.hash(&mut hasher);
-    hasher.finish()
+    DETERMINISTIC_HASHER.hash_one(s)
 }
 
 /// 将浮点常数格式化为规范文本表示（消除 `-0.0` 并保留紧凑可逆精度）。
@@ -47,10 +44,7 @@ pub enum ASTNode {
     /// 离散窗口参数 (如 5, 10, 20)
     Window(usize),
     /// 一元算子调用
-    UnaryCall {
-        op: UnaryOp,
-        arg: Box<ASTNode>,
-    },
+    UnaryCall { op: UnaryOp, arg: Box<ASTNode> },
     /// 二元算子调用
     BinaryCall {
         op: BinaryOp,
@@ -93,7 +87,12 @@ impl ASTNode {
                 then_branch,
                 else_branch,
                 ..
-            } => 1 + cond.depth().max(then_branch.depth()).max(else_branch.depth()),
+            } => {
+                1 + cond
+                    .depth()
+                    .max(then_branch.depth())
+                    .max(else_branch.depth())
+            }
         }
     }
 

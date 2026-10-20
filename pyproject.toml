@@ -16,6 +16,7 @@ dev = [
     "pytest>=8",
     "hypothesis>=6",
     "maturin>=1.7",
+    "ruff>=0.5",
 ]
 
 [build-system]
@@ -35,3 +36,42 @@ pythonpath = ["python"]
 markers = [
     "realdata: 依赖本地 exports/ 真实数据资产的验收测试 (默认跳过, 使用 --realdata 开启)",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+    ".git",
+    ".venv",
+    "legacy",
+    "pyrust-bt-main",
+    "python/pyrust_bt",
+    "python/server_main.py",
+    "tests/test_*.py",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+]
+ignore = [
+    "E501", # line-too-long (handled by formatter / long docstrings allowed)
+    "B008", # do not perform function calls in argument defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/audit_data.py" = ["F841", "C414"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+

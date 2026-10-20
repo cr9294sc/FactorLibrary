@@ -31,9 +31,7 @@ def minute_pairs(daily: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame:
 
     返回列: ``order_book_id, trading_date, symbol, prev_settlement``。
     """
-    cur = daily.select(
-        pl.col("contract").alias("order_book_id"), "trading_date", "symbol"
-    )
+    cur = daily.select(pl.col("contract").alias("order_book_id"), "trading_date", "symbol")
     old = daily.filter(pl.col("is_roll")).select(
         pl.col("prev_contract").alias("order_book_id"), "trading_date", "symbol"
     )
@@ -77,7 +75,9 @@ def aggregate_exec(df: pl.DataFrame, window_minutes: int) -> pl.DataFrame:
     )
 
 
-def compute_exec_prices(raw_dir: Path, pairs: pl.DataFrame, window_minutes: int = 30) -> pl.DataFrame:
+def compute_exec_prices(
+    raw_dir: Path, pairs: pl.DataFrame, window_minutes: int = 30
+) -> pl.DataFrame:
     """独立遍历分钟线, 仅计算执行价 (主要用于测试与单独重算)。"""
     parts = [aggregate_exec(df, window_minutes) for _, df in iter_minute_months(raw_dir, pairs)]
     if not parts:

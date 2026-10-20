@@ -67,6 +67,7 @@ fn matrix_strategy(t: usize, n: usize) -> impl Strategy<Value = Array2<f64>> {
 }
 
 /// 朴素切片参考实现：用于验证双栈 Welford 与单调队列增量算法。
+#[allow(clippy::type_complexity)]
 fn ref_ts_mean_std_var_sum_zscore(
     x: &Array2<f64>,
     d: usize,
@@ -129,6 +130,7 @@ fn ref_ts_mean_std_var_sum_zscore(
     (sum_out, mean_out, var_out, std_out, z_out)
 }
 
+#[allow(clippy::type_complexity)]
 fn ref_ts_extrema_and_rank(
     x: &Array2<f64>,
     d: usize,
@@ -249,7 +251,8 @@ fn ref_ts_bivariate(
                     let cur_x = x[[row, col]];
                     let cur_y = y[[row, col]];
                     if cur_x.is_finite() && cur_y.is_finite() {
-                        resid_out[[row, col]] = clean_f64((cur_x - mx) - (c_xy / m2_y) * (cur_y - my));
+                        resid_out[[row, col]] =
+                            clean_f64((cur_x - mx) - (c_xy / m2_y) * (cur_y - my));
                     }
                     if m2_x.is_finite() && m2_x > VAR_EPS * kf * sx * sx {
                         let denom = (m2_x * m2_y).sqrt();
@@ -368,12 +371,9 @@ fn test_typechecker_blocks_all_whitepaper_illegal_examples() {
     ];
 
     for expr in illegal_cases {
-        let res = parse_expr(expr)
-            .map_err(|e| e.to_string())
-            .and_then(|ast| {
-                typecheck_factor_expr(&ast, Some(&fields), Some(&labels))
-                    .map_err(|e| e.to_string())
-            });
+        let res = parse_expr(expr).map_err(|e| e.to_string()).and_then(|ast| {
+            typecheck_factor_expr(&ast, Some(&fields), Some(&labels)).map_err(|e| e.to_string())
+        });
         assert!(res.is_err(), "期望非法表达式 '{expr}' 被阻断，但通过了检查");
     }
 }

@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 from datetime import date
-from pathlib import Path
 
 import numpy as np
 import polars as pl
-import pytest
-
-from factorlib.core.config import MinuteFeaturesConfig, UniverseConfig, WarehouseConfig
-from factorlib.markets.futures.etl.calendar import add_date_idx, dense_grid, lag_by_idx
+from factorlib.core.config import MinuteFeaturesConfig, UniverseConfig
+from factorlib.markets.futures.etl.calendar import dense_grid, lag_by_idx
 from factorlib.markets.futures.etl.exec_price import aggregate_exec
 from factorlib.markets.futures.etl.labels import build_labels
 from factorlib.markets.futures.etl.minute_features import aggregate_features
@@ -19,18 +16,28 @@ from factorlib.markets.futures.universe import build_universe
 
 
 def test_calendar_and_dense_grid():
-    cal = pl.DataFrame({
-        "trading_date": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)],
-        "date_idx": [0, 1, 2, 3, 4],
-    }).with_columns(pl.col("date_idx").cast(pl.Int64))
+    cal = pl.DataFrame(
+        {
+            "trading_date": [
+                date(2024, 1, 1),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 4),
+                date(2024, 1, 5),
+            ],
+            "date_idx": [0, 1, 2, 3, 4],
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
 
     # 品种 A 缺失 date_idx=2 (2024-01-03)
-    df_sparse = pl.DataFrame({
-        "symbol": ["A", "A", "A"],
-        "trading_date": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 4)],
-        "date_idx": [0, 1, 3],
-        "val": [10.0, 20.0, 40.0],
-    }).with_columns(pl.col("date_idx").cast(pl.Int64))
+    df_sparse = pl.DataFrame(
+        {
+            "symbol": ["A", "A", "A"],
+            "trading_date": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 4)],
+            "date_idx": [0, 1, 3],
+            "val": [10.0, 20.0, 40.0],
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
 
     # 展开稠密网格
     grid = dense_grid(df_sparse.select(["symbol", "date_idx"]), cal, key="symbol")
@@ -55,14 +62,16 @@ def test_exec_price_aggregate():
     # 验证 VWAP 严格按 sum(close * volume) / sum(volume) 计算
     d0 = dt.datetime(2024, 1, 2, 21, 1)
     d1 = dt.datetime(2024, 1, 2, 21, 2)
-    df = pl.DataFrame({
-        "order_book_id": ["RB2405", "RB2405"],
-        "trading_date": [date(2024, 1, 3), date(2024, 1, 3)],
-        "datetime": [d0, d1],
-        "symbol": ["RB", "RB"],
-        "close": [3800.0, 3810.0],
-        "volume": [100.0, 200.0],
-    })
+    df = pl.DataFrame(
+        {
+            "order_book_id": ["RB2405", "RB2405"],
+            "trading_date": [date(2024, 1, 3), date(2024, 1, 3)],
+            "datetime": [d0, d1],
+            "symbol": ["RB", "RB"],
+            "close": [3800.0, 3810.0],
+            "volume": [100.0, 200.0],
+        }
+    )
 
     res = aggregate_exec(df, window_minutes=30)
     assert len(res) == 1
@@ -85,17 +94,19 @@ def test_minute_features_math():
     lows = [99.5, 101.5, 100.5, 102.0, 104.5]
     volumes = [10.0, 20.0, 30.0, 40.0, 50.0]
 
-    df = pl.DataFrame({
-        "order_book_id": ["CU2405"] * 5,
-        "trading_date": [date(2024, 3, 4)] * 5,
-        "datetime": times,
-        "open": closes,
-        "high": highs,
-        "low": lows,
-        "close": closes,
-        "volume": volumes,
-        "prev_settlement": [100.0] * 5,
-    })
+    df = pl.DataFrame(
+        {
+            "order_book_id": ["CU2405"] * 5,
+            "trading_date": [date(2024, 3, 4)] * 5,
+            "datetime": times,
+            "open": closes,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+            "prev_settlement": [100.0] * 5,
+        }
+    )
 
     mcfg = MinuteFeaturesConfig()
     res = aggregate_features(df, mcfg)
@@ -121,27 +132,33 @@ def test_minute_features_math():
 
 
 def test_universe_filtering():
-    cal = pl.DataFrame({
-        "trading_date": [date(2024, 1, i) for i in range(1, 25)],
-        "date_idx": list(range(24)),
-    }).with_columns(pl.col("date_idx").cast(pl.Int64))
+    cal = pl.DataFrame(
+        {
+            "trading_date": [date(2024, 1, i) for i in range(1, 25)],
+            "date_idx": list(range(24)),
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
 
-    first_listed = pl.DataFrame({
-        "symbol": ["A"],
-        "first_listed_date": [date(2023, 1, 1)],  # 上市超过 1 年
-    })
+    first_listed = pl.DataFrame(
+        {
+            "symbol": ["A"],
+            "first_listed_date": [date(2023, 1, 1)],  # 上市超过 1 年
+        }
+    )
 
     # 构造 24 个交易日数据
     # 前 19 天 turnover = 1000 万, 从第 20 天起 turnover = 6000 万 (使 ADV20 逐步爬升)
-    daily = pl.DataFrame({
-        "symbol": ["A"] * 24,
-        "trading_date": [date(2024, 1, i) for i in range(1, 25)],
-        "date_idx": list(range(24)),
-        "turnover": [10_000_000.0] * 19 + [60_000_000.0] * 5,
-        "traded": [True] * 24,
-        "close_raw": [100.0] * 24,
-        "maturity_date": [date(2024, 2, 1)] * 24,  # 距到期日充分大
-    }).with_columns(pl.col("date_idx").cast(pl.Int64))
+    daily = pl.DataFrame(
+        {
+            "symbol": ["A"] * 24,
+            "trading_date": [date(2024, 1, i) for i in range(1, 25)],
+            "date_idx": list(range(24)),
+            "turnover": [10_000_000.0] * 19 + [60_000_000.0] * 5,
+            "traded": [True] * 24,
+            "close_raw": [100.0] * 24,
+            "maturity_date": [date(2024, 2, 1)] * 24,  # 距到期日充分大
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
 
     ucfg = UniverseConfig(min_adv20_turnover=50_000_000.0, min_listed_days=10, min_days_to_expiry=5)
     univ = build_universe(daily, first_listed, cal, ucfg)
@@ -151,23 +168,32 @@ def test_universe_filtering():
 
 
 def test_labels_no_lookahead():
-    cal = pl.DataFrame({
-        "trading_date": [date(2024, 1, i) for i in range(1, 10)],
-        "date_idx": list(range(9)),
-    }).with_columns(pl.col("date_idx").cast(pl.Int64))
+    cal = pl.DataFrame(
+        {
+            "trading_date": [date(2024, 1, i) for i in range(1, 10)],
+            "date_idx": list(range(9)),
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
 
     # 构造价格序列: 日期 1 到 9
     # T=0 (2024-01-01): exec_vwap=100.0
     # T=1 (2024-01-02): exec_vwap=102.0, exec_vwap_old=102.0  (r_{0->1} = 2%)
     # T=2 (2024-01-03): exec_vwap=105.06, exec_vwap_old=105.06 (r_{1->2} = 3%)
     # T=3 (2024-01-04): exec_vwap=110.313, exec_vwap_old=110.313 (r_{2->3} = 5%)
-    panel = pl.DataFrame({
-        "symbol": ["RB"] * 4,
-        "trading_date": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
-        "date_idx": [0, 1, 2, 3],
-        "exec_vwap": [100.0, 102.0, 105.06, 110.313],
-        "exec_vwap_old": [100.0, 102.0, 105.06, 110.313],
-    }).with_columns(pl.col("date_idx").cast(pl.Int64))
+    panel = pl.DataFrame(
+        {
+            "symbol": ["RB"] * 4,
+            "trading_date": [
+                date(2024, 1, 1),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 4),
+            ],
+            "date_idx": [0, 1, 2, 3],
+            "exec_vwap": [100.0, 102.0, 105.06, 110.313],
+            "exec_vwap_old": [100.0, 102.0, 105.06, 110.313],
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
 
     labels = build_labels(panel, cal, horizons=[1, 2])
 

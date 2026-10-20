@@ -72,149 +72,134 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> Result<ASTNode, ParseError> {
         let mut node = self.parse_additive()?;
-        loop {
-            match self.peek().kind {
-                TokenKind::Gt | TokenKind::Lt | TokenKind::Ge | TokenKind::Le => {
-                    let op_tok = self.advance();
-                    let rhs = self.parse_additive()?;
-                    node = match (&op_tok.kind, rhs) {
-                        (TokenKind::Gt, ASTNode::Constant(c)) => ASTNode::BinaryCall {
-                            op: BinaryOp::GtConst,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(c)),
-                        },
-                        (TokenKind::Gt, ASTNode::Window(w)) => ASTNode::BinaryCall {
-                            op: BinaryOp::GtConst,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(w as f64)),
-                        },
-                        (TokenKind::Lt, ASTNode::Constant(c)) => ASTNode::BinaryCall {
-                            op: BinaryOp::LtConst,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(c)),
-                        },
-                        (TokenKind::Lt, ASTNode::Window(w)) => ASTNode::BinaryCall {
-                            op: BinaryOp::LtConst,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(w as f64)),
-                        },
-                        (TokenKind::Gt, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Gt,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                        (TokenKind::Lt, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Lt,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                        (TokenKind::Ge, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Ge,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                        (TokenKind::Le, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Le,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                        _ => unreachable!(),
-                    };
-                }
-                _ => break,
-            }
+        while let TokenKind::Gt | TokenKind::Lt | TokenKind::Ge | TokenKind::Le = self.peek().kind {
+            let op_tok = self.advance();
+            let rhs = self.parse_additive()?;
+            node = match (&op_tok.kind, rhs) {
+                (TokenKind::Gt, ASTNode::Constant(c)) => ASTNode::BinaryCall {
+                    op: BinaryOp::GtConst,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(c)),
+                },
+                (TokenKind::Gt, ASTNode::Window(w)) => ASTNode::BinaryCall {
+                    op: BinaryOp::GtConst,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(w as f64)),
+                },
+                (TokenKind::Lt, ASTNode::Constant(c)) => ASTNode::BinaryCall {
+                    op: BinaryOp::LtConst,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(c)),
+                },
+                (TokenKind::Lt, ASTNode::Window(w)) => ASTNode::BinaryCall {
+                    op: BinaryOp::LtConst,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(w as f64)),
+                },
+                (TokenKind::Gt, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Gt,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+                (TokenKind::Lt, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Lt,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+                (TokenKind::Ge, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Ge,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+                (TokenKind::Le, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Le,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+                _ => unreachable!(),
+            };
         }
         Ok(node)
     }
 
     fn parse_additive(&mut self) -> Result<ASTNode, ParseError> {
         let mut node = self.parse_multiplicative()?;
-        loop {
-            match self.peek().kind {
-                TokenKind::Plus | TokenKind::Minus => {
-                    let is_plus = self.advance().kind == TokenKind::Plus;
-                    let rhs = self.parse_multiplicative()?;
-                    node = match (is_plus, rhs) {
-                        (true, ASTNode::Constant(c)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Addc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(c)),
-                        },
-                        (true, ASTNode::Window(w)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Addc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(w as f64)),
-                        },
-                        (false, ASTNode::Constant(c)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Subc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(c)),
-                        },
-                        (false, ASTNode::Window(w)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Subc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(w as f64)),
-                        },
-                        (true, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Add,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                        (false, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Sub,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                    };
-                }
-                _ => break,
-            }
+        while let TokenKind::Plus | TokenKind::Minus = self.peek().kind {
+            let is_plus = self.advance().kind == TokenKind::Plus;
+            let rhs = self.parse_multiplicative()?;
+            node = match (is_plus, rhs) {
+                (true, ASTNode::Constant(c)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Addc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(c)),
+                },
+                (true, ASTNode::Window(w)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Addc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(w as f64)),
+                },
+                (false, ASTNode::Constant(c)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Subc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(c)),
+                },
+                (false, ASTNode::Window(w)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Subc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(w as f64)),
+                },
+                (true, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Add,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+                (false, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Sub,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+            };
         }
         Ok(node)
     }
 
     fn parse_multiplicative(&mut self) -> Result<ASTNode, ParseError> {
         let mut node = self.parse_unary()?;
-        loop {
-            match self.peek().kind {
-                TokenKind::Star | TokenKind::Slash => {
-                    let is_mul = self.advance().kind == TokenKind::Star;
-                    let rhs = self.parse_unary()?;
-                    node = match (is_mul, rhs) {
-                        (true, ASTNode::Constant(c)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Mulc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(c)),
-                        },
-                        (true, ASTNode::Window(w)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Mulc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(w as f64)),
-                        },
-                        (false, ASTNode::Constant(c)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Divc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(c)),
-                        },
-                        (false, ASTNode::Window(w)) => ASTNode::BinaryCall {
-                            op: BinaryOp::Divc,
-                            lhs: Box::new(node),
-                            rhs: Box::new(ASTNode::Constant(w as f64)),
-                        },
-                        (true, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Mul,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                        (false, r) => ASTNode::BinaryCall {
-                            op: BinaryOp::Div,
-                            lhs: Box::new(node),
-                            rhs: Box::new(r),
-                        },
-                    };
-                }
-                _ => break,
-            }
+        while let TokenKind::Star | TokenKind::Slash = self.peek().kind {
+            let is_mul = self.advance().kind == TokenKind::Star;
+            let rhs = self.parse_unary()?;
+            node = match (is_mul, rhs) {
+                (true, ASTNode::Constant(c)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Mulc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(c)),
+                },
+                (true, ASTNode::Window(w)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Mulc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(w as f64)),
+                },
+                (false, ASTNode::Constant(c)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Divc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(c)),
+                },
+                (false, ASTNode::Window(w)) => ASTNode::BinaryCall {
+                    op: BinaryOp::Divc,
+                    lhs: Box::new(node),
+                    rhs: Box::new(ASTNode::Constant(w as f64)),
+                },
+                (true, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Mul,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+                (false, r) => ASTNode::BinaryCall {
+                    op: BinaryOp::Div,
+                    lhs: Box::new(node),
+                    rhs: Box::new(r),
+                },
+            };
         }
         Ok(node)
     }

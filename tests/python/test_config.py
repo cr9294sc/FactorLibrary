@@ -10,7 +10,11 @@ from factorlib.core.config import (
     ConfigError,
     DominantConfig,
     ExecPriceConfig,
+    GPConfig,
+    TreeLimitsConfig,
+    VariationConfig,
     load_data_config,
+    load_gp_config,
     load_universe_config,
 )
 
@@ -89,3 +93,40 @@ evaluation:
     assert ucfg.min_listed_days == 30
     assert ucfg.min_days_to_expiry == 3
     assert ucfg.min_names_per_day == 5
+
+
+def test_load_gp_config_and_validation(tmp_path: Path):
+    default_gp_path = Path("configs/futures/gp_default.yaml")
+    assert default_gp_path.exists()
+
+    gcfg = load_gp_config(default_gp_path)
+    assert isinstance(gcfg, GPConfig)
+    assert gcfg.seed == 42
+    assert gcfg.mode == "cs"
+    assert gcfg.label == "y_5"
+    assert gcfg.population == 1000
+    assert gcfg.generations == 50
+    assert gcfg.islands == 4
+    assert gcfg.migration.interval == 10
+    assert gcfg.limits.init_min_depth == 2
+    assert gcfg.limits.init_max_depth == 5
+    assert gcfg.limits.max_depth == 6
+    assert gcfg.limits.max_nodes == 30
+    assert gcfg.fitness.parsimony_penalty == 0.002
+    assert gcfg.fitness.min_coverage == 0.70
+    assert gcfg.admission.min_valid_ic_ir == 0.30
+    assert gcfg.admission.max_library_corr == 0.60
+
+    # 非法树深限制
+    with pytest.raises(ConfigError, match="init_max_depth"):
+        TreeLimitsConfig(init_min_depth=4, init_max_depth=2, max_depth=6)
+
+    # 非法变异概率
+    with pytest.raises(ConfigError, match="variation"):
+        VariationConfig(
+            crossover_prob=-0.1,
+            subtree_mut_prob=0.5,
+            point_mut_prob=0.2,
+            hoist_mut_prob=0.2,
+            param_mut_prob=0.2,
+        )

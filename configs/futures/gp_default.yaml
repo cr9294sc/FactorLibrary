@@ -1,0 +1,48 @@
+seed: 42
+mode: "cs"                        # cs: 横截面模式, ts: 时序 CTA 模式
+label: "y_5"                      # 目标预测标签
+
+# 样本划分
+splits:
+  train: ["2011-01-01", "2018-12-31"]
+  valid: ["2019-01-01", "2021-12-31"]
+  test:  ["2022-01-01", "2026-08-31"]
+
+# 种群演化超参数
+population: 1000
+generations: 50
+islands: 4
+migration:
+  interval: 10
+  k_individuals: 20
+
+# 树结构限制
+limits:
+  init_min_depth: 2
+  init_max_depth: 5
+  max_depth: 6
+  max_nodes: 30
+
+# 变异概率
+variation:
+  crossover_prob: 0.60
+  subtree_mut_prob: 0.15
+  point_mut_prob: 0.10
+  hoist_mut_prob: 0.05
+  param_mut_prob: 0.10
+
+# 适应度函数配置
+fitness:
+  metric: "ic_ir"
+  parsimony_penalty: 0.002
+  min_coverage: 0.70
+  corr_penalty_threshold: 0.60
+  corr_penalty_factor: 0.50
+
+# 准入规则
+admission:
+  min_valid_ic_ir: 0.30
+  require_sign_consistency: true
+  max_library_corr: 0.60
+  max_turnover: 0.85
+  top_k_candidates: 200

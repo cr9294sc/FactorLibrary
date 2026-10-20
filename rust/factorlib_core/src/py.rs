@@ -12,12 +12,14 @@ use crate::expr::eval::{eval_batch_str, eval_expr_str};
 use crate::expr::parser::parse_expr;
 use crate::expr::typecheck::{infer_type, typecheck_factor_expr};
 use crate::metrics::corr::{cross_correlation_matrix, cross_correlation_pairwise};
-use crate::metrics::ic::{calc_ic_metrics, calc_ic_series, IcMetrics};
+use crate::metrics::ic::{
+    calc_daily_cross_sectional_ic, calc_ic_metrics, calc_ic_series, IcMetrics,
+};
 use crate::metrics::quantile::{calc_quantile_metrics, QuantileMetrics};
 use crate::metrics::turnover::{calc_turnover_metrics, TurnoverMetrics};
 use crate::ops::list_all_operators;
 use crate::panel::Panel;
-use ndarray::{Array2, ArrayView2, ShapeBuilder};
+use ndarray::{s, Array2, ArrayView2, ShapeBuilder};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -481,7 +483,8 @@ impl PyEngine {
     }
 
     /// 评估因子截面 Spearman Rank IC 或 Pearson IC 时序与多维统计指标。
-    #[pyo3(signature = (factor, label_name="y_5", min_names=5, rank=true, horizon=1))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (factor, label_name="y_5", min_names=5, rank=true, horizon=1, start_row=None, end_row=None))]
     pub fn rank_ic<'py>(
         &self,
         py: Python<'py>,
@@ -490,8 +493,11 @@ impl PyEngine {
         min_names: usize,
         rank: bool,
         horizon: usize,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let f_raw = self.resolve_factor_mat(py, factor)?;
+        let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
         let label_arc = self
             .panel
             .labels
@@ -500,7 +506,8 @@ impl PyEngine {
                 PyValueError::new_err(format!("未在面板中找到预测标签: '{label_name}'"))
             })?
             .clone();
-        let mask = self.panel.universe_mask.clone();
+        let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
 
         let metrics = py.allow_threads(move || {
             let (t, n) = f_mat.dim();
@@ -508,7 +515,7 @@ impl PyEngine {
             let mut total_univ = 0;
             for row in 0..t {
                 for col in 0..n {
-                    if mask[[row, col]] {
+                    if mask_sub[[row, col]] {
                         total_univ += 1;
                         if f_mat[[row, col]].is_finite() {
                             valid_f += 1;
@@ -516,7 +523,7 @@ impl PyEngine {
                     }
                 }
             }
-            let daily = calc_ic_series(&f_mat, &label_arc, &mask, min_names, rank);
+            let daily = calc_ic_series(&f_mat, &label_sub, &mask_sub, min_names, rank);
             calc_ic_metrics(&daily, horizon, t, valid_f, total_univ)
         });
 
@@ -524,7 +531,8 @@ impl PyEngine {
     }
 
     /// 评估因子分位数分组收益与多空对冲收益时序指标。
-    #[pyo3(signature = (factor, ret_name=None, n_quantiles=5, min_names=5, sign=1))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (factor, ret_name=None, n_quantiles=5, min_names=5, sign=1, start_row=None, end_row=None))]
     pub fn quantile_returns<'py>(
         &self,
         py: Python<'py>,
@@ -533,8 +541,11 @@ impl PyEngine {
         n_quantiles: usize,
         min_names: usize,
         sign: i32,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let f_raw = self.resolve_factor_mat(py, factor)?;
+        let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
         let r_name = ret_name.unwrap_or("r_exec_next");
         let ret_arc = self
             .panel
@@ -547,34 +558,38 @@ impl PyEngine {
                 ))
             })?
             .clone();
-        let mask = self.panel.universe_mask.clone();
+        let ret_sub = view_to_fortran_f64(ret_arc.slice(s![s_row..e_row, ..]));
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
 
         let metrics = py.allow_threads(move || {
-            calc_quantile_metrics(&f_mat, &ret_arc, &mask, n_quantiles, min_names, sign)
+            calc_quantile_metrics(&f_mat, &ret_sub, &mask_sub, n_quantiles, min_names, sign)
         });
 
         quantile_metrics_to_pydict(py, &metrics)
     }
 
     /// 评估因子横截面排名自相关与日度换手率代理指标。
-    #[pyo3(signature = (factor, min_names=5))]
+    #[pyo3(signature = (factor, min_names=5, start_row=None, end_row=None))]
     pub fn factor_turnover<'py>(
         &self,
         py: Python<'py>,
         factor: &Bound<'_, PyAny>,
         min_names: usize,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let f_mat = self.resolve_factor_mat(py, factor)?;
-        let mask = self.panel.universe_mask.clone();
+        let f_raw = self.resolve_factor_mat(py, factor)?;
+        let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
 
-        let metrics = py.allow_threads(move || calc_turnover_metrics(&f_mat, &mask, min_names));
+        let metrics = py.allow_threads(move || calc_turnover_metrics(&f_mat, &mask_sub, min_names));
 
         turnover_metrics_to_pydict(py, &metrics)
     }
 
     /// 因子多维度综合评估（单次调用同时计算 IC、分位数多空、换手率，全程释放 GIL）。
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (factor, label_name="y_5", ret_name=None, horizon=5, n_quantiles=5, min_names=5, sign=1))]
+    #[pyo3(signature = (factor, label_name="y_5", ret_name=None, horizon=5, n_quantiles=5, min_names=5, sign=1, start_row=None, end_row=None))]
     pub fn factor_metrics<'py>(
         &self,
         py: Python<'py>,
@@ -585,8 +600,11 @@ impl PyEngine {
         n_quantiles: usize,
         min_names: usize,
         sign: i32,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let f_mat = self.resolve_factor_mat(py, factor)?;
+        let f_raw = self.resolve_factor_mat(py, factor)?;
+        let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
         let label_arc = self
             .panel
             .labels
@@ -603,7 +621,9 @@ impl PyEngine {
             .or_else(|| self.panel.labels.get("y_1"))
             .unwrap_or(&label_arc)
             .clone();
-        let mask = self.panel.universe_mask.clone();
+        let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));
+        let ret_sub = view_to_fortran_f64(ret_arc.slice(s![s_row..e_row, ..]));
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
 
         let (ic_m, q_m, to_m) = py.allow_threads(move || {
             let (t, n) = f_mat.dim();
@@ -611,7 +631,7 @@ impl PyEngine {
             let mut total_univ = 0;
             for row in 0..t {
                 for col in 0..n {
-                    if mask[[row, col]] {
+                    if mask_sub[[row, col]] {
                         total_univ += 1;
                         if f_mat[[row, col]].is_finite() {
                             valid_f += 1;
@@ -619,11 +639,11 @@ impl PyEngine {
                     }
                 }
             }
-            let daily = calc_ic_series(&f_mat, &label_arc, &mask, min_names, true);
+            let daily = calc_ic_series(&f_mat, &label_sub, &mask_sub, min_names, true);
             let ic_res = calc_ic_metrics(&daily, horizon, t, valid_f, total_univ);
             let q_res =
-                calc_quantile_metrics(&f_mat, &ret_arc, &mask, n_quantiles, min_names, sign);
-            let to_res = calc_turnover_metrics(&f_mat, &mask, min_names);
+                calc_quantile_metrics(&f_mat, &ret_sub, &mask_sub, n_quantiles, min_names, sign);
+            let to_res = calc_turnover_metrics(&f_mat, &mask_sub, min_names);
             (ic_res, q_res, to_res)
         });
 
@@ -646,7 +666,8 @@ impl PyEngine {
     }
 
     /// 计算两个因子在有效标的池上的平均横截面相关系数。
-    #[pyo3(signature = (factor_a, factor_b, min_names=5, rank=true))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (factor_a, factor_b, min_names=5, rank=true, start_row=None, end_row=None))]
     pub fn cross_correlation<'py>(
         &self,
         py: Python<'py>,
@@ -654,37 +675,255 @@ impl PyEngine {
         factor_b: &Bound<'_, PyAny>,
         min_names: usize,
         rank: bool,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
     ) -> PyResult<f64> {
-        let fa = self.resolve_factor_mat(py, factor_a)?;
-        let fb = self.resolve_factor_mat(py, factor_b)?;
-        let mask = self.panel.universe_mask.clone();
+        let fa_raw = self.resolve_factor_mat(py, factor_a)?;
+        let fb_raw = self.resolve_factor_mat(py, factor_b)?;
+        let (fa, s_row, e_row) = self.align_factor_slice(fa_raw, start_row, end_row)?;
+        let (fb, s_b, e_b) = self.align_factor_slice(fb_raw, Some(s_row), Some(e_row))?;
+        if (s_row, e_row) != (s_b, e_b) || fa.dim() != fb.dim() {
+            return Err(PyValueError::new_err(
+                "factor_a 与 factor_b 的行切片维度不一致",
+            ));
+        }
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
 
-        let rho =
-            py.allow_threads(move || cross_correlation_pairwise(&fa, &fb, &mask, min_names, rank));
+        let rho = py.allow_threads(move || {
+            cross_correlation_pairwise(&fa, &fb, &mask_sub, min_names, rank)
+        });
         Ok(rho)
     }
 
     /// 并行计算一组因子的 M x M 截面相关系数矩阵。
-    #[pyo3(signature = (factors, min_names=5, rank=true))]
+    #[pyo3(signature = (factors, min_names=5, rank=true, start_row=None, end_row=None))]
     pub fn factor_correlation_matrix<'py>(
         &self,
         py: Python<'py>,
         factors: Vec<PyReadonlyArray2<'_, f64>>,
         min_names: usize,
         rank: bool,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let f_mats: Vec<Array2<f64>> = factors
-            .into_iter()
-            .map(|f| view_to_fortran_f64(f.as_array()))
-            .collect();
-        let mask = self.panel.universe_mask.clone();
+        let panel_t = self.panel.shape().0;
+        let s_row = start_row.unwrap_or(0);
+        let e_row = end_row.unwrap_or_else(|| {
+            if let Some(first) = factors.first() {
+                let r = first.as_array().dim().0;
+                if r < panel_t && start_row.is_none() {
+                    r
+                } else {
+                    panel_t
+                }
+            } else {
+                panel_t
+            }
+        });
+        if s_row > e_row || e_row > panel_t {
+            return Err(PyValueError::new_err("无效的行切片范围"));
+        }
+
+        let mut f_mats: Vec<Array2<f64>> = Vec::with_capacity(factors.len());
+        for f in factors {
+            let raw = view_to_fortran_f64(f.as_array());
+            let (sliced, _, _) = self.align_factor_slice(raw, Some(s_row), Some(e_row))?;
+            f_mats.push(sliced);
+        }
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
 
         let mat = py.allow_threads(move || {
             let refs: Vec<&Array2<f64>> = f_mats.iter().collect();
-            cross_correlation_matrix(&refs, &mask, min_names, rank)
+            cross_correlation_matrix(&refs, &mask_sub, min_names, rank)
         });
 
         Ok(PyArray2::from_owned_array_bound(py, mat))
+    }
+
+    /// 遗传规划 (STGP) 专用高并发批求值与适应度指标计算（单次释放 GIL 完成 DAG 求值 + 切片 RankIC + 库内相关性）。
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (exprs, label_name="y_5", start_row=0, end_row=None, min_names=5, horizon=5, library_factors=None, use_cache=true))]
+    pub fn eval_gp_batch<'py>(
+        &self,
+        py: Python<'py>,
+        exprs: Vec<String>,
+        label_name: &str,
+        start_row: usize,
+        end_row: Option<usize>,
+        min_names: usize,
+        horizon: usize,
+        library_factors: Option<Vec<PyReadonlyArray2<'_, f64>>>,
+        use_cache: bool,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let (panel_t, panel_n) = self.panel.shape();
+        let e_row = end_row.unwrap_or(panel_t).min(panel_t);
+        let s_row = start_row.min(e_row);
+
+        let label_arc = self
+            .panel
+            .labels
+            .get(label_name)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!("未在面板中找到预测标签: '{label_name}'"))
+            })?
+            .clone();
+
+        let mut lib_mats: Vec<Array2<f64>> = Vec::new();
+        if let Some(libs) = library_factors {
+            for lf in libs {
+                let raw = view_to_fortran_f64(lf.as_array());
+                let (sliced, _, _) = self.align_factor_slice(raw, Some(s_row), Some(e_row))?;
+                lib_mats.push(sliced);
+            }
+        }
+
+        let panel = Arc::clone(&self.panel);
+        let cache = if use_cache {
+            Some(Arc::clone(&self.cache))
+        } else {
+            None
+        };
+        let pool = self.pool.clone();
+
+        struct GpEvalItem {
+            valid: bool,
+            ic_mean: f64,
+            ic_std: f64,
+            ic_ir: f64,
+            ic_t: f64,
+            ic_win_rate: f64,
+            coverage: f64,
+            valid_days: usize,
+            max_abs_corr: f64,
+            mean_abs_corr: f64,
+            error: Option<String>,
+        }
+
+        let batch_items: Vec<GpEvalItem> = py.allow_threads(move || {
+            let work = || {
+                let cache_ref = cache.as_deref();
+                let eval_res = eval_batch_str(&exprs, &panel, cache_ref, true);
+
+                let t_sub = e_row - s_row;
+                let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));
+                let mask_sub =
+                    view_to_fortran_bool(panel.universe_mask.slice(s![s_row..e_row, ..]));
+
+                let mut total_univ = 0usize;
+                for r in 0..t_sub {
+                    for c in 0..panel_n {
+                        if mask_sub[[r, c]] {
+                            total_univ += 1;
+                        }
+                    }
+                }
+
+                eval_res
+                    .into_par_iter()
+                    .map(|res| match res {
+                        Ok(mat_arc) => {
+                            let f_sub = view_to_fortran_f64(mat_arc.slice(s![s_row..e_row, ..]));
+                            let mut valid_f = 0usize;
+                            for r in 0..t_sub {
+                                for c in 0..panel_n {
+                                    if mask_sub[[r, c]] && f_sub[[r, c]].is_finite() {
+                                        valid_f += 1;
+                                    }
+                                }
+                            }
+                            let mut daily_ic = Vec::with_capacity(t_sub);
+                            let mut f_row = vec![0.0_f64; panel_n];
+                            let mut l_row = vec![0.0_f64; panel_n];
+                            let mut m_row = vec![false; panel_n];
+                            for r in 0..t_sub {
+                                for c in 0..panel_n {
+                                    f_row[c] = f_sub[[r, c]];
+                                    l_row[c] = label_sub[[r, c]];
+                                    m_row[c] = mask_sub[[r, c]];
+                                }
+                                daily_ic.push(calc_daily_cross_sectional_ic(
+                                    &f_row, &l_row, &m_row, min_names, true,
+                                ));
+                            }
+                            let ic_m =
+                                calc_ic_metrics(&daily_ic, horizon, t_sub, valid_f, total_univ);
+
+                            let mut max_abs_corr = 0.0_f64;
+                            let mut sum_abs_corr = 0.0_f64;
+                            if !lib_mats.is_empty() && ic_m.valid_days > 0 {
+                                for lib_f in &lib_mats {
+                                    let rho = cross_correlation_pairwise(
+                                        &f_sub, lib_f, &mask_sub, min_names, true,
+                                    )
+                                    .abs();
+                                    if rho.is_finite() {
+                                        if rho > max_abs_corr {
+                                            max_abs_corr = rho;
+                                        }
+                                        sum_abs_corr += rho;
+                                    }
+                                }
+                            }
+                            let mean_abs_corr = if !lib_mats.is_empty() {
+                                sum_abs_corr / (lib_mats.len() as f64)
+                            } else {
+                                0.0
+                            };
+
+                            GpEvalItem {
+                                valid: true,
+                                ic_mean: ic_m.ic_mean,
+                                ic_std: ic_m.ic_std,
+                                ic_ir: ic_m.ic_ir,
+                                ic_t: ic_m.ic_t,
+                                ic_win_rate: ic_m.ic_win_rate,
+                                coverage: ic_m.coverage,
+                                valid_days: ic_m.valid_days,
+                                max_abs_corr,
+                                mean_abs_corr,
+                                error: None,
+                            }
+                        }
+                        Err(e) => GpEvalItem {
+                            valid: false,
+                            ic_mean: 0.0,
+                            ic_std: 0.0,
+                            ic_ir: 0.0,
+                            ic_t: 0.0,
+                            ic_win_rate: 0.0,
+                            coverage: 0.0,
+                            valid_days: 0,
+                            max_abs_corr: 0.0,
+                            mean_abs_corr: 0.0,
+                            error: Some(e.to_string()),
+                        },
+                    })
+                    .collect()
+            };
+
+            match pool {
+                Some(tp) => tp.install(work),
+                None => work(),
+            }
+        });
+
+        let out_list = PyList::empty_bound(py);
+        for item in batch_items {
+            let d = PyDict::new_bound(py);
+            d.set_item("valid", item.valid)?;
+            d.set_item("ic_mean", item.ic_mean)?;
+            d.set_item("ic_std", item.ic_std)?;
+            d.set_item("ic_ir", item.ic_ir)?;
+            d.set_item("ic_t", item.ic_t)?;
+            d.set_item("ic_win_rate", item.ic_win_rate)?;
+            d.set_item("coverage", item.coverage)?;
+            d.set_item("valid_days", item.valid_days)?;
+            d.set_item("max_abs_corr", item.max_abs_corr)?;
+            d.set_item("mean_abs_corr", item.mean_abs_corr)?;
+            d.set_item("error", item.error)?;
+            out_list.append(d)?;
+        }
+        Ok(out_list)
     }
 }
 
@@ -706,6 +945,43 @@ impl PyEngine {
             Err(PyValueError::new_err(
                 "factor 必须为 DSL 表达式文本或二维 float64 NumPy 数组",
             ))
+        }
+    }
+
+    fn align_factor_slice(
+        &self,
+        f_mat: Array2<f64>,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
+    ) -> PyResult<(Array2<f64>, usize, usize)> {
+        let (panel_t, panel_n) = self.panel.shape();
+        let (f_t, f_n) = f_mat.dim();
+        if f_n != panel_n {
+            return Err(PyValueError::new_err(format!(
+                "因子列数 ({f_n}) 与面板品种数 ({panel_n}) 不一致"
+            )));
+        }
+        let s_row = start_row.unwrap_or(0);
+        let e_row = end_row.unwrap_or(if f_t < panel_t && start_row.is_none() {
+            f_t
+        } else {
+            panel_t
+        });
+        if s_row > e_row || e_row > panel_t {
+            return Err(PyValueError::new_err(format!(
+                "无效的行切片范围: [{s_row}, {e_row}), 面板总行数={panel_t}"
+            )));
+        }
+        let expected_sub = e_row - s_row;
+        if f_t == expected_sub {
+            Ok((f_mat, s_row, e_row))
+        } else if f_t == panel_t {
+            let sliced = view_to_fortran_f64(f_mat.slice(s![s_row..e_row, ..]));
+            Ok((sliced, s_row, e_row))
+        } else {
+            Err(PyValueError::new_err(format!(
+                "因子行数 ({f_t}) 与预期切片行数 ({expected_sub}) 或面板行数 ({panel_t}) 不匹配"
+            )))
         }
     }
 }

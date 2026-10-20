@@ -254,3 +254,196 @@ def load_universe_config(path: Path) -> UniverseConfig:
         min_days_to_expiry=int(liq.get("min_days_to_expiry", 5)),
         min_names_per_day=int(ev.get("min_names_per_day", 10)),
     )
+
+
+# ==============================================================================
+# P4: 强类型遗传规划 (STGP) 配置定义与校验
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class MigrationConfig:
+    interval: int = 10
+    k_individuals: int = 20
+
+    def __post_init__(self) -> None:
+        if self.interval < 1:
+            raise ConfigError(f"migration.interval 必须 >= 1, 实际 {self.interval}")
+        if self.k_individuals < 0:
+            raise ConfigError(f"migration.k_individuals 必须 >= 0, 实际 {self.k_individuals}")
+
+
+@dataclass(frozen=True)
+class TreeLimitsConfig:
+    init_min_depth: int = 2
+    init_max_depth: int = 5
+    max_depth: int = 6
+    max_nodes: int = 30
+
+    def __post_init__(self) -> None:
+        if self.init_min_depth < 1:
+            raise ConfigError(f"limits.init_min_depth 必须 >= 1, 实际 {self.init_min_depth}")
+        if self.init_max_depth < self.init_min_depth:
+            raise ConfigError(
+                f"limits.init_max_depth ({self.init_max_depth}) 必须 >= init_min_depth ({self.init_min_depth})"
+            )
+        if self.max_depth < self.init_max_depth:
+            raise ConfigError(
+                f"limits.max_depth ({self.max_depth}) 必须 >= init_max_depth ({self.init_max_depth})"
+            )
+        if self.max_nodes < 2:
+            raise ConfigError(f"limits.max_nodes 必须 >= 2, 实际 {self.max_nodes}")
+
+
+@dataclass(frozen=True)
+class VariationConfig:
+    crossover_prob: float = 0.60
+    subtree_mut_prob: float = 0.15
+    point_mut_prob: float = 0.10
+    hoist_mut_prob: float = 0.05
+    param_mut_prob: float = 0.10
+
+    def __post_init__(self) -> None:
+        probs = (
+            self.crossover_prob,
+            self.subtree_mut_prob,
+            self.point_mut_prob,
+            self.hoist_mut_prob,
+            self.param_mut_prob,
+        )
+        if any(p < 0.0 for p in probs):
+            raise ConfigError("variation 各项概率必须 >= 0")
+        total = sum(probs)
+        if total <= 0.0:
+            raise ConfigError("variation 各项概率之和必须 > 0")
+
+
+@dataclass(frozen=True)
+class FitnessConfig:
+    metric: str = "ic_ir"
+    parsimony_penalty: float = 0.002
+    min_coverage: float = 0.70
+    corr_penalty_threshold: float = 0.60
+    corr_penalty_factor: float = 0.50
+
+    def __post_init__(self) -> None:
+        if self.metric not in ("ic_ir", "ic_mean"):
+            raise ConfigError(f"fitness.metric 必须为 'ic_ir' 或 'ic_mean', 实际 {self.metric!r}")
+        if self.parsimony_penalty < 0.0:
+            raise ConfigError("fitness.parsimony_penalty 必须 >= 0")
+        if not (0.0 <= self.min_coverage <= 1.0):
+            raise ConfigError("fitness.min_coverage 必须在 [0.0, 1.0] 内")
+        if not (0.0 <= self.corr_penalty_threshold <= 1.0):
+            raise ConfigError("fitness.corr_penalty_threshold 必须在 [0.0, 1.0] 内")
+        if not (0.0 <= self.corr_penalty_factor <= 1.0):
+            raise ConfigError("fitness.corr_penalty_factor 必须在 [0.0, 1.0] 内")
+
+
+@dataclass(frozen=True)
+class AdmissionConfig:
+    min_valid_ic_ir: float = 0.30
+    require_sign_consistency: bool = True
+    max_library_corr: float = 0.60
+    max_turnover: float = 0.85
+    top_k_candidates: int = 200
+
+    def __post_init__(self) -> None:
+        if self.min_valid_ic_ir < 0.0:
+            raise ConfigError("admission.min_valid_ic_ir 必须 >= 0")
+        if not (0.0 <= self.max_library_corr <= 1.0):
+            raise ConfigError("admission.max_library_corr 必须在 [0.0, 1.0] 内")
+        if not (0.0 <= self.max_turnover <= 2.0):
+            raise ConfigError("admission.max_turnover 必须在 [0.0, 2.0] 内")
+        if self.top_k_candidates < 1:
+            raise ConfigError("admission.top_k_candidates 必须 >= 1")
+
+
+def _default_gp_splits() -> dict[str, tuple[str, str]]:
+    return {
+        "train": ("2011-01-01", "2018-12-31"),
+        "valid": ("2019-01-01", "2021-12-31"),
+        "test": ("2022-01-01", "2026-08-31"),
+    }
+
+
+@dataclass(frozen=True)
+class GPConfig:
+    seed: int = 42
+    mode: str = "cs"
+    label: str = "y_5"
+    splits: dict[str, tuple[str, str]] = field(default_factory=_default_gp_splits)
+    population: int = 1000
+    generations: int = 50
+    islands: int = 4
+    tournament_size: int = 7
+    elitism: int = 5
+    hall_of_fame_size: int = 200
+    min_names: int = 5
+    migration: MigrationConfig = field(default_factory=MigrationConfig)
+    limits: TreeLimitsConfig = field(default_factory=TreeLimitsConfig)
+    variation: VariationConfig = field(default_factory=VariationConfig)
+    fitness: FitnessConfig = field(default_factory=FitnessConfig)
+    admission: AdmissionConfig = field(default_factory=AdmissionConfig)
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("cs", "ts"):
+            raise ConfigError(f"gp.mode 必须为 'cs' 或 'ts', 实际 {self.mode!r}")
+        if self.population < 4:
+            raise ConfigError(f"gp.population 必须 >= 4, 实际 {self.population}")
+        if self.generations < 1:
+            raise ConfigError(f"gp.generations 必须 >= 1, 实际 {self.generations}")
+        if self.islands < 1 or self.islands > self.population:
+            raise ConfigError(f"gp.islands 必须在 [1, {self.population}] 内, 实际 {self.islands}")
+        if self.tournament_size < 1:
+            raise ConfigError("gp.tournament_size 必须 >= 1")
+        if self.elitism < 0:
+            raise ConfigError("gp.elitism 必须 >= 0")
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["splits"] = {k: list(v) for k, v in self.splits.items()}
+        return out
+
+    def to_yaml(self) -> str:
+        return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True)
+
+
+def load_gp_config(path: Path) -> GPConfig:
+    """加载并强校验 ``gp_default.yaml``。"""
+    raw = _load_yaml(path)
+
+    mig = _section(raw, "migration")
+    lim = _section(raw, "limits")
+    var = _section(raw, "variation")
+    fit = _section(raw, "fitness")
+    adm = _section(raw, "admission")
+    raw_splits = _section(raw, "splits")
+
+    splits = _default_gp_splits()
+    for split_key, val in raw_splits.items():
+        if not isinstance(val, (list, tuple)) or len(val) != 2:
+            raise ConfigError(f"splits.{split_key} 必须为长度为 2 的起止日期列表")
+        d0 = _parse_date(val[0], f"splits.{split_key}[0]")
+        d1 = _parse_date(val[1], f"splits.{split_key}[1]")
+        if d0 > d1:
+            raise ConfigError(f"splits.{split_key} 起始日期不得晚于结束日期")
+        splits[str(split_key)] = (d0.isoformat(), d1.isoformat())
+
+    return GPConfig(
+        seed=int(raw.get("seed", 42)),
+        mode=str(raw.get("mode", "cs")),
+        label=str(raw.get("label", "y_5")),
+        splits=splits,
+        population=int(raw.get("population", 1000)),
+        generations=int(raw.get("generations", 50)),
+        islands=int(raw.get("islands", 4)),
+        tournament_size=int(raw.get("tournament_size", 7)),
+        elitism=int(raw.get("elitism", 5)),
+        hall_of_fame_size=int(raw.get("hall_of_fame_size", adm.get("top_k_candidates", 200))),
+        min_names=int(raw.get("min_names", 5)),
+        migration=MigrationConfig(**mig),
+        limits=TreeLimitsConfig(**lim),
+        variation=VariationConfig(**var),
+        fitness=FitnessConfig(**fit),
+        admission=AdmissionConfig(**adm),
+    )

@@ -153,7 +153,9 @@ def evaluate_factor(
         sign = 1 if force_sign >= 0 else -1
     else:
         train_idx = split_indices.get("train", np.arange(T))
-        f_train = np.asfortranarray(factor_mat[train_idx])
+        s_train = int(train_idx[0])
+        e_train = int(train_idx[-1]) + 1
+        f_train = np.asfortranarray(factor_mat[s_train:e_train])
         # 优先使用 y_5 标签判断方向，不存在则使用 y_1 或任一可用标签
         preferred_label = "y_5" if "y_5" in engine.label_names else engine.label_names[0]
         # 使用底层 rank_ic 计算该切片的 IC 均值
@@ -163,6 +165,8 @@ def evaluate_factor(
             min_names=min_names,
             rank=True,
             horizon=5,
+            start_row=s_train,
+            end_row=e_train,
         )
         train_mean = train_ic_res["ic_mean"]
         sign = 1 if train_mean >= 0 else -1
@@ -173,7 +177,9 @@ def evaluate_factor(
 
     for split_name, idx_range in split_indices.items():
         metrics_by_split[split_name] = {}
-        f_sub = np.asfortranarray(factor_mat[idx_range])
+        s_row = int(idx_range[0])
+        e_row = int(idx_range[-1]) + 1
+        f_sub = np.asfortranarray(factor_mat[s_row:e_row])
 
         for h in horizons:
             lbl_name = f"y_{h}"
@@ -194,6 +200,8 @@ def evaluate_factor(
                 n_quantiles=n_quantiles,
                 min_names=min_names,
                 sign=sign,
+                start_row=s_row,
+                end_row=e_row,
             )
 
             rec = FactorMetricsRecord(

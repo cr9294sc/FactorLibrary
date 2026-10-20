@@ -1233,12 +1233,12 @@ gantt
 - [x] **验收测试**：验证种子因子在 2011–2018 训练集的 RankIC 统计方向与学术界共识完全一致。
 
 ### P4：强类型遗传规划（STGP）批量挖掘引擎（5–7 天）
-- [ ] 实现 `gp/primitives.py` 与 `gp/generate.py`：强类型原语集与 Ramped Half-and-Half 生成器。
-- [ ] 实现 `gp/variation.py`：强类型约束下的交叉、变异、提升算子。
-- [ ] 实现 `gp/islands.py`：多岛环形拓扑迁移控制器。
-- [ ] 实现 `gp/admission.py`：自动五步准入决策器。
-- [ ] 编写 `scripts/run_gp.py` 挖掘脚本，自动记录实验轨迹到 `runs/`。
-- [ ] **验收测试**：固定种子可 100% 稳定复现结果；1000 个体 × 50 代在单机 10 分钟内完成；成功挖掘出进入库中的候选因子。
+- [x] 实现 `gp/primitives.py` 与 `gp/generate.py`：强类型原语集与 Ramped Half-and-Half 生成器。
+- [x] 实现 `gp/variation.py`：强类型约束下的交叉、变异、提升算子。
+- [x] 实现 `gp/islands.py`：多岛环形拓扑迁移控制器。
+- [x] 实现 `gp/admission.py`：自动五步准入决策器。
+- [x] 编写 `scripts/run_gp.py` 挖掘脚本，自动记录实验轨迹到 `runs/`。
+- [x] **验收测试**：固定种子可 100% 稳定复现结果；1000 个体 × 50 代在单机 10 分钟内完成；成功挖掘出进入库中的候选因子。
 
 ### P5：Walk-Forward 机器学习多因子合成（4–5 天）
 - [ ] 实现 `ml/splits.py`：支持 Purge & Embargo 的扩展窗口切分器。

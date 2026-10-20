@@ -11,10 +11,14 @@ from factorlib.core.config import (
     DominantConfig,
     ExecPriceConfig,
     GPConfig,
+    LightGBMConfig,
+    MLConfig,
     TreeLimitsConfig,
     VariationConfig,
+    WalkForwardConfig,
     load_data_config,
     load_gp_config,
+    load_ml_config,
     load_universe_config,
 )
 
@@ -130,3 +134,53 @@ def test_load_gp_config_and_validation(tmp_path: Path):
             hoist_mut_prob=0.2,
             param_mut_prob=0.2,
         )
+
+
+def test_load_ml_config_and_validation(tmp_path: Path):
+    default_ml_path = Path("configs/futures/ml_default.yaml")
+    assert default_ml_path.exists()
+
+    mcfg = load_ml_config(default_ml_path)
+    assert isinstance(mcfg, MLConfig)
+    assert mcfg.target_label == "y_5"
+    assert "accepted" in mcfg.features_status
+    assert mcfg.walk_forward.start_predict_year == 2018
+    assert mcfg.walk_forward.end_predict_year == 2026
+    assert mcfg.walk_forward.train_window == "expanding"
+    assert mcfg.walk_forward.purge_window == 5
+    assert mcfg.walk_forward.validation_size_days == 252
+    assert mcfg.lightgbm.objective == "regression_l2"
+    assert mcfg.lightgbm.max_depth == 4
+    assert mcfg.lightgbm.num_leaves == 15
+    assert mcfg.lightgbm.min_child_samples == 200
+    assert mcfg.lightgbm.feature_fraction == 0.70
+    assert mcfg.lightgbm.bagging_fraction == 0.80
+    assert mcfg.lightgbm.early_stopping_rounds == 50
+
+    # 序列化测试
+    d = mcfg.to_dict()
+    assert d["target_label"] == "y_5"
+    assert "lightgbm" in d
+    assert "walk_forward" in d
+    yaml_str = mcfg.to_yaml()
+    assert "regression_l2" in yaml_str
+
+    # 非法 walk_forward 验证
+    with pytest.raises(ConfigError, match="train_window"):
+        WalkForwardConfig(train_window="invalid_mode")
+    with pytest.raises(ConfigError, match="start_predict_year"):
+        WalkForwardConfig(start_predict_year=2025, end_predict_year=2020)
+
+    # 非法 lightgbm 验证
+    with pytest.raises(ConfigError, match="feature_fraction"):
+        LightGBMConfig(feature_fraction=0.0)
+    with pytest.raises(ConfigError, match="max_depth"):
+        LightGBMConfig(max_depth=0)
+
+    # 非法 MLConfig
+    with pytest.raises(ConfigError, match="target_label"):
+        MLConfig(target_label="")
+    with pytest.raises(ConfigError, match="features_status"):
+        MLConfig(features_status=("unknown_status",))
+    with pytest.raises(ConfigError, match="model"):
+        MLConfig(models=("unsupported_model",))

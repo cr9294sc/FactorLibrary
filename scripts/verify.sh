@@ -213,6 +213,7 @@ check_scripts() {
     python scripts/audit_data.py --help > /dev/null
     python scripts/init_seed_factors.py --help > /dev/null
     python scripts/run_gp.py --help > /dev/null
+    python scripts/run_ml.py --help > /dev/null
     log_pass "CLI 工具脚本 --help 入口响应正常"
 }
 

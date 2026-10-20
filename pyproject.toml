@@ -9,6 +9,9 @@ dependencies = [
     "pyarrow>=15",
     "pyyaml>=6",
     "tqdm>=4",
+    "scipy>=1.12",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,38 @@
+# configs/futures/ml_default.yaml
+# FactorLibrary: Walk-Forward 机器学习多因子合成配置
+
+target_label: "y_5"
+features_status: ["accepted", "active"]
+
+# Walk-Forward 滚动配置
+walk_forward:
+  start_predict_year: 2018
+  end_predict_year: 2026
+  train_window: "expanding"       # expanding: 扩展窗口; rolling: 固定滚动
+  min_train_years: 5
+  purge_window: 5                 # 必须与标签期数一致 (h=5)
+  validation_size_days: 252       # 早停验证集取最后 1 年
+  embargo_window: 0               # 观察期静默天数
+
+# LightGBM 超参数 (防过拟合强约束)
+lightgbm:
+  objective: "regression_l2"
+  metric: "rmse"
+  boosting_type: "gbdt"
+  max_depth: 4
+  num_leaves: 15
+  learning_rate: 0.03
+  n_estimators: 1000
+  min_child_samples: 200
+  feature_fraction: 0.70
+  bagging_fraction: 0.80
+  bagging_freq: 1
+  early_stopping_rounds: 50
+  seed: 42
+
+# 评估模型列表
+models:
+  - "equal_weight"
+  - "rolling_icir"
+  - "ridge"
+  - "lightgbm"

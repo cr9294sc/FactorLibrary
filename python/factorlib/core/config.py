@@ -447,3 +447,125 @@ def load_gp_config(path: Path) -> GPConfig:
         fitness=FitnessConfig(**fit),
         admission=AdmissionConfig(**adm),
     )
+
+
+@dataclass(frozen=True)
+class WalkForwardConfig:
+    """Purged & Embargoed 滚动扩展/滚动窗口配置。"""
+
+    start_predict_year: int = 2018
+    end_predict_year: int = 2026
+    train_window: str = "expanding"  # expanding | rolling
+    min_train_years: int = 5
+    purge_window: int = 5
+    validation_size_days: int = 252
+    embargo_window: int = 0
+
+    def __post_init__(self) -> None:
+        if self.train_window not in ("expanding", "rolling"):
+            raise ConfigError(
+                f"walk_forward.train_window 必须为 'expanding' 或 'rolling', 实际 {self.train_window!r}"
+            )
+        if self.start_predict_year > self.end_predict_year:
+            raise ConfigError("walk_forward.start_predict_year 不得晚于 end_predict_year")
+        if self.min_train_years < 1:
+            raise ConfigError("walk_forward.min_train_years 必须 >= 1")
+        if self.purge_window < 0:
+            raise ConfigError("walk_forward.purge_window 必须 >= 0")
+        if self.validation_size_days < 1:
+            raise ConfigError("walk_forward.validation_size_days 必须 >= 1")
+        if self.embargo_window < 0:
+            raise ConfigError("walk_forward.embargo_window 必须 >= 0")
+
+
+@dataclass(frozen=True)
+class LightGBMConfig:
+    """LightGBM 截面排序回归超参数配置 (防过拟合强约束)。"""
+
+    objective: str = "regression_l2"
+    metric: str = "rmse"
+    boosting_type: str = "gbdt"
+    max_depth: int = 4
+    num_leaves: int = 15
+    learning_rate: float = 0.03
+    n_estimators: int = 1000
+    min_child_samples: int = 200
+    feature_fraction: float = 0.70
+    bagging_fraction: float = 0.80
+    bagging_freq: int = 1
+    early_stopping_rounds: int = 50
+    seed: int = 42
+
+    def __post_init__(self) -> None:
+        if self.max_depth < 1:
+            raise ConfigError("lightgbm.max_depth 必须 >= 1")
+        if self.num_leaves < 2:
+            raise ConfigError("lightgbm.num_leaves 必须 >= 2")
+        if self.learning_rate <= 0:
+            raise ConfigError("lightgbm.learning_rate 必须 > 0")
+        if self.n_estimators < 1:
+            raise ConfigError("lightgbm.n_estimators 必须 >= 1")
+        if self.min_child_samples < 1:
+            raise ConfigError("lightgbm.min_child_samples 必须 >= 1")
+        if not (0 < self.feature_fraction <= 1.0):
+            raise ConfigError("lightgbm.feature_fraction 必须在 (0, 1] 之间")
+        if not (0 < self.bagging_fraction <= 1.0):
+            raise ConfigError("lightgbm.bagging_fraction 必须在 (0, 1] 之间")
+
+
+@dataclass(frozen=True)
+class MLConfig:
+    """机器学习多因子合成整体配置。"""
+
+    target_label: str = "y_5"
+    features_status: tuple[str, ...] = ("accepted", "active")
+    walk_forward: WalkForwardConfig = field(default_factory=WalkForwardConfig)
+    lightgbm: LightGBMConfig = field(default_factory=LightGBMConfig)
+    models: tuple[str, ...] = ("equal_weight", "rolling_icir", "ridge", "lightgbm")
+
+    def __post_init__(self) -> None:
+        if not self.target_label:
+            raise ConfigError("ml.target_label 不能为空")
+        for s in self.features_status:
+            if s not in ("candidate", "accepted", "active", "deprecated"):
+                raise ConfigError(f"无效的 features_status: {s!r}")
+        valid_models = {"equal_weight", "rolling_icir", "ridge", "lightgbm"}
+        for m in self.models:
+            if m not in valid_models:
+                raise ConfigError(f"无效的 model: {m!r}, 必须在 {valid_models} 中")
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["features_status"] = list(self.features_status)
+        out["models"] = list(self.models)
+        return out
+
+    def to_yaml(self) -> str:
+        return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True)
+
+
+def load_ml_config(path: Path) -> MLConfig:
+    """加载并强校验 ``ml_default.yaml``。"""
+    raw = _load_yaml(path)
+    wf_sec = _section(raw, "walk_forward")
+    lgb_sec = _section(raw, "lightgbm")
+
+    status_raw = raw.get("features_status", ["accepted", "active"])
+    if isinstance(status_raw, str):
+        status_tuple = (status_raw,)
+    else:
+        status_tuple = tuple(status_raw)
+
+    models_raw = raw.get("models", ["equal_weight", "rolling_icir", "ridge", "lightgbm"])
+    if isinstance(models_raw, str):
+        models_tuple = (models_raw,)
+    else:
+        models_tuple = tuple(models_raw)
+
+    return MLConfig(
+        target_label=str(raw.get("target_label", "y_5")),
+        features_status=status_tuple,
+        walk_forward=WalkForwardConfig(**wf_sec),
+        lightgbm=LightGBMConfig(**lgb_sec),
+        models=models_tuple,
+    )

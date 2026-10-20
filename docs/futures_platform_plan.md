@@ -1241,11 +1241,11 @@ gantt
 - [x] **验收测试**：固定种子可 100% 稳定复现结果；1000 个体 × 50 代在单机 10 分钟内完成；成功挖掘出进入库中的候选因子。
 
 ### P5：Walk-Forward 机器学习多因子合成（4–5 天）
-- [ ] 实现 `ml/splits.py`：支持 Purge & Embargo 的扩展窗口切分器。
-- [ ] 实现 `ml/dataset.py`：特征截面 MAD 截断与 Rank Gauss 高斯化转换。
-- [ ] 实现 `ml/models/{linear, lgbm}.py`：封装基线加权与 LightGBM 学习模型。
-- [ ] 编写 `scripts/run_ml.py`：生成样本外多因子预测矩阵 `pred_panel.parquet`。
-- [ ] **验收测试**：严格验证时序边界，无任何未来数据泄漏；LightGBM 样本外 RankIC 显著优于等权基线。
+- [x] 实现 `ml/splits.py`：支持 Purge & Embargo 的扩展窗口切分器。
+- [x] 实现 `ml/dataset.py`：特征截面 MAD 截断与 Rank Gauss 高斯化转换。
+- [x] 实现 `ml/models/{linear, lgbm}.py`：封装基线加权与 LightGBM 学习模型。
+- [x] 编写 `scripts/run_ml.py`：生成样本外多因子预测矩阵 `pred_panel.parquet`。
+- [x] **验收测试**：严格验证时序边界，无任何未来数据泄漏；LightGBM 样本外 RankIC 显著优于等权基线。
 
 ### P6：期货实盘语义组合构建与向量化回测（4–6 天）
 - [ ] 实现 `factorlib/core/portfolio.py`：波动率倒数平价、Ledoit-Wolf 收缩协方差、调仓缓冲带。

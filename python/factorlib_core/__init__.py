@@ -10,6 +10,8 @@ from .factorlib_core import (
     check_expr,
     list_operators,
     parse_and_canonicalize,
+    run_fast_backtest,
+    run_futures_backtest,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "calc_turnover",
     "calc_pairwise_correlation",
     "calc_correlation_matrix",
+    "run_fast_backtest",
+    "run_futures_backtest",
 ]

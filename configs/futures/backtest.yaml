@@ -1,0 +1,16 @@
+capital:
+  init_cash: 10000000.0           # 初始本金 1000 万元
+
+portfolio:
+  mode: "cs"                      # 横截面多空 (cs | ts)
+  target_volatility: 0.10         # 组合目标年化波动率 10%
+  vol_lookback: 20                # 波动率平价回看 20 天
+  cov_shrink_lookback: 60         # 协方差估计回看 60 天
+  max_single_weight: 0.15         # 单品种最大持仓权重绝对值 15%
+  max_gross_leverage: 3.0         # 最大总杠杆 300%
+  rebalance_buffer: 0.01          # 1% 调仓缓冲带
+
+execution:
+  max_margin_ratio: 0.50          # 保证金总占用不得超过净资产的 50%
+  margin_safety_multiplier: 1.1   # 在交易所基础保证金率上加收 10% 安全垫
+  lot_rounding: "round"           # 权重转整数手方式: "round" | "floor"

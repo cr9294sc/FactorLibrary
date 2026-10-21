@@ -9,6 +9,7 @@
 
 #![allow(clippy::useless_conversion)]
 
+pub mod backtest;
 pub mod expr;
 pub mod metrics;
 pub mod nan;
@@ -29,5 +30,7 @@ fn factorlib_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py::calc_turnover, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_pairwise_correlation, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_correlation_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(py::run_fast_backtest, m)?)?;
+    m.add_function(wrap_pyfunction!(py::run_futures_backtest, m)?)?;
     Ok(())
 }

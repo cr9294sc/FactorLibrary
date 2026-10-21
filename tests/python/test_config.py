@@ -7,15 +7,19 @@ from pathlib import Path
 
 import pytest
 from factorlib.core.config import (
+    CapitalConfig,
     ConfigError,
     DominantConfig,
     ExecPriceConfig,
+    ExecutionConfig,
     GPConfig,
     LightGBMConfig,
     MLConfig,
+    PortfolioConfig,
     TreeLimitsConfig,
     VariationConfig,
     WalkForwardConfig,
+    load_backtest_config,
     load_data_config,
     load_gp_config,
     load_ml_config,
@@ -184,3 +188,82 @@ def test_load_ml_config_and_validation(tmp_path: Path):
         MLConfig(features_status=("unknown_status",))
     with pytest.raises(ConfigError, match="model"):
         MLConfig(models=("unsupported_model",))
+
+
+def test_load_backtest_config(tmp_path: Path):
+    yaml_content = """
+capital:
+  init_cash: 5000000.0
+
+portfolio:
+  mode: "cs"
+  target_volatility: 0.12
+  vol_lookback: 25
+  cov_shrink_lookback: 50
+  max_single_weight: 0.10
+  max_gross_leverage: 2.5
+  rebalance_buffer: 0.02
+
+execution:
+  max_margin_ratio: 0.60
+  margin_safety_multiplier: 1.15
+  lot_rounding: "floor"
+"""
+    p = tmp_path / "backtest.yaml"
+    p.write_text(yaml_content, encoding="utf-8")
+
+    bcfg = load_backtest_config(p)
+    assert bcfg.capital.init_cash == 5000000.0
+    assert bcfg.portfolio.mode == "cs"
+    assert bcfg.portfolio.target_volatility == 0.12
+    assert bcfg.portfolio.vol_lookback == 25
+    assert bcfg.portfolio.cov_shrink_lookback == 50
+    assert bcfg.portfolio.max_single_weight == 0.10
+    assert bcfg.portfolio.max_gross_leverage == 2.5
+    assert bcfg.portfolio.rebalance_buffer == 0.02
+    assert bcfg.execution.max_margin_ratio == 0.60
+    assert bcfg.execution.margin_safety_multiplier == 1.15
+    assert bcfg.execution.lot_rounding == "floor"
+
+    # 序列化测试
+    d = bcfg.to_dict()
+    assert d["capital"]["init_cash"] == 5000000.0
+    y_str = bcfg.to_yaml()
+    assert "init_cash: 5000000.0" in y_str
+
+    # 非法参数校验
+    with pytest.raises(ConfigError, match="init_cash"):
+        CapitalConfig(init_cash=0.0)
+    with pytest.raises(ConfigError, match="portfolio.mode"):
+        PortfolioConfig(mode="invalid_mode")
+    with pytest.raises(ConfigError, match="target_volatility"):
+        PortfolioConfig(target_volatility=-0.1)
+    with pytest.raises(ConfigError, match="vol_lookback"):
+        PortfolioConfig(vol_lookback=1)
+    with pytest.raises(ConfigError, match="cov_shrink_lookback"):
+        PortfolioConfig(cov_shrink_lookback=1)
+    with pytest.raises(ConfigError, match="max_single_weight"):
+        PortfolioConfig(max_single_weight=0.0)
+    with pytest.raises(ConfigError, match="max_single_weight"):
+        PortfolioConfig(max_single_weight=1.5)
+    with pytest.raises(ConfigError, match="max_gross_leverage"):
+        PortfolioConfig(max_gross_leverage=0.0)
+    with pytest.raises(ConfigError, match="rebalance_buffer"):
+        PortfolioConfig(rebalance_buffer=-0.01)
+    with pytest.raises(ConfigError, match="max_margin_ratio"):
+        ExecutionConfig(max_margin_ratio=0.0)
+    with pytest.raises(ConfigError, match="max_margin_ratio"):
+        ExecutionConfig(max_margin_ratio=1.5)
+    with pytest.raises(ConfigError, match="margin_safety_multiplier"):
+        ExecutionConfig(margin_safety_multiplier=0.9)
+    with pytest.raises(ConfigError, match="lot_rounding"):
+        ExecutionConfig(lot_rounding="invalid_rounding")
+
+
+def test_load_default_backtest_yaml():
+    p = Path("configs/futures/backtest.yaml")
+    assert p.exists(), "configs/futures/backtest.yaml 必须存在"
+    cfg = load_backtest_config(p)
+    assert cfg.capital.init_cash == 10_000_000.0
+    assert cfg.portfolio.target_volatility == 0.10
+    assert cfg.execution.max_margin_ratio == 0.50

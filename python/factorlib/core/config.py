@@ -569,3 +569,91 @@ def load_ml_config(path: Path) -> MLConfig:
         lightgbm=LightGBMConfig(**lgb_sec),
         models=models_tuple,
     )
+
+
+@dataclass(frozen=True)
+class CapitalConfig:
+    """回测本金配置。"""
+
+    init_cash: float = 10_000_000.0
+
+    def __post_init__(self) -> None:
+        if self.init_cash <= 0:
+            raise ConfigError("capital.init_cash 必须 > 0")
+
+
+@dataclass(frozen=True)
+class PortfolioConfig:
+    """组合权重优化与风控约束配置。"""
+
+    mode: str = "cs"  # cs: 横截面多空 | ts: 时序 CTA
+    target_volatility: float = 0.10
+    vol_lookback: int = 20
+    cov_shrink_lookback: int = 60
+    max_single_weight: float = 0.15
+    max_gross_leverage: float = 3.0
+    rebalance_buffer: float = 0.01
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("cs", "ts"):
+            raise ConfigError(f"portfolio.mode 必须为 'cs' 或 'ts', 实际 {self.mode!r}")
+        if self.target_volatility <= 0:
+            raise ConfigError("portfolio.target_volatility 必须 > 0")
+        if self.vol_lookback < 2:
+            raise ConfigError("portfolio.vol_lookback 必须 >= 2")
+        if self.cov_shrink_lookback < 2:
+            raise ConfigError("portfolio.cov_shrink_lookback 必须 >= 2")
+        if not (0 < self.max_single_weight <= 1.0):
+            raise ConfigError("portfolio.max_single_weight 必须在 (0, 1] 之间")
+        if self.max_gross_leverage <= 0:
+            raise ConfigError("portfolio.max_gross_leverage 必须 > 0")
+        if not (0 <= self.rebalance_buffer < 1.0):
+            raise ConfigError("portfolio.rebalance_buffer 必须在 [0, 1) 之间")
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    """实盘执行与保证金撮合约束配置。"""
+
+    max_margin_ratio: float = 0.50
+    margin_safety_multiplier: float = 1.1
+    lot_rounding: str = "round"  # round | floor
+
+    def __post_init__(self) -> None:
+        if not (0 < self.max_margin_ratio <= 1.0):
+            raise ConfigError("execution.max_margin_ratio 必须在 (0, 1] 之间")
+        if self.margin_safety_multiplier < 1.0:
+            raise ConfigError("execution.margin_safety_multiplier 必须 >= 1.0")
+        if self.lot_rounding not in ("round", "floor"):
+            raise ConfigError(
+                f"execution.lot_rounding 必须为 'round' 或 'floor', 实际 {self.lot_rounding!r}"
+            )
+
+
+@dataclass(frozen=True)
+class BacktestConfig:
+    """期货实盘语义回测整体配置。"""
+
+    capital: CapitalConfig = field(default_factory=CapitalConfig)
+    portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_yaml(self) -> str:
+        return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True)
+
+
+def load_backtest_config(path: Path) -> BacktestConfig:
+    """加载并强校验 ``backtest.yaml``。"""
+    raw = _load_yaml(path)
+    cap_sec = _section(raw, "capital")
+    port_sec = _section(raw, "portfolio")
+    exec_sec = _section(raw, "execution")
+
+    return BacktestConfig(
+        capital=CapitalConfig(**cap_sec),
+        portfolio=PortfolioConfig(**port_sec),
+        execution=ExecutionConfig(**exec_sec),
+    )

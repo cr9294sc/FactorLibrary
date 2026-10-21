@@ -135,7 +135,6 @@ class Panel:
             "symbol",
             "contract",
             "prev_contract",
-            "is_roll",
             "date_idx",
             "sector",
             "in_universe",

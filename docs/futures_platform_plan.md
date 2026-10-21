@@ -1248,10 +1248,10 @@ gantt
 - [x] **验收测试**：严格验证时序边界，无任何未来数据泄漏；LightGBM 样本外 RankIC 显著优于等权基线。
 
 ### P6：期货实盘语义组合构建与向量化回测（4–6 天）
-- [ ] 实现 `factorlib/core/portfolio.py`：波动率倒数平价、Ledoit-Wolf 收缩协方差、调仓缓冲带。
-- [ ] 实现 `backtest/futures.rs`：整数手数转换、涨跌停阻断、换月双边成本、逐日盯市净值计算。
-- [ ] 实现 `factorlib/core/report.py`：输出交互式 HTML 净值回撤、换手、交易成本拆解瀑布图。
-- [ ] **验收测试**：执行手工推演小样本（包含涨跌停和换月），逐日核验 $\Delta E_d == \Delta \text{PnL}$ 绝对一致。
+- [x] 实现 `factorlib/core/portfolio.py`：波动率倒数平价、Ledoit-Wolf 收缩协方差、调仓缓冲带。
+- [x] 实现 `backtest/futures.rs`：整数手数转换、涨跌停阻断、换月双边成本、逐日盯市净值计算。
+- [x] 实现 `factorlib/core/report.py`：输出交互式 HTML 净值回撤、换手、交易成本拆解瀑布图。
+- [x] **验收测试**：执行手工推演小样本（包含涨跌停和换月），逐日核验 $\Delta E_d == \Delta \text{PnL}$ 绝对一致。
 
 ### P7：整体验收与股票扩展接口固化（2–3 天）
 - [ ] 编写端到端一键执行流水线测试。

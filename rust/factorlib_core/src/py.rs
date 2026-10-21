@@ -6,6 +6,11 @@
 //!   统一通过 `py.allow_threads(...)` 显式释放 Python GIL；
 //! - 导出模块级辅助函数：`parse_and_canonicalize`、`validate_expr`、`list_operators`。
 
+use crate::backtest::fast::{run_fast_backtest as run_fast_backtest_impl, FastBacktestConfig};
+use crate::backtest::futures::{
+    run_futures_backtest as run_futures_backtest_impl, FeeType, FuturesBacktestConfig,
+    RoundingMode, SymbolSpec,
+};
 use crate::expr::cache::SubExprCache;
 use crate::expr::canon::{canonicalize, CanonResult};
 use crate::expr::eval::{eval_batch_str, eval_expr_str};
@@ -1220,4 +1225,230 @@ pub fn calc_correlation_matrix<'py>(
     });
 
     Ok(PyArray2::from_owned_array_bound(py, mat))
+}
+
+/// 快速连续权重回测函数。
+#[pyfunction]
+#[pyo3(signature = (weights, returns, fee_rate=0.0001, slippage_bps=1.0, init_cash=10000000.0))]
+pub fn run_fast_backtest<'py>(
+    py: Python<'py>,
+    weights: PyReadonlyArray2<'_, f64>,
+    returns: PyReadonlyArray2<'_, f64>,
+    fee_rate: f64,
+    slippage_bps: f64,
+    init_cash: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let w_mat = view_to_fortran_f64(weights.as_array());
+    let r_mat = view_to_fortran_f64(returns.as_array());
+    if w_mat.dim() != r_mat.dim() {
+        return Err(PyValueError::new_err("weights 与 returns 维度必须一致"));
+    }
+
+    let cfg = FastBacktestConfig {
+        fee_rate,
+        slippage_bps,
+        init_cash,
+    };
+
+    let res = py.allow_threads(move || run_fast_backtest_impl(&w_mat, &r_mat, &cfg));
+
+    let out = PyDict::new_bound(py);
+    out.set_item("equity", PyArray1::from_vec_bound(py, res.equity))?;
+    out.set_item(
+        "daily_returns",
+        PyArray1::from_vec_bound(py, res.daily_returns),
+    )?;
+    out.set_item("turnover", PyArray1::from_vec_bound(py, res.turnover))?;
+    out.set_item("fees", PyArray1::from_vec_bound(py, res.fees))?;
+    out.set_item("slippage", PyArray1::from_vec_bound(py, res.slippage))?;
+
+    let m = PyDict::new_bound(py);
+    m.set_item("total_return", res.total_return)?;
+    m.set_item("annual_return", res.annual_return)?;
+    m.set_item("annual_volatility", res.annual_volatility)?;
+    m.set_item("sharpe", res.sharpe)?;
+    m.set_item("sortino", res.sortino)?;
+    m.set_item("calmar", res.calmar)?;
+    m.set_item("max_drawdown", res.max_drawdown)?;
+    m.set_item("max_drawdown_days", res.max_drawdown_days)?;
+    m.set_item("win_rate", res.win_rate)?;
+    m.set_item("daily_turnover_mean", res.daily_turnover_mean)?;
+    m.set_item("annual_turnover", res.annual_turnover)?;
+    out.set_item("metrics", m)?;
+
+    Ok(out)
+}
+
+/// 期货实盘离散手数与逐日盯市回测函数。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (
+    target_weights,
+    exec_price,
+    exec_price_old,
+    settle_price,
+    limit_up,
+    limit_down,
+    is_unilateral,
+    is_roll,
+    specs,
+    init_cash=10000000.0,
+    max_margin_ratio=0.50,
+    margin_safety_multiplier=1.1,
+    lot_rounding="round"
+))]
+pub fn run_futures_backtest<'py>(
+    py: Python<'py>,
+    target_weights: PyReadonlyArray2<'_, f64>,
+    exec_price: PyReadonlyArray2<'_, f64>,
+    exec_price_old: PyReadonlyArray2<'_, f64>,
+    settle_price: PyReadonlyArray2<'_, f64>,
+    limit_up: PyReadonlyArray2<'_, f64>,
+    limit_down: PyReadonlyArray2<'_, f64>,
+    is_unilateral: PyReadonlyArray2<'_, bool>,
+    is_roll: PyReadonlyArray2<'_, bool>,
+    specs: Vec<Bound<'py, PyDict>>,
+    init_cash: f64,
+    max_margin_ratio: f64,
+    margin_safety_multiplier: f64,
+    lot_rounding: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let w_mat = view_to_fortran_f64(target_weights.as_array());
+    let ep_mat = view_to_fortran_f64(exec_price.as_array());
+    let epo_mat = view_to_fortran_f64(exec_price_old.as_array());
+    let sp_mat = view_to_fortran_f64(settle_price.as_array());
+    let lu_mat = view_to_fortran_f64(limit_up.as_array());
+    let ld_mat = view_to_fortran_f64(limit_down.as_array());
+    let iu_mat = view_to_fortran_bool(is_unilateral.as_array());
+    let ir_mat = view_to_fortran_bool(is_roll.as_array());
+
+    let (t, n) = w_mat.dim();
+    if ep_mat.dim() != (t, n)
+        || epo_mat.dim() != (t, n)
+        || sp_mat.dim() != (t, n)
+        || lu_mat.dim() != (t, n)
+        || ld_mat.dim() != (t, n)
+        || iu_mat.dim() != (t, n)
+        || ir_mat.dim() != (t, n)
+    {
+        return Err(PyValueError::new_err(
+            "所有行情与执行矩阵维度必须完全一致 (T, N)",
+        ));
+    }
+
+    if specs.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "specs 长度 ({}) 必须与标的列数 N ({}) 严格相等",
+            specs.len(),
+            n
+        )));
+    }
+
+    let mut rust_specs = Vec::with_capacity(n);
+    for d in specs {
+        let symbol: String = d
+            .get_item("symbol")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok("".to_string()))?;
+        let multiplier: f64 = d
+            .get_item("multiplier")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(10.0))?;
+        let margin_rate: f64 = d
+            .get_item("margin_rate")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(0.10))?;
+        let fee_type_str: String = d
+            .get_item("fee_type")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok("rate".to_string()))?;
+        let open_fee: f64 = d
+            .get_item("open_fee")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(0.00005))?;
+        let close_fee: f64 = d
+            .get_item("close_fee")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(0.00005))?;
+        let tick_size: f64 = d
+            .get_item("tick_size")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(1.0))?;
+        let slip_ticks: f64 = d
+            .get_item("slip_ticks")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(1.0))?;
+
+        rust_specs.push(SymbolSpec {
+            symbol,
+            multiplier,
+            margin_rate,
+            fee_type: FeeType::parse(&fee_type_str),
+            open_fee,
+            close_fee,
+            tick_size,
+            slip_ticks,
+        });
+    }
+
+    let cfg = FuturesBacktestConfig {
+        init_cash,
+        max_margin_ratio,
+        margin_safety_multiplier,
+        lot_rounding: RoundingMode::parse(lot_rounding),
+    };
+
+    let res = py.allow_threads(move || {
+        run_futures_backtest_impl(
+            &w_mat,
+            &ep_mat,
+            &epo_mat,
+            &sp_mat,
+            &lu_mat,
+            &ld_mat,
+            &iu_mat,
+            &ir_mat,
+            &rust_specs,
+            &cfg,
+        )
+    });
+
+    let out = PyDict::new_bound(py);
+    out.set_item("equity", PyArray1::from_vec_bound(py, res.equity))?;
+    out.set_item("returns", PyArray1::from_vec_bound(py, res.returns))?;
+    out.set_item("cash", PyArray1::from_vec_bound(py, res.cash))?;
+    out.set_item("margin_used", PyArray1::from_vec_bound(py, res.margin_used))?;
+    out.set_item("leverage", PyArray1::from_vec_bound(py, res.leverage))?;
+    out.set_item("gross_pnl", PyArray1::from_vec_bound(py, res.gross_pnl))?;
+    out.set_item("net_pnl", PyArray1::from_vec_bound(py, res.net_pnl))?;
+    out.set_item("fee", PyArray1::from_vec_bound(py, res.fee))?;
+    out.set_item("slippage", PyArray1::from_vec_bound(py, res.slippage))?;
+    out.set_item("roll_cost", PyArray1::from_vec_bound(py, res.roll_cost))?;
+    out.set_item("turnover", PyArray1::from_vec_bound(py, res.turnover))?;
+    out.set_item(
+        "positions",
+        PyArray2::from_owned_array_bound(py, res.positions),
+    )?;
+
+    let m = PyDict::new_bound(py);
+    m.set_item("total_return", res.metrics.total_return)?;
+    m.set_item("annual_return", res.metrics.annual_return)?;
+    m.set_item("annual_volatility", res.metrics.annual_volatility)?;
+    m.set_item("sharpe", res.metrics.sharpe)?;
+    m.set_item("sortino", res.metrics.sortino)?;
+    m.set_item("calmar", res.metrics.calmar)?;
+    m.set_item("max_drawdown", res.metrics.max_drawdown)?;
+    m.set_item("max_drawdown_days", res.metrics.max_drawdown_days)?;
+    m.set_item("win_rate", res.metrics.win_rate)?;
+    m.set_item("profit_loss_ratio", res.metrics.profit_loss_ratio)?;
+    m.set_item("daily_turnover_mean", res.metrics.daily_turnover_mean)?;
+    m.set_item("annual_turnover", res.metrics.annual_turnover)?;
+    m.set_item("total_fees", res.metrics.total_fees)?;
+    m.set_item("total_slippage", res.metrics.total_slippage)?;
+    m.set_item("total_roll_cost", res.metrics.total_roll_cost)?;
+    m.set_item("max_margin_utilization", res.metrics.max_margin_utilization)?;
+    m.set_item("max_leverage", res.metrics.max_leverage)?;
+    out.set_item("metrics", m)?;
+
+    Ok(out)
 }

@@ -1347,3 +1347,40 @@ class StockMarketAdapter(MarketAdapter):
 本技术白皮书已完成所有细节设计，涵盖从底层内存布局、数学公式、DSL 语法规范、演化算法、机器学习集成到期货实盘记账状态机的每一个工程切面。所有设计均严格遵从“单向数据流、无未来函数、生产级防过拟合、零拷贝高并发”原则。
 
 后续工作可以在不改动既定架构的前提下，按照第 15 节的任务清单直接推进代码实现。
+
+---
+
+## 17. FactorLab 6 阶段因子研发工作流与 12 算子声明式后处理扩展
+
+为支持标准化的「因子目录检索 $\to$ 双模态编写 $\to$ 静态探针校验 $\to$ 声明式后处理与物化 $\to$ 双层回测归因」闭环，平台在 Rust 计算内核与 Python 核心层扩展了以下模块：
+
+1. **Stage 0 & Stage 1 — 统一因子研究目录 (`core/catalog.py` & `scripts/catalog.py`)**：
+   - 统一纳管 `variables`（面板字段与隐式掩码）、`functions`（68 个原生算子与 `log`/`sqrt`/`ts_delay`/`ts_delta`/`decay`/`emadecay` 兼容别名）、`postprocess`（12 个声明式后处理算子）以及 `styles`（6 大期货标准风格因子）。
+2. **Stage 2 — 双模态因子定义与 12 算子声明式后处理链 (`core/probe.py` & `rust/factorlib_core/src/ops/postprocess.rs`)**：
+   - 支持 `expression`（Rust 极速 DSL）与 `code`（Python `def compute(context):` 因果沙箱）双模态编写；
+   - 在 Rust 内核中精确实现 12 个 C++ 级语义的后处理算子：`baseUniMask`、`trdMask`、`dropNewStock`、`MAD`（下中位数索引 `(k-1)//2` 与 `1.4826` 缩放）、`winsor`、`indNeut`、`riskNeut`、`riskNeutMulti`（多元无截距 OLS 高斯消元）、`zScore`（`ddof=0`）、`rank`（6 位银行家舍入）、`decay`、`emadecay`。
+3. **Stage 3 — 静态探针 (`probe_factor`)**：
+   - 毫秒级静态解析 AST 节点、拦截未来函数与非法导入，推导 4 级回看预热窗口（`expression_lookback`、`postprocess_lookback`、`total_required_lookback`、`warmup_bars`），并精确计算后处理时序平滑算子对前置隐式依赖（如 `in_universe_mask`、`sector`、`SIZE`）的窗口放大效应。
+4. **Stage 4 & Stage 5 — 因子物化、版本锁定与双层回测 (`core/styles.py`, `core/registry.py`, `core/evaluate.py`)**：
+   - 内置 6 大期货标准风格因子（`SIZE`、`VOLATILITY`、`MOMENTUM`、`CARRY`、`INVENTORY`、`POSITIONING`）；
+   - `run_factor_workflow()` 同时产出 **Layer 1（FactorLab Schema v4 统计分布评估：`ic`/`rank_ic`/`perc_ic`/`ic_5d`、分组复利净值、相对等权商品池基准的多头超额收益与加法最大回撤、风格暴露归因）** 与 **Layer 2（连续组合优化 + Rust 期货实盘逐日盯市回测）**，并在 SQLite `factor_version` 表中锁定不可变版本快照。
+
+---
+
+## 18. 现代化 6 阶段量化因子研发 Web 工作台与可视化系统
+
+为将后端的 6 阶段全生命周期能力转化为直观高效的投研生产力，平台构建了零构建依赖的现代量化因子单页工作台（SPA）：
+
+1. **核心服务与 API 架构 (`core/workbench.py` & `server_main.py` / `scripts/run_web.py`)**：
+   - `FactorWorkbenchService` 统一抽象面板加载（真实面板与合成演示面板动态切换）、目录检索、实时探针、双层回测、不可变版本锁定及流水线调度；
+   - 具备零外部 Web 框架依赖的标准多线程 HTTP 服务端，开箱即用托管静态前端与 RESTful API。
+2. **6 阶段因子 IDE (`frontend/index.html` + `styles.css` + `app.js`)**：
+   - 目录检索抽屉（Stage 0/1）支持按分类筛选并快捷插入编辑器；
+   - 双模态编辑器（Stage 2）支持 DSL 表达式与 Python `def compute(context):` 因果代码，集成 12 算子声明式后处理可视化编排器；
+   - 实时静态探针面板（Stage 3）毫秒级推导 4 级预热天数、显隐式依赖树与阶段顺序违规告警。
+3. **双层回测与归因深度看板 (Layer 1 v4 + Layer 2 MTM)**：
+   - Layer 1 Schema v4：五分组复利净值折线图、累计 4 类 IC 与多头超额曲线图、6 大期货风格暴露水平归因图表及分年度明细表；
+   - Layer 2 实盘 MTM：净值回撤联动图、交易摩擦损耗瀑布图（毛盈亏 $\to$ 佣金 $\to$ 滑点 $\to$ 换月展期 $\to$ 净盈亏）、月度收益热力表与极端交易日明细。
+4. **SQLite 因子资产与版本中心**：
+   - 集中展示因子的全周期生命周期状态（`candidate -> accepted -> active -> deprecated`）；
+   - 提供不可变历史版本快照抽屉，支持随时载入任意历史版本。

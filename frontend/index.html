@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FactorLibrary 期货量化因子研发工作台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部全局导航栏 -->
+    <header class="app-header">
+      <div class="brand">
+        <span class="logo-icon">⚡</span>
+        <div>
+          <div class="logo-text">FactorLibrary</div>
+          <div class="logo-sub">Futures Quant Factor Studio · Rust Core</div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="tab-ide">6 阶段因子工作台</button>
+        <button class="nav-tab" data-tab="tab-analytics">双层回测与归因看板</button>
+        <button class="nav-tab" data-tab="tab-registry">SQLite 因子库与版本中心</button>
+        <button class="nav-tab" data-tab="tab-pipeline">全流程流水线与实验</button>
+      </nav>
+
+      <div class="header-status">
+        <div id="panel-badge" class="status-pill pill-blue">加载面板中...</div>
+        <button id="btn-switch-panel" class="btn btn-sm btn-ghost" title="切换真实面板与合成演示面板">切换面板</button>
+        <div id="reg-badge" class="status-pill pill-gray">因子库: -</div>
+      </div>
+    </header>
+
+    <!-- 全局通知条 -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- 主视图区域 -->
+    <main class="app-main">
+      <!-- 视图 1：6 阶段因子研发工作台 -->
+      <section id="tab-ide" class="tab-pane active">
+        <div class="ide-grid">
+          <!-- 左侧：Stage 0 & 1 统一目录抽屉 -->
+          <aside class="panel ide-catalog">
+            <div class="panel-header">
+              <h3>因子研究目录 (Catalog)</h3>
+              <span id="catalog-count-badge" class="badge">0</span>
+            </div>
+            <div class="catalog-filters">
+              <input type="text" id="catalog-search-input" class="form-input" placeholder="模糊检索字段、算子、后处理与风格...">
+              <div class="pill-group" id="catalog-pills">
+                <button class="pill-btn active" data-cat="all">全部</button>
+                <button class="pill-btn" data-cat="variables">字段</button>
+                <button class="pill-btn" data-cat="functions">算子</button>
+                <button class="pill-btn" data-cat="postprocess">后处理</button>
+                <button class="pill-btn" data-cat="styles">风格</button>
+              </div>
+            </div>
+            <div id="catalog-list" class="catalog-list">
+              <div class="loading-spinner">加载目录中...</div>
+            </div>
+          </aside>
+
+          <!-- 中部：Stage 2 双模态因子编辑器 + 12 算子后处理编排 -->
+          <div class="panel ide-editor">
+            <div class="panel-header flex-between">
+              <div class="flex-align-gap">
+                <h3>Stage 2: 因子定义与声明式后处理</h3>
+                <select id="select-template" class="form-select select-sm">
+                  <option value="">快速载入经典模板...</option>
+                </select>
+              </div>
+              <div class="radio-toggle">
+                <label><input type="radio" name="factor_type" value="expression" checked> DSL 表达式</label>
+                <label><input type="radio" name="factor_type" value="code"> Python 因果沙箱</label>
+              </div>
+            </div>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="factor-name-input">因子标识名称 (name)</label>
+                <input type="text" id="factor-name-input" class="form-input" value="my_alpha_factor">
+              </div>
+              <div class="form-group">
+                <label for="factor-desc-input">经济学语义说明 (description)</label>
+                <input type="text" id="factor-desc-input" class="form-input" placeholder="简述因子的经济逻辑与预测原理...">
+              </div>
+            </div>
+
+            <!-- DSL 表达式编辑器 -->
+            <div id="editor-expr-wrap" class="editor-section">
+              <div class="flex-between editor-bar">
+                <label for="factor-expr-input">Rust 极速 DSL 表达式 (Vectorized Expression)</label>
+                <span class="text-muted text-xs">支持 68+ 向量化与时序增量算子</span>
+              </div>
+              <textarea id="factor-expr-input" class="code-editor" rows="3" placeholder="例如: cs_zscore(ry_ann) + cs_zscore(pct_change(close, 20))"></textarea>
+            </div>
+
+            <!-- Python compute(context) 编辑器 -->
+            <div id="editor-code-wrap" class="editor-section" style="display:none;">
+              <div class="flex-between editor-bar">
+                <label for="factor-code-input">Python 因果沙箱代码 (def compute(context):)</label>
+                <span class="text-muted text-xs">通过 context.history(field, window) 严格切片历史</span>
+              </div>
+              <textarea id="factor-code-input" class="code-editor" rows="6" placeholder="def compute(context): ..."></textarea>
+            </div>
+
+            <!-- 12 算子声明式后处理管线编排器 -->
+            <div class="postprocess-builder">
+              <div class="flex-between pb-header">
+                <div>
+                  <h4 style="margin:0;">声明式后处理管线 (12 算子链)</h4>
+                  <div class="text-xs text-muted">标准顺序: 1.Mask(掩码) → 2.Outlier(去极值) → 3.Neutralize(中性化) → 4.Normalize(标准化) → 5.Smooth(平滑)</div>
+                </div>
+                <div class="flex-align-gap">
+                  <span class="text-xs">一键预设:</span>
+                  <button class="btn btn-xs btn-outline btn-preset" data-preset="standard">标准 (standard)</button>
+                  <button class="btn btn-xs btn-outline btn-preset" data-preset="minimal">极简 (minimal)</button>
+                  <button class="btn btn-xs btn-outline btn-preset" data-preset="style_neutral">多风格中性化 (style_neutral)</button>
+                  <button class="btn btn-xs btn-ghost btn-preset" data-preset="clear">清空</button>
+                </div>
+              </div>
+
+              <!-- 添加步骤控制行 -->
+              <div class="add-step-bar">
+                <select id="select-add-op" class="form-select select-sm">
+                  <option value="baseUniMask">1. baseUniMask (品种池掩码)</option>
+                  <option value="trdMask">1. trdMask (可交易状态掩码)</option>
+                  <option value="dropNewStock">1. dropNewStock (次新剔除)</option>
+                  <option value="MAD" selected>2. MAD (绝对中位差去极值)</option>
+                  <option value="winsor">2. winsor (分位数缩尾)</option>
+                  <option value="indNeut">3. indNeut (期货板块去均值)</option>
+                  <option value="riskNeut">3. riskNeut (单风格回归中性化)</option>
+                  <option value="riskNeutMulti">3. riskNeutMulti (多风格正交残差)</option>
+                  <option value="zScore">4. zScore (截面标准化)</option>
+                  <option value="rank">4. rank (截面百分位秩)</option>
+                  <option value="decay">5. decay (等权移动均线)</option>
+                  <option value="emadecay">5. emadecay (EMA平滑衰减)</option>
+                </select>
+                <div id="op-arg-input-wrap"></div>
+                <button id="btn-add-step" class="btn btn-sm btn-secondary">+ 追加步骤</button>
+              </div>
+
+              <!-- 已配置步骤列表 -->
+              <div id="steps-container" class="steps-container">
+                <div class="empty-tip">尚未配置后处理算子，将直接使用原始因子值</div>
+              </div>
+
+              <!-- 组合与回测超参数折叠框 -->
+              <details class="portfolio-details">
+                <summary>组合优化与回测参数配置 (Portfolio & Risk Config)</summary>
+                <div class="form-grid-4">
+                  <div class="form-group">
+                    <label>初始本金 (元)</label>
+                    <input type="number" id="cfg-init-cash" class="form-input input-sm" value="10000000">
+                  </div>
+                  <div class="form-group">
+                    <label>目标年化波动率</label>
+                    <input type="number" id="cfg-target-vol" class="form-input input-sm" value="0.10" step="0.01">
+                  </div>
+                  <div class="form-group">
+                    <label>调仓缓冲带 (Turnover Buffer)</label>
+                    <input type="number" id="cfg-buffer" class="form-input input-sm" value="0.01" step="0.005">
+                  </div>
+                  <div class="form-group">
+                    <label>单品种最大持仓权重</label>
+                    <input type="number" id="cfg-max-weight" class="form-input input-sm" value="0.15" step="0.01">
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <!-- 右侧：Stage 3 毫秒级静态探针实时诊断 + 运行控制 -->
+          <aside class="panel ide-probe">
+            <div class="panel-header flex-between">
+              <h3>Stage 3: 静态探针诊断 (Probe)</h3>
+              <span id="probe-status-pill" class="status-pill pill-green">OK</span>
+            </div>
+
+            <div class="probe-content">
+              <!-- 签名与指纹卡片 -->
+              <div class="probe-meta-card">
+                <div class="meta-row">
+                  <span class="meta-lbl">规范表达式:</span>
+                  <code id="probe-canon-expr" class="meta-val">-</code>
+                </div>
+                <div class="meta-row">
+                  <span class="meta-lbl">代数指纹:</span>
+                  <span id="probe-canon-hash" class="meta-val font-mono">-</span>
+                </div>
+                <div class="meta-row-2">
+                  <div><span class="meta-lbl">AST 节点数:</span> <b id="probe-n-nodes">-</b></div>
+                  <div><span class="meta-lbl">语法树深度:</span> <b id="probe-depth">-</b></div>
+                </div>
+              </div>
+
+              <!-- 4 级预热回看窗口卡片 -->
+              <div class="lookback-card">
+                <div class="card-title">4 级预热回看窗口推导</div>
+                <div class="lookback-grid">
+                  <div class="lb-box">
+                    <div class="lb-lbl">表达式回看</div>
+                    <div id="lb-expr" class="lb-val">1 日</div>
+                  </div>
+                  <div class="lb-box">
+                    <div class="lb-lbl">后处理时序回看</div>
+                    <div id="lb-pp" class="lb-val">0 日</div>
+                  </div>
+                  <div class="lb-box highlight">
+                    <div class="lb-lbl">总预热天数</div>
+                    <div id="lb-total" class="lb-val">1 日</div>
+                  </div>
+                  <div class="lb-box">
+                    <div class="lb-lbl">Warmup Bars</div>
+                    <div id="lb-warmup" class="lb-val">0</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 阶段逆序告警条 -->
+              <div id="stage-warning-box" class="warning-alert" style="display:none;"></div>
+
+              <!-- 显隐式依赖清单 -->
+              <div class="dep-section">
+                <div class="card-title">变量与算子依赖明细</div>
+                <div id="dependencies-table-wrap" class="dep-table-wrap">
+                  <table class="data-table table-sm">
+                    <thead><tr><th>依赖字段</th><th>窗口天数</th><th>来源</th></tr></thead>
+                    <tbody id="dep-tbody"><tr><td colspan="3" class="text-center text-muted">输入表达式即刻推导</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- 操作触发按钮组 -->
+              <div class="probe-actions">
+                <button id="btn-save-draft" class="btn btn-outline flex-1">保存草稿</button>
+                <button id="btn-run-workflow" class="btn btn-primary flex-2">执行双层回测与版本锁定 🚀</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- 视图 2：双层回测与归因深度看板 (Layer 1 v4 + Layer 2 MTM) -->
+      <section id="tab-analytics" class="tab-pane">
+        <div class="analytics-container">
+          <div class="banner flex-between">
+            <div>
+              <h2 id="result-title" style="margin:0 0 4px 0;">回测与归因深度诊断报告</h2>
+              <div id="result-meta" class="text-muted text-xs">尚未执行回测，请在「6 阶段因子工作台」提交回测任务</div>
+            </div>
+            <div class="flex-align-gap">
+              <a id="btn-open-report" href="#" target="_blank" class="btn btn-sm btn-outline" style="display:none;">打开独立 HTML 诊断报告 ↗</a>
+            </div>
+          </div>
+
+          <!-- Layer 1: Schema v4 因子统计分布评价与风格暴露归因 -->
+          <div class="card section-card">
+            <div class="section-badge">Layer 1: FactorLab Schema v4 因子统计分布与风格归因</div>
+            <div class="kpi-grid" id="layer1-kpi-grid">
+              <div class="kpi-card"><div class="kpi-lbl">Rank IC 均值</div><div class="kpi-val" id="kpi-ric-mean">-</div><div class="kpi-sub" id="kpi-ric-ir">IR: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">首尾 20% 极值 PercIC</div><div class="kpi-val" id="kpi-pic-mean">-</div><div class="kpi-sub" id="kpi-pic-ir">IR: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">5 日预测 Rank IC</div><div class="kpi-val" id="kpi-ic5-mean">-</div><div class="kpi-sub" id="kpi-ic5-ir">IR: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">IC 胜率</div><div class="kpi-val" id="kpi-winrate">-</div><div class="kpi-sub">DDof=1</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">多头年化超额 (vs 等权池)</div><div class="kpi-val text-green" id="kpi-excess-ret">-</div><div class="kpi-sub" id="kpi-excess-sharpe">超额夏普: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">加法口径超额回撤</div><div class="kpi-val text-red" id="kpi-excess-dd">-</div><div class="kpi-sub" id="kpi-excess-turnover">日均换手: -</div></div>
+            </div>
+
+            <div class="chart-row">
+              <div class="chart-box flex-1">
+                <h4>五分组复利净值走势曲线 (G1..G5 + 等权商品池基准)</h4>
+                <div id="chart-quantile-nav" class="svg-host"></div>
+              </div>
+              <div class="chart-box flex-1">
+                <h4>累计 IC 序列 (RankIC / PercIC / 5d-IC) 与多头超额</h4>
+                <div id="chart-ic-cum" class="svg-host"></div>
+              </div>
+            </div>
+
+            <!-- 6 大期货风格暴露归因表 -->
+            <div class="style-table-wrap">
+              <h4>期货 6 大标准风格暴露水平归因 (Barra 期货体系)</h4>
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>期货风险风格 (Style)</th>
+                    <th>多头组暴露 (G_Top)</th>
+                    <th>空头组暴露 (G_Bot)</th>
+                    <th>多空净暴露 (L-S)</th>
+                    <th>截面秩相关 (Rank Corr)</th>
+                  </tr>
+                </thead>
+                <tbody id="style-exposure-tbody">
+                  <tr><td colspan="5" class="text-center text-muted">暂无风格归因数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 分年度归因表 -->
+            <div class="annual-table-wrap">
+              <h4>分年度统计表现与多头超额分解 (Annual Attribution)</h4>
+              <table class="data-table table-sm">
+                <thead>
+                  <tr>
+                    <th>年份</th>
+                    <th>Rank IC 均值</th>
+                    <th>Rank ICIR</th>
+                    <th>PercIC 均值</th>
+                    <th>5d Rank IC</th>
+                    <th>多头年化超额</th>
+                    <th>超额夏普</th>
+                    <th>加法最大回撤</th>
+                  </tr>
+                </thead>
+                <tbody id="annual-attribution-tbody">
+                  <tr><td colspan="8" class="text-center text-muted">暂无分年度数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Layer 2: 期货实盘逐日盯市 (MTM) 向量化回测看板 -->
+          <div class="card section-card">
+            <div class="section-badge badge-green">Layer 2: 期货实盘语义向量化回测状态机 (Mark-to-Market)</div>
+            <div class="kpi-grid" id="layer2-kpi-grid">
+              <div class="kpi-card"><div class="kpi-lbl">累计净收益率</div><div class="kpi-val" id="kpi-tot-ret">-</div><div class="kpi-sub" id="kpi-ann-ret">年化: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">夏普比率 (Sharpe)</div><div class="kpi-val" id="kpi-sharpe">-</div><div class="kpi-sub" id="kpi-vol">年化波动: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">最大回撤 (Max DD)</div><div class="kpi-val text-red" id="kpi-max-dd">-</div><div class="kpi-sub" id="kpi-calmar">卡尔玛: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">胜率与盈亏比</div><div class="kpi-val" id="kpi-bt-winrate">-</div><div class="kpi-sub" id="kpi-plr">盈亏比: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">年化单边换手率</div><div class="kpi-val" id="kpi-turnover">-</div><div class="kpi-sub" id="kpi-daily-turnover">日均换手: -</div></div>
+              <div class="kpi-card"><div class="kpi-lbl">最大保证金占用</div><div class="kpi-val" id="kpi-max-margin">-</div><div class="kpi-sub" id="kpi-max-leverage">最大杠杆: -</div></div>
+            </div>
+
+            <!-- 实盘净值与水下回撤曲线 -->
+            <div class="chart-box">
+              <h4>组合实际累计净值与水下回撤曲线 (Cumulative Equity & Drawdown)</h4>
+              <div id="chart-bt-equity" class="svg-host"></div>
+            </div>
+
+            <!-- 交易摩擦损耗瀑布分解 -->
+            <div class="waterfall-wrap">
+              <h4>交易摩擦损耗瀑布分解 (Transaction Cost Breakdown)</h4>
+              <div class="flex-align-gap" style="margin-bottom:10px;">
+                <span>摩擦损耗率 (Cost Drag):</span>
+                <span id="cost-drag-badge" class="badge badge-green">-</span>
+              </div>
+              <table class="data-table">
+                <thead><tr><th>核算项目</th><th>金额 (元)</th><th>占毛收益比</th><th>交易学语义</th></tr></thead>
+                <tbody id="waterfall-tbody">
+                  <tr><td colspan="4" class="text-center text-muted">暂无成本数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 月度收益热力表与极端交易日 -->
+            <div class="form-row-2">
+              <div class="monthly-wrap flex-2">
+                <h4>月度收益率热力分布 (Monthly Returns)</h4>
+                <div id="monthly-table-host"></div>
+              </div>
+              <div class="extreme-wrap flex-1">
+                <h4>极端交易日明细 (Extreme Days)</h4>
+                <table class="data-table table-sm">
+                  <thead><tr><th>排名</th><th>Top 5 最大盈利日</th><th>Top 5 最大亏损日</th></tr></thead>
+                  <tbody id="extreme-tbody"><tr><td colspan="3" class="text-center text-muted">暂无数据</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 视图 3：SQLite 因子库资产与不可变版本中心 -->
+      <section id="tab-registry" class="tab-pane">
+        <div class="registry-container">
+          <div class="panel-header flex-between">
+            <div class="flex-align-gap">
+              <h3>SQLite 因子注册库 (factors.sqlite)</h3>
+              <select id="reg-status-filter" class="form-select select-sm">
+                <option value="">全部生命周期状态</option>
+                <option value="accepted">准入合格 (accepted)</option>
+                <option value="active">生产活跃 (active)</option>
+                <option value="candidate">候选草稿 (candidate)</option>
+                <option value="deprecated">衰减弃用 (deprecated)</option>
+              </select>
+              <select id="reg-source-filter" class="form-select select-sm">
+                <option value="">全部来源</option>
+                <option value="seed">经典文献种子 (seed)</option>
+                <option value="manual">手工研发 (manual)</option>
+                <option value="gp">STGP 演化挖掘 (gp)</option>
+              </select>
+            </div>
+            <div class="flex-align-gap">
+              <button id="btn-init-seeds" class="btn btn-sm btn-outline">+ 一键初始化经典种子因子</button>
+              <button id="btn-refresh-factors" class="btn btn-sm btn-ghost">刷新</button>
+            </div>
+          </div>
+
+          <!-- 因子库列表表格 -->
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>因子名称</th>
+                  <th>类型</th>
+                  <th>规范化表达式 / 后处理链</th>
+                  <th>状态</th>
+                  <th>来源</th>
+                  <th>Train RankIC</th>
+                  <th>Rank ICIR</th>
+                  <th>版本数</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="factors-tbody">
+                <tr><td colspan="10" class="text-center text-muted">加载因子列表中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 视图 4：全流程流水线与实验中心 -->
+      <section id="tab-pipeline" class="tab-pane">
+        <div class="pipeline-container">
+          <div class="form-row-2">
+            <!-- 流水线触发配置 -->
+            <div class="card flex-1">
+              <div class="panel-header">
+                <h3>端到端量化研发流水线调度 (Pipeline Runner)</h3>
+              </div>
+              <div class="form-group">
+                <label>单因子 DSL 表达式 (若留空则执行库内多因子合成)</label>
+                <input type="text" id="pipe-factor-input" class="form-input" placeholder="留空使用因子库多因子合成，或填入单因子表达式...">
+              </div>
+              <div class="form-group">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="pipe-run-gp"> 同时开启 STGP 强类型遗传规划演化挖掘
+                </label>
+              </div>
+              <div class="form-row-2" id="pipe-gp-options" style="display:none;">
+                <div class="form-group">
+                  <label>演化代数 (Generations)</label>
+                  <input type="number" id="pipe-gp-gens" class="form-input" value="3">
+                </div>
+                <div class="form-group">
+                  <label>种群规模 (Population)</label>
+                  <input type="number" id="pipe-gp-pop" class="form-input" value="40">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>多因子合成机器学习模型</label>
+                <select id="pipe-ml-model" class="form-select">
+                  <option value="equal_weight">等权基线 (Equal Weight)</option>
+                  <option value="ridge">岭回归 (Ridge L2 Regression)</option>
+                  <option value="lgbm">LightGBM 梯度提升树</option>
+                </select>
+              </div>
+              <button id="btn-run-pipeline" class="btn btn-primary" style="width:100%;margin-top:10px;">启动全流程端到端研发流水线 🚀</button>
+            </div>
+
+            <!-- 历史实验记录 -->
+            <div class="card flex-1">
+              <div class="panel-header flex-between">
+                <h3>历史实验记录 (runs/)</h3>
+                <button id="btn-refresh-runs" class="btn btn-xs btn-ghost">刷新</button>
+              </div>
+              <div class="runs-list-wrap">
+                <table class="data-table table-sm">
+                  <thead><tr><th>Run ID</th><th>类型</th><th>状态</th><th>年化收益</th><th>夏普</th><th>最大回撤</th><th>报告</th></tr></thead>
+                  <tbody id="runs-tbody"><tr><td colspan="7" class="text-center text-muted">加载实验记录中...</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 因子详情与历史版本抽屉 Modal -->
+    <div id="factor-modal" class="modal-backdrop" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header flex-between">
+          <h3 id="modal-factor-title">因子资产详情与版本快照</h3>
+          <button id="btn-close-modal" class="btn-close">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-factor-body">
+          <div class="loading-spinner">加载中...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

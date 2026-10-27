@@ -260,3 +260,35 @@ flowchart TD
 3. **交易机制适配**：在回测状态机中开启 `is_t_plus_one=True` 与 `allow_short=False`，施加卖出可用头寸约束；
 4. **横截面中性化**：直接调用 Rust 内核中预留的 `group_rank` 与 `group_demean` 算子，挂载申万 31 个一级行业分类与流通市值；
 5. **大规模常驻内存**：Rust Fortran 列优先矩阵可直接横向扩展至 5000 只股票 $\times$ 4000 交易日，单矩阵约 160MB，依然轻松常驻内存高速并行计算。
+
+---
+
+## 9. FactorLab 6 阶段工作流与声明式后处理接口 (`catalog` / `probe` / `styles` / `evaluate`)
+
+- **`FactorCatalog` (`factorlib.core.catalog`)**：
+  - `get_context() -> dict`：返回平台环境概览、算子分类统计与推荐后处理预设（`standard` / `minimal` / `style_neutral`）。
+  - `stats(catalog="all") -> dict`、`search(query="", catalog="all", category="") -> list`、`get_entry(name) -> dict | None`。
+- **`FactorDefinition` & `probe_factor` (`factorlib.core.probe`)**：
+  - `probe_factor(definition, panel=None) -> dict`：执行毫秒级静态探针检查，输出显式依赖、后处理隐式依赖（含平滑窗口放大）与 4 级预热窗口要求。
+  - `evaluate_factor_definition(definition, panel) -> tuple[np.ndarray, dict]`：执行 DSL 或 Python `def compute(context):` 因果求值并串联 Rust `apply_postprocess_op` 12 算子后处理管线。
+- **期货 6 大风格因子与双层回测 (`factorlib.core.styles` & `factorlib.core.evaluate`)**：
+  - `compute_futures_styles(panel) -> dict[str, np.ndarray]`：因果计算 `SIZE`、`VOLATILITY`、`MOMENTUM`、`CARRY`、`INVENTORY`、`POSITIONING` 6 大标准风格矩阵。
+  - `evaluate_factor_v4_stats(factor_matrix, panel) -> dict`：生成 FactorLab Schema v4 标准统计归因字典（`ic_analysis`、`group_analysis`、`long_analysis`、`style_exposure`）。
+  - `run_factor_workflow(panel, definition, ...) -> DualLayerWorkflowResult`：一键执行探针、物化、版本锁定、Layer 1 统计分布归因与 Layer 2 期货实盘逐日盯市回测。
+
+---
+
+## 10. 统一研发工作台与 Web 服务接口 (`workbench` & `server_main`)
+
+- **`FactorWorkbenchService` (`factorlib.core.workbench`)**：
+  - `get_context() -> dict`：获取平台状态、面板规格（支持真实/合成双模式）、模板集与默认组合参数；
+  - `switch_panel_source(mode="auto"|"synthetic", panel_dir=None)`：动态切换真实面板与合成演示面板；
+  - `probe(definition) -> dict`：毫秒级静态探针与预热窗口推导；
+  - `save_draft(payload) -> dict`：保存或更新因子草稿；
+  - `run_workflow(payload) -> dict`：执行双层回测、物化落盘与不可变版本快照锁定 (`v1, v2, ...`)；
+  - `list_factors(status, source, mode, min_icir)`、`get_factor_detail(id)`、`update_factor_status(id, status)`、`delete_factor(id)`、`init_seed_factors()`：因子资产管理；
+  - `run_e2e_pipeline(payload) -> dict`、`list_runs() -> list`、`get_run_report_html(run_id) -> str`：端到端流水线调用与实验查看。
+- **Web 服务端与启动器 (`python/server_main.py` & `scripts/run_web.py`)**：
+  - 启动命令：`python scripts/run_web.py --port 8080`；
+  - 提供完整 REST API 路由 (`/api/context`, `/api/probe`, `/api/workflow/run`, `/api/factors`, `/api/runs` 等)；
+  - 托管单页工作台 (`/`, `/app.js`, `/styles.css`)，开箱即用支持双模态编辑、12 算子编排与双层看板。

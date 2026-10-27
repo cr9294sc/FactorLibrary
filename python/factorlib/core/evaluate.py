@@ -1,25 +1,35 @@
-"""单因子与多因子多维度评价管线与种子因子注册 (core/evaluate.py)。
+"""单因子与多因子多维度评价管线、FactorLab Schema v4 统计归因与双层回测工作流 (core/evaluate.py)。
 
-严格遵循白皮书第 8 章、10 章与 P3 验收规范：
+严格遵循白皮书第 8 章、10 章与 FactorLab 6 阶段工作流规范：
 - 支持单因子在多样本切分区间（Train 2011-2018, Valid 2019-2021, Test 2022-2026.08, Full）
   与多预测期数（h in [1, 3, 5, 10, 20]）下的高并发评估；
 - 自动根据训练集 Rank IC 符号决定因子的推荐方向 sign (1 或 -1)；
-- 组装 IC（均值、IR、t 统计量、胜率、覆盖率）、分位数收益（多空年化、夏普、最大回撤、单调性）、换手率；
-- 定义并验证经典学术文献 4 大种子因子（动量、展期收益率、仓单变动、会员持仓异动）；
-- 与 SQLite 因子注册表无缝联动。
+- 实现 FactorLab Schema v4 Layer 1 统计分布评估 (`evaluate_factor_v4_stats`)：
+  - 4 类 IC 序列 (`ic`, `rank_ic`, `perc_ic` 首尾 20% 极值相关, `ic_5d`) 及分年度 `ddof=1` IR 汇总；
+  - 分位数 `G1..G5` 复利净值与单调性检验；
+  - 多头超额分析 (`long_analysis`)：相对等权商品池基准的超额收益、加法口径最大回撤与换手率；
+  - 6 大期货标准风格暴露归因 (`style_exposure`)；
+- 提供端到端因子工作流编排 `run_factor_workflow()`，串联静态探针、求值物化、Layer 1 统计评价与 Layer 2 期货实盘逐日盯市回测。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import factorlib_core
 import numpy as np
 
 from factorlib.core.panel import Panel
+from factorlib.core.probe import (
+    FactorDefinition,
+    evaluate_factor_definition,
+    parse_postprocess_pipeline,
+)
 from factorlib.core.registry import FactorMetricsRecord, FactorRecord, FactorRegistry
+from factorlib.core.styles import compute_futures_styles, compute_style_exposures
 
 # 白皮书 Q6 与 13.4 节规定的标准样本切分区间
 DEFAULT_SPLITS: dict[str, tuple[str, str]] = {
@@ -43,6 +53,8 @@ class FactorEvaluationResult:
     all_metrics: list[FactorMetricsRecord] = field(default_factory=list)
     n_nodes: int = 1
     depth: int = 1
+    probe_report: dict[str, Any] | None = None
+    v4_stats: dict[str, Any] | None = None
 
     def to_factor_record(
         self,
@@ -50,6 +62,9 @@ class FactorEvaluationResult:
         source_run: str | None = None,
         data_version: str = "v1",
         status: str = "candidate",
+        name: str | None = None,
+        factor_type: str = "expression",
+        definition_json: str | None = None,
     ) -> FactorRecord:
         """转换为可直接写入 SQLite 注册表的 FactorRecord 对象。"""
         return FactorRecord(
@@ -64,6 +79,9 @@ class FactorEvaluationResult:
             data_version=data_version,
             status=status,
             metrics=list(self.all_metrics),
+            name=name,
+            factor_type=factor_type,
+            definition_json=definition_json,
         )
 
 
@@ -87,64 +105,100 @@ def _resolve_engine_and_panel(
 
 def evaluate_factor(
     engine_or_panel: factorlib_core.Engine | Panel,
-    expr: str,
+    expr: str | FactorDefinition,
     horizons: Sequence[int] = DEFAULT_HORIZONS,
     splits: dict[str, tuple[str, str]] | None = None,
     min_names: int = 5,
     n_quantiles: int = 5,
     force_sign: int | None = None,
+    postprocess: Any = None,
 ) -> FactorEvaluationResult:
-    """对单个 DSL 因子表达式执行全时段多预测期数综合评价。
-
-    Parameters
-    ----------
-    engine_or_panel:
-        Rust 计算引擎或 Python 面板容器
-    expr:
-        待评估的因子 DSL 文本
-    horizons:
-        预测期数列表 (默认 [1, 3, 5, 10, 20])
-    splits:
-        时段切分字典，默认使用 train(2011-2018)/valid(2019-2021)/test(2022-2026.08) 及 full
-    min_names:
-        横截面最小有效标的数 (默认 5)
-    n_quantiles:
-        分位数分组数 (默认 5)
-    force_sign:
-        强制指定方向 (1 为正向, -1 为反向; None 则由训练集自动推断)
-    """
+    """对单个 DSL 因子表达式或 FactorDefinition 执行全时段多预测期数综合评价。"""
     engine, dates, _ = _resolve_engine_and_panel(engine_or_panel)
+    panel_obj = engine_or_panel if isinstance(engine_or_panel, Panel) else None
 
-    # 规范化与静态检查
-    canon_info = engine.canonicalize(expr)
-    canon_expr = canon_info["canon_expr"]
-    canon_hash = canon_info["canon_hash"]
-    n_nodes = canon_info["n_nodes"]
-    depth = canon_info["depth"]
+    probe_rep: dict[str, Any] | None = None
+    if isinstance(expr, FactorDefinition) or postprocess is not None:
+        if isinstance(expr, FactorDefinition):
+            defn = expr
+        else:
+            defn = FactorDefinition(
+                name="inline_factor",
+                factor_type="expression",
+                expression=str(expr),
+                postprocess=parse_postprocess_pipeline(postprocess),
+            )
+        if panel_obj is not None:
+            factor_mat, probe_rep = evaluate_factor_definition(defn, panel_obj, engine=engine)
+            canon_expr = probe_rep["canon_expr"]
+            canon_hash = probe_rep["canon_hash"]
+            n_nodes = int(probe_rep["n_nodes"])
+            depth = int(probe_rep["depth"])
+        else:
+            canon_info = engine.canonicalize(defn.expression)
+            canon_expr = canon_info["canon_expr"]
+            canon_hash = canon_info["canon_hash"]
+            n_nodes = canon_info["n_nodes"]
+            depth = canon_info["depth"]
+            factor_mat = np.asarray(engine.eval(canon_expr))
+    else:
+        canon_info = engine.canonicalize(expr)
+        canon_expr = canon_info["canon_expr"]
+        canon_hash = canon_info["canon_hash"]
+        n_nodes = canon_info["n_nodes"]
+        depth = canon_info["depth"]
+        factor_mat = np.asarray(engine.eval(canon_expr))
 
-    # 求值全量因子矩阵 (T, N)
-    factor_mat = np.asarray(engine.eval(canon_expr))
-    T, N = factor_mat.shape
+    return _evaluate_factor_matrix_core(
+        engine=engine,
+        dates=dates,
+        factor_mat=factor_mat,
+        canon_expr=canon_expr,
+        canon_hash=canon_hash,
+        n_nodes=n_nodes,
+        depth=depth,
+        horizons=horizons,
+        splits=splits,
+        min_names=min_names,
+        n_quantiles=n_quantiles,
+        force_sign=force_sign,
+        probe_report=probe_rep,
+    )
 
-    # 确定时段切分
+
+def _evaluate_factor_matrix_core(
+    engine: factorlib_core.Engine,
+    dates: np.ndarray,
+    factor_mat: np.ndarray,
+    canon_expr: str,
+    canon_hash: str,
+    n_nodes: int = 1,
+    depth: int = 1,
+    horizons: Sequence[int] = DEFAULT_HORIZONS,
+    splits: dict[str, tuple[str, str]] | None = None,
+    min_names: int = 5,
+    n_quantiles: int = 5,
+    force_sign: int | None = None,
+    probe_report: dict[str, Any] | None = None,
+) -> FactorEvaluationResult:
+    """对给定 (T, N) 因子矩阵执行多切片多预测期数 Rust 评估。"""
+    T, _ = factor_mat.shape
+
     eval_splits: dict[str, tuple[str, str]] = {}
     if splits is not None:
         eval_splits.update(splits)
     else:
         eval_splits.update(DEFAULT_SPLITS)
 
-    # 增加全样本 full 切分
     if "full" not in eval_splits and len(dates) > 0:
         eval_splits["full"] = (str(dates[0]), str(dates[-1]))
 
-    # 计算各切片对应的连续行索引
     split_indices: dict[str, np.ndarray] = {}
     for split_name, (start_d, end_d) in eval_splits.items():
         mask_idx = np.where((dates >= start_d) & (dates <= end_d))[0]
         if len(mask_idx) > 0:
             split_indices[split_name] = mask_idx
 
-    # 若未包含任何有效日（例如小样本测试集日期不在 2011-2018 区间内），则以全部现有日期作为 train
     if "train" not in split_indices or len(split_indices["train"]) == 0:
         split_indices["train"] = np.arange(T)
 
@@ -156,9 +210,7 @@ def evaluate_factor(
         s_train = int(train_idx[0])
         e_train = int(train_idx[-1]) + 1
         f_train = np.asfortranarray(factor_mat[s_train:e_train])
-        # 优先使用 y_5 标签判断方向，不存在则使用 y_1 或任一可用标签
         preferred_label = "y_5" if "y_5" in engine.label_names else engine.label_names[0]
-        # 使用底层 rank_ic 计算该切片的 IC 均值
         train_ic_res = engine.rank_ic(
             f_train,
             label_name=preferred_label,
@@ -171,7 +223,6 @@ def evaluate_factor(
         train_mean = train_ic_res["ic_mean"]
         sign = 1 if train_mean >= 0 else -1
 
-    # 遍历所有切片与预测窗口计算多维指标
     metrics_by_split: dict[str, dict[int, FactorMetricsRecord]] = {}
     all_metrics: list[FactorMetricsRecord] = []
 
@@ -184,14 +235,12 @@ def evaluate_factor(
         for h in horizons:
             lbl_name = f"y_{h}"
             if lbl_name not in engine.label_names:
-                # 若无对应期数标签则尝试使用最接近的或首个标签
                 lbl_name = (
                     "y_5"
                     if "y_5" in engine.label_names
                     else ("y_1" if "y_1" in engine.label_names else engine.label_names[0])
                 )
 
-            # 调用 Rust 内核一键综合评估
             met = engine.factor_metrics(
                 f_sub,
                 label_name=lbl_name,
@@ -231,6 +280,429 @@ def evaluate_factor(
         all_metrics=all_metrics,
         n_nodes=n_nodes,
         depth=depth,
+        probe_report=probe_report,
+    )
+
+
+# ==============================================================================
+# Layer 1: FactorLab Schema v4 统计分布评估 (IC/PercIC/5dIC + 分组净值 + 多头超额 + 风格暴露)
+# ==============================================================================
+
+
+def _pearson_corr_1d(x: np.ndarray, y: np.ndarray) -> float:
+    """计算一维有效向量的 Pearson 相关系数。"""
+    if len(x) < 3:
+        return np.nan
+    mx = float(np.mean(x))
+    my = float(np.mean(y))
+    dx = x - mx
+    dy = y - my
+    vx = float(np.sum(dx * dx))
+    vy = float(np.sum(dy * dy))
+    if vx <= 1e-16 or vy <= 1e-16:
+        return np.nan
+    return float(np.sum(dx * dy) / np.sqrt(vx * vy))
+
+
+def _spearman_corr_1d(x: np.ndarray, y: np.ndarray) -> float:
+    """计算一维有效向量的 Spearman 秩相关系数（支持并列平均秩）。"""
+    n = len(x)
+    if n < 3:
+        return np.nan
+
+    def _avg_ranks(arr: np.ndarray) -> np.ndarray:
+        order = np.argsort(arr, kind="mergesort")
+        ranks = np.empty(n, dtype=np.float64)
+        i = 0
+        while i < n:
+            j = i + 1
+            v = arr[order[i]]
+            while j < n and arr[order[j]] == v:
+                j += 1
+            avg_r = 0.5 * (i + j - 1) + 1.0
+            for m in range(i, j):
+                ranks[order[m]] = avg_r
+            i = j
+        return ranks
+
+    return _pearson_corr_1d(_avg_ranks(x), _avg_ranks(y))
+
+
+def _summarize_ic_slice(
+    ic_arr: np.ndarray,
+    rank_ic_arr: np.ndarray,
+    perc_ic_arr: np.ndarray,
+    ic_5d_arr: np.ndarray,
+) -> dict[str, float]:
+    """按样本标准差 (ddof=1) 汇总指定时段内的 4 类 IC 统计指标。"""
+
+    def _mean_std_ir(arr: np.ndarray) -> tuple[float, float, float]:
+        valid = arr[np.isfinite(arr)]
+        if len(valid) == 0:
+            return 0.0, 0.0, 0.0
+        mean_v = float(np.mean(valid))
+        std_v = float(np.std(valid, ddof=1)) if len(valid) > 1 else 0.0
+        ir_v = mean_v / std_v if std_v > 1e-12 else 0.0
+        return mean_v, std_v, ir_v
+
+    ic_m, ic_s, ic_ir = _mean_std_ir(ic_arr)
+    ric_m, ric_s, ric_ir = _mean_std_ir(rank_ic_arr)
+    pic_m, _, pic_ir = _mean_std_ir(perc_ic_arr)
+    ic5_m, _, ic5_ir = _mean_std_ir(ic_5d_arr)
+
+    valid_ric = rank_ic_arr[np.isfinite(rank_ic_arr)]
+    win_rate = float(np.mean(valid_ric > 0.0)) if len(valid_ric) > 0 else 0.0
+
+    return {
+        "ic_mean": ic_m,
+        "ic_std": ic_s,
+        "ic_ir": ic_ir,
+        "rank_ic_mean": ric_m,
+        "rank_ic_std": ric_s,
+        "rank_ic_ir": ric_ir,
+        "perc_ic_mean": pic_m,
+        "perc_ic_ir": pic_ir,
+        "ic_5d_mean": ic5_m,
+        "ic_5d_ir": ic5_ir,
+        "win_rate": win_rate,
+    }
+
+
+def evaluate_factor_v4_stats(
+    factor_matrix: np.ndarray,
+    panel: Panel,
+    n_quantiles: int = 5,
+    sign: int = 1,
+    min_names: int = 5,
+) -> dict[str, Any]:
+    """执行 FactorLab Schema v4 标准统计分布评价 (Layer 1 Statistical Evaluation)。"""
+    T, N = factor_matrix.shape
+    dates = [str(d) for d in panel.dates]
+    directed = np.asarray(factor_matrix, dtype=np.float64) * (1.0 if sign >= 0 else -1.0)
+    mask = panel.valid_mask
+
+    # 提取 1 日执行收益与 5 日累计收益标签
+    if "y_1" in panel.labels:
+        ret_1d = panel.labels["y_1"]
+    elif "r_exec_next" in panel.labels:
+        ret_1d = panel.labels["r_exec_next"]
+    else:
+        first_lbl = next(iter(panel.labels.values())) if panel.labels else np.zeros((T, N))
+        ret_1d = first_lbl
+
+    if "y_5" in panel.labels:
+        ret_5d = panel.labels["y_5"]
+    else:
+        ret_5d = ret_1d
+
+    ic_series = np.full(T, np.nan, dtype=np.float64)
+    rank_ic_series = np.full(T, np.nan, dtype=np.float64)
+    perc_ic_series = np.full(T, np.nan, dtype=np.float64)
+    ic_5d_series = np.full(T, np.nan, dtype=np.float64)
+
+    group_daily_rets = {f"G{q + 1}": np.zeros(T, dtype=np.float64) for q in range(n_quantiles)}
+    bench_daily_rets = np.zeros(T, dtype=np.float64)
+    top_turnover = np.zeros(T, dtype=np.float64)
+    prev_top_set: set[int] = set()
+
+    for t in range(T):
+        f_row = directed[t, :]
+        r1_row = ret_1d[t, :]
+        r5_row = ret_5d[t, :]
+
+        valid_1d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r1_row)
+        idx_1d = np.where(valid_1d)[0]
+        m = len(idx_1d)
+
+        if m >= min_names:
+            fx = f_row[idx_1d]
+            ry = r1_row[idx_1d]
+            ic_series[t] = _pearson_corr_1d(fx, ry)
+            rank_ic_series[t] = _spearman_corr_1d(fx, ry)
+
+            # PercIC: 首尾 20% 极值品种的截面 Pearson 相关系数
+            order = np.argsort(fx, kind="mergesort")
+            tail_k = max(2, int(np.ceil(0.2 * m)))
+            if 2 * tail_k <= m:
+                ext_pos = np.concatenate([order[:tail_k], order[m - tail_k :]])
+            else:
+                ext_pos = order
+            perc_ic_series[t] = _pearson_corr_1d(fx[ext_pos], ry[ext_pos])
+
+            # 等权商品池基准日收益 (Equal-Weight Universe Benchmark)
+            bench_daily_rets[t] = float(np.mean(ry))
+
+            # 分位数分组收益 G1 (最低) .. G{n_quantiles} (最高/多头组)
+            for q in range(n_quantiles):
+                s_i = int(round(q * m / n_quantiles))
+                e_i = int(round((q + 1) * m / n_quantiles))
+                g_pos = order[s_i:e_i]
+                if len(g_pos) > 0:
+                    group_daily_rets[f"G{q + 1}"][t] = float(np.mean(ry[g_pos]))
+                if q == n_quantiles - 1:
+                    curr_top_set = set(idx_1d[g_pos].tolist())
+                    if prev_top_set and curr_top_set:
+                        overlap = len(prev_top_set & curr_top_set)
+                        denom = max(len(curr_top_set), 1)
+                        top_turnover[t] = 1.0 - (overlap / denom)
+                    prev_top_set = curr_top_set
+
+        valid_5d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r5_row)
+        idx_5d = np.where(valid_5d)[0]
+        if len(idx_5d) >= min_names:
+            ic_5d_series[t] = _spearman_corr_1d(f_row[idx_5d], r5_row[idx_5d])
+
+    # 按年份与全样本汇总 IC
+    years = sorted({d[:4] for d in dates if len(d) >= 4})
+    ic_annual: dict[str, dict[str, float]] = {}
+    for y in years:
+        y_idx = [i for i, d in enumerate(dates) if d.startswith(y)]
+        ic_annual[y] = _summarize_ic_slice(
+            ic_series[y_idx],
+            rank_ic_series[y_idx],
+            perc_ic_series[y_idx],
+            ic_5d_series[y_idx],
+        )
+    ic_full = _summarize_ic_slice(ic_series, rank_ic_series, perc_ic_series, ic_5d_series)
+
+    # 分组复利净值与年化收益
+    group_nav_series: dict[str, list[float]] = {}
+    group_summary: dict[str, dict[str, float]] = {}
+    n_years = max(T / 252.0, 1.0 / 252.0)
+
+    for g_key, g_rets in group_daily_rets.items():
+        nav = np.cumprod(1.0 + g_rets)
+        group_nav_series[g_key] = [float(x) for x in nav]
+        tot_ret = float(nav[-1] - 1.0) if len(nav) > 0 else 0.0
+        ann_ret = float((1.0 + max(tot_ret, -0.9999)) ** (1.0 / n_years) - 1.0)
+        vol = float(np.std(g_rets, ddof=1) * np.sqrt(252.0)) if len(g_rets) > 1 else 0.0
+        sharpe = ann_ret / vol if vol > 1e-12 else 0.0
+        group_summary[g_key] = {
+            "total_return": tot_ret,
+            "annual_return": ann_ret,
+            "annual_volatility": vol,
+            "sharpe": sharpe,
+        }
+
+    # 多头超额分析 (Long Excess Analysis: Top Group vs Equal-Weight Universe Benchmark)
+    top_key = f"G{n_quantiles}"
+    long_rets = group_daily_rets[top_key]
+    excess_rets = long_rets - bench_daily_rets
+    cum_excess_additive = np.cumsum(excess_rets)
+    cum_excess_compound = np.cumprod(1.0 + excess_rets)
+
+    # 加法口径超额最大回撤 (FactorLab 规范: peak(cum_excess) - cum_excess)
+    peaks_add = np.maximum.accumulate(np.insert(cum_excess_additive, 0, 0.0))[1:]
+    dd_add = peaks_add - cum_excess_additive
+    additive_max_dd = float(np.max(dd_add)) if len(dd_add) > 0 else 0.0
+
+    ex_ann_ret = float(np.mean(excess_rets) * 252.0) if len(excess_rets) > 0 else 0.0
+    ex_ann_vol = (
+        float(np.std(excess_rets, ddof=1) * np.sqrt(252.0)) if len(excess_rets) > 1 else 0.0
+    )
+    ex_sharpe = ex_ann_ret / ex_ann_vol if ex_ann_vol > 1e-12 else 0.0
+    ex_win_rate = float(np.mean(excess_rets > 0.0)) if len(excess_rets) > 0 else 0.0
+
+    long_annual: dict[str, dict[str, float]] = {}
+    for y in years:
+        y_idx = [i for i, d in enumerate(dates) if d.startswith(y)]
+        y_ex = excess_rets[y_idx]
+        y_cum = np.cumsum(y_ex)
+        y_peaks = np.maximum.accumulate(np.insert(y_cum, 0, 0.0))[1:]
+        y_dd = float(np.max(y_peaks - y_cum)) if len(y_cum) > 0 else 0.0
+        y_ret = float(np.mean(y_ex) * 252.0) if len(y_ex) > 0 else 0.0
+        y_vol = float(np.std(y_ex, ddof=1) * np.sqrt(252.0)) if len(y_ex) > 1 else 0.0
+        long_annual[y] = {
+            "annual_excess_return": y_ret,
+            "annual_excess_volatility": y_vol,
+            "excess_sharpe": y_ret / y_vol if y_vol > 1e-12 else 0.0,
+            "additive_max_drawdown": y_dd,
+            "win_rate": float(np.mean(y_ex > 0.0)) if len(y_ex) > 0 else 0.0,
+            "daily_turnover": float(np.mean(top_turnover[y_idx])) if len(y_idx) > 0 else 0.0,
+        }
+
+    # 6 大期货风格暴露归因
+    styles_dict = compute_futures_styles(panel)
+    style_exp = compute_style_exposures(
+        factor_matrix,
+        styles_dict,
+        mask=mask,
+        n_quantiles=n_quantiles,
+        sign=sign,
+    )
+
+    return {
+        "schema_version": "v4",
+        "sign": sign,
+        "dates": dates,
+        "ic_analysis": {
+            "summary": ic_full,
+            "annual": ic_annual,
+            "series": {
+                "ic": [float(x) if np.isfinite(x) else None for x in ic_series],
+                "rank_ic": [float(x) if np.isfinite(x) else None for x in rank_ic_series],
+                "perc_ic": [float(x) if np.isfinite(x) else None for x in perc_ic_series],
+                "ic_5d": [float(x) if np.isfinite(x) else None for x in ic_5d_series],
+            },
+        },
+        "group_analysis": {
+            "n_quantiles": n_quantiles,
+            "summary": group_summary,
+            "nav_series": group_nav_series,
+            "benchmark_nav": [float(x) for x in np.cumprod(1.0 + bench_daily_rets)],
+        },
+        "long_analysis": {
+            "summary": {
+                "annual_excess_return": ex_ann_ret,
+                "annual_excess_volatility": ex_ann_vol,
+                "excess_sharpe": ex_sharpe,
+                "additive_max_drawdown": additive_max_dd,
+                "win_rate": ex_win_rate,
+                "daily_turnover": float(np.mean(top_turnover)) if len(top_turnover) > 0 else 0.0,
+            },
+            "annual": long_annual,
+            "cum_excess_additive": [float(x) for x in cum_excess_additive],
+            "cum_excess_compound": [float(x) for x in cum_excess_compound],
+        },
+        "style_exposure": style_exp,
+    }
+
+
+# ==============================================================================
+# 端到端双层因子工作流 (Probe + Materialization + Layer 1 v4 + Layer 2 Futures MTM)
+# ==============================================================================
+
+
+@dataclass
+class DualLayerWorkflowResult:
+    """串联静态探针、因子物化、Layer 1 统计分布归因与 Layer 2 期货实盘盯市回测的完整结果。"""
+
+    definition: FactorDefinition
+    probe_report: dict[str, Any]
+    evaluation: FactorEvaluationResult
+    v4_stats: dict[str, Any]
+    backtest_result: Any  # BacktestResult
+    weights: np.ndarray
+    factor_id: int | None = None
+    version_locked: int | None = None
+    materialization_path: Path | None = None
+
+
+def run_factor_workflow(
+    panel: Panel,
+    definition: FactorDefinition | dict[str, Any] | str,
+    postprocess: Any = None,
+    portfolio_config: Any = None,
+    backtest_config: Any = None,
+    registry: FactorRegistry | None = None,
+    materialize: bool = True,
+    lock_version: bool = True,
+    force_sign: int | None = None,
+    n_quantiles: int = 5,
+) -> DualLayerWorkflowResult:
+    """一键运行完整 6 阶段因子工作流：
+    Stage 2/3 (定义与静态探针) -> Stage 4 (Rust 求值、后处理与物化) -> Stage 5 (Layer 1 统计评价 + Layer 2 实盘回测)。
+    """
+    from factorlib.core.backtest import run_backtest
+    from factorlib.core.config import BacktestConfig
+    from factorlib.core.portfolio import (
+        build_portfolio_weights,
+        compute_daily_returns_from_prices,
+    )
+
+    if isinstance(definition, FactorDefinition):
+        defn = definition
+        if postprocess is not None:
+            defn.postprocess = parse_postprocess_pipeline(postprocess)
+    elif isinstance(definition, dict):
+        defn = FactorDefinition.from_dict(definition)
+        if postprocess is not None:
+            defn.postprocess = parse_postprocess_pipeline(postprocess)
+    else:
+        defn = FactorDefinition(
+            name="workflow_factor",
+            factor_type="expression",
+            expression=str(definition),
+            postprocess=parse_postprocess_pipeline(postprocess),
+        )
+
+    # Stage 3 & Stage 4: 静态探针校验 + 主因子求值 + 12 算子声明式后处理
+    engine = panel.to_rust_engine()
+    factor_mat, probe_rep = evaluate_factor_definition(defn, panel, engine=engine)
+
+    # Stage 5 Layer 1 (Part A): 多样本切分、多预测窗口评价并推断方向 sign
+    eval_res = _evaluate_factor_matrix_core(
+        engine=engine,
+        dates=np.array([str(d) for d in panel.dates]),
+        factor_mat=factor_mat,
+        canon_expr=probe_rep["canon_expr"],
+        canon_hash=probe_rep["canon_hash"],
+        n_nodes=int(probe_rep["n_nodes"]),
+        depth=int(probe_rep["depth"]),
+        n_quantiles=n_quantiles,
+        force_sign=force_sign,
+        probe_report=probe_rep,
+    )
+
+    # Stage 5 Layer 1 (Part B): FactorLab Schema v4 统计分布评估与 6 大风格暴露归因
+    v4_stats = evaluate_factor_v4_stats(
+        factor_matrix=factor_mat,
+        panel=panel,
+        n_quantiles=n_quantiles,
+        sign=eval_res.sign,
+    )
+    eval_res.v4_stats = v4_stats
+
+    # Stage 5 Layer 2: 连续组合优化 + Rust 期货实盘逐日盯市回测
+    bt_cfg = backtest_config if backtest_config is not None else BacktestConfig()
+    port_cfg = portfolio_config if portfolio_config is not None else bt_cfg.portfolio
+
+    directed_scores = np.asfortranarray(factor_mat * float(eval_res.sign), dtype=np.float64)
+    hist_returns = compute_daily_returns_from_prices(panel.get_field("close"))
+    weights = build_portfolio_weights(
+        scores=directed_scores,
+        returns=hist_returns,
+        mask=panel.valid_mask,
+        cfg=port_cfg,
+    )
+    bt_res = run_backtest(panel=panel, weights=weights, config=bt_cfg)
+
+    # 可选注册表入库、物化与不可变版本锁定
+    fid: int | None = None
+    mat_path: Path | None = None
+    ver_num: int | None = None
+    if registry is not None:
+        rec = eval_res.to_factor_record(
+            source="manual",
+            name=defn.name,
+            factor_type=defn.factor_type,
+            definition_json=defn.to_json(),
+        )
+        fid = registry.register_factor(rec, upsert=True)
+        if materialize:
+            mat_path = registry.materialize_factor(fid, factor_mat, panel.dates, panel.symbols)
+        if lock_version:
+            ver_rec = registry.lock_factor_version(
+                fid,
+                probe_report=probe_rep,
+                eval_summary={
+                    "ic_summary": v4_stats["ic_analysis"]["summary"],
+                    "long_summary": v4_stats["long_analysis"]["summary"],
+                    "backtest_metrics": bt_res.metrics,
+                },
+            )
+            ver_num = ver_rec.version
+
+    return DualLayerWorkflowResult(
+        definition=defn,
+        probe_report=probe_rep,
+        evaluation=eval_res,
+        v4_stats=v4_stats,
+        backtest_result=bt_res,
+        weights=weights,
+        factor_id=fid,
+        version_locked=ver_num,
+        materialization_path=mat_path,
     )
 
 
@@ -289,6 +761,7 @@ def register_seed_factors(
             source="seed",
             source_run=run_id,
             status=status,
+            name=s_def["name"],
         )
         fid = registry.register_factor(rec, run_id=run_id, upsert=True)
         registered_ids.append(fid)

@@ -2,6 +2,7 @@
 
 from .factorlib_core import (
     Engine,
+    apply_postprocess_op,
     calc_correlation_matrix,
     calc_ic,
     calc_pairwise_correlation,
@@ -16,6 +17,7 @@ from .factorlib_core import (
 
 __all__ = [
     "Engine",
+    "apply_postprocess_op",
     "check_expr",
     "list_operators",
     "parse_and_canonicalize",

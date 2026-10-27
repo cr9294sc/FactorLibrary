@@ -81,6 +81,11 @@ class Panel:
     def N(self) -> int:
         return len(self.symbols)
 
+    @property
+    def valid_mask(self) -> np.ndarray:
+        """与 mask 等价的属性别名。"""
+        return self.mask
+
     def get_field(self, name: str) -> np.ndarray:
         """获取指定字段 (T, N) 矩阵。"""
         if name not in self.fields:
@@ -142,10 +147,15 @@ class Panel:
 
         if fields_subset is not None:
             load_cols = [c for c in fields_subset if c in all_cols]
+            load_sector = "sector" in fields_subset and "sector" in all_cols
         else:
             load_cols = [c for c in all_cols if c not in ignore_cols]
+            load_sector = "sector" in all_cols
 
-        needed_cols = list(set(["trading_date", "symbol", "in_universe"] + load_cols))
+        extra_cols = ["trading_date", "symbol", "in_universe"]
+        if load_sector:
+            extra_cols.append("sector")
+        needed_cols = list(set(extra_cols + load_cols))
         df = pl.read_parquet(panel_file, columns=needed_cols).sort(["trading_date", "symbol"])
 
         unique_dates_list = df["trading_date"].unique().sort().to_list()
@@ -171,6 +181,8 @@ class Panel:
         # 构建各字段宽矩阵
         fields_dict: dict[str, np.ndarray] = {}
         for col_name in load_cols:
+            if col_name == "sector":
+                continue
             col_series = df[col_name]
             # 仅处理数值型与布尔型
             if col_series.dtype in (
@@ -186,6 +198,36 @@ class Panel:
                 vals = col_series.cast(pl.Float64).to_numpy()
                 arr[row_indices, col_indices] = vals
                 fields_dict[col_name] = arr
+
+        # 编码板块字段 sector 为正整数矩阵 (1.0, 2.0, ..., K; 缺失为 NaN)
+        if load_sector and "sector" in df.columns:
+            sec_raw = df["sector"].to_list()
+            valid_secs = sorted({str(s) for s in sec_raw if s is not None and str(s).strip()})
+            sec_to_code = {s: float(idx + 1) for idx, s in enumerate(valid_secs)}
+            meta["sector_mapping"] = {int(v): k for k, v in sec_to_code.items()}
+            sec_arr = np.full((T, N), np.nan, dtype=np.float64, order="F")
+            sec_vals = np.array(
+                [sec_to_code.get(str(s), np.nan) if s is not None else np.nan for s in sec_raw],
+                dtype=np.float64,
+            )
+            sec_arr[row_indices, col_indices] = sec_vals
+            fields_dict["sector"] = sec_arr
+
+        # 当全量加载或显式请求时，注入后处理隐式掩码矩阵 (in_universe_mask 与 limit_mask)
+        if fields_subset is None or "in_universe_mask" in (fields_subset or []):
+            univ_mask_arr = np.where(mask, 1.0, np.nan).astype(np.float64, order="F")
+            fields_dict["in_universe_mask"] = univ_mask_arr
+
+        if fields_subset is None or "limit_mask" in (fields_subset or []):
+            tradable = np.ones((T, N), dtype=bool, order="F")
+            if "traded" in fields_dict:
+                tradable &= np.isfinite(fields_dict["traded"]) & (fields_dict["traded"] > 0.5)
+            if "is_unilateral" in fields_dict:
+                tradable &= np.isfinite(fields_dict["is_unilateral"]) & (
+                    fields_dict["is_unilateral"] < 0.5
+                )
+            limit_mask_arr = np.where(tradable, 1.0, np.nan).astype(np.float64, order="F")
+            fields_dict["limit_mask"] = limit_mask_arr
 
         # 加载标签
         labels_dict: dict[str, np.ndarray] = {}

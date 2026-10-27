@@ -23,6 +23,10 @@ use crate::metrics::ic::{
 use crate::metrics::quantile::{calc_quantile_metrics, QuantileMetrics};
 use crate::metrics::turnover::{calc_turnover_metrics, TurnoverMetrics};
 use crate::ops::list_all_operators;
+use crate::ops::postprocess::{
+    pp_decay, pp_drop_new_stock, pp_emadecay, pp_ind_neut, pp_mad, pp_mask_mul, pp_rank,
+    pp_risk_neut, pp_risk_neut_multi, pp_winsor, pp_zscore,
+};
 use crate::panel::Panel;
 use ndarray::{s, Array2, ArrayView2, ShapeBuilder};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray2};
@@ -441,6 +445,11 @@ impl PyEngine {
                 match typecheck_factor_expr(&ast, Some(&fields), Some(&labels)) {
                     Ok(ty) => {
                         let cr = canonicalize(&ast);
+                        let (lb, f_wins, ops_used) = ast.analyze_lookback();
+                        let fw_dict = PyDict::new_bound(py);
+                        for (k, w) in f_wins {
+                            fw_dict.set_item(k, w)?;
+                        }
                         d.set_item("valid", true)?;
                         d.set_item("return_type", ty.as_str())?;
                         d.set_item("error", py.None())?;
@@ -449,6 +458,9 @@ impl PyEngine {
                         d.set_item("canon_expr", cr.canon_expr)?;
                         d.set_item("canon_hash", cr.canon_hash_hex)?;
                         d.set_item("is_degenerate", cr.is_degenerate)?;
+                        d.set_item("lookback", lb)?;
+                        d.set_item("field_windows", fw_dict)?;
+                        d.set_item("operators", ops_used)?;
                     }
                     Err(te) => {
                         d.set_item("valid", false)?;
@@ -1028,6 +1040,11 @@ pub fn check_expr<'py>(
             match ty_res {
                 Ok(ty) => {
                     let cr = canonicalize(&ast);
+                    let (lb, f_wins, ops_used) = ast.analyze_lookback();
+                    let fw_dict = PyDict::new_bound(py);
+                    for (k, w) in f_wins {
+                        fw_dict.set_item(k, w)?;
+                    }
                     d.set_item("valid", true)?;
                     d.set_item("return_type", ty.as_str())?;
                     d.set_item("error", py.None())?;
@@ -1036,6 +1053,9 @@ pub fn check_expr<'py>(
                     d.set_item("canon_expr", cr.canon_expr)?;
                     d.set_item("canon_hash", cr.canon_hash_hex)?;
                     d.set_item("is_degenerate", cr.is_degenerate)?;
+                    d.set_item("lookback", lb)?;
+                    d.set_item("field_windows", fw_dict)?;
+                    d.set_item("operators", ops_used)?;
                 }
                 Err(te) => {
                     d.set_item("valid", false)?;
@@ -1451,4 +1471,122 @@ pub fn run_futures_backtest<'py>(
     out.set_item("metrics", m)?;
 
     Ok(out)
+}
+
+/// 执行单个声明式后处理算子（12 项 C++ 精度对齐算子，全程释放 Python GIL）。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (op_name, x1, x2=None, exposures=None, param=None))]
+pub fn apply_postprocess_op<'py>(
+    py: Python<'py>,
+    op_name: &str,
+    x1: PyReadonlyArray2<'_, f64>,
+    x2: Option<PyReadonlyArray2<'_, f64>>,
+    exposures: Option<Vec<PyReadonlyArray2<'_, f64>>>,
+    param: Option<f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let m1 = view_to_fortran_f64(x1.as_array());
+    let (t, n) = m1.dim();
+
+    let m2_opt = match x2 {
+        Some(arr) => {
+            let m = view_to_fortran_f64(arr.as_array());
+            if m.dim() != (t, n) {
+                return Err(PyValueError::new_err(format!(
+                    "后处理算子 '{op_name}' 的 x2 维度 {:?} 与 x1 维度 ({t}, {n}) 不一致",
+                    m.dim()
+                )));
+            }
+            Some(m)
+        }
+        None => None,
+    };
+
+    let exp_mats: Vec<Array2<f64>> = match exposures {
+        Some(list) => {
+            let mut v = Vec::with_capacity(list.len());
+            for arr in list {
+                let m = view_to_fortran_f64(arr.as_array());
+                if m.dim() != (t, n) {
+                    return Err(PyValueError::new_err(format!(
+                        "后处理算子 '{op_name}' 的暴露矩阵维度 {:?} 与 x1 维度 ({t}, {n}) 不一致",
+                        m.dim()
+                    )));
+                }
+                v.push(m);
+            }
+            v
+        }
+        None => Vec::new(),
+    };
+
+    let op_owned = op_name.to_string();
+    let res_mat: Result<Array2<f64>, String> = py.allow_threads(move || match op_owned.as_str() {
+        "baseUniMask" | "trdMask" => {
+            let m2 = m2_opt
+                .as_ref()
+                .ok_or_else(|| format!("算子 '{op_owned}' 需要提供掩码矩阵 x2"))?;
+            Ok(pp_mask_mul(&m1, m2))
+        }
+        "dropNewStock" => {
+            let m2 = m2_opt
+                .as_ref()
+                .ok_or_else(|| "算子 'dropNewStock' 需要提供上市天数矩阵 x2".to_string())?;
+            let min_days = param.unwrap_or(60.0);
+            Ok(pp_drop_new_stock(&m1, m2, min_days))
+        }
+        "MAD" => {
+            let threshold = param.unwrap_or(3.0);
+            Ok(pp_mad(&m1, threshold))
+        }
+        "winsor" => {
+            let quantile = param.unwrap_or(0.025);
+            Ok(pp_winsor(&m1, quantile))
+        }
+        "indNeut" => {
+            let m2 = m2_opt
+                .as_ref()
+                .ok_or_else(|| "算子 'indNeut' 需要提供板块/行业编码矩阵 x2".to_string())?;
+            Ok(pp_ind_neut(&m1, m2))
+        }
+        "riskNeut" => {
+            if !exp_mats.is_empty() {
+                let mut curr = m1;
+                for exp in &exp_mats {
+                    curr = pp_risk_neut(&curr, exp);
+                }
+                Ok(curr)
+            } else {
+                let m2 = m2_opt
+                    .as_ref()
+                    .ok_or_else(|| "算子 'riskNeut' 需要提供风险暴露矩阵 x2".to_string())?;
+                Ok(pp_risk_neut(&m1, m2))
+            }
+        }
+        "riskNeutMulti" => {
+            if !exp_mats.is_empty() {
+                let refs: Vec<&Array2<f64>> = exp_mats.iter().collect();
+                Ok(pp_risk_neut_multi(&m1, &refs))
+            } else if let Some(ref m2) = m2_opt {
+                let refs = vec![m2];
+                Ok(pp_risk_neut_multi(&m1, &refs))
+            } else {
+                Err("算子 'riskNeutMulti' 需要提供至少一个风险暴露矩阵".to_string())
+            }
+        }
+        "zScore" => Ok(pp_zscore(&m1)),
+        "rank" => Ok(pp_rank(&m1)),
+        "decay" => {
+            let w = param.unwrap_or(5.0).max(1.0) as usize;
+            Ok(pp_decay(&m1, w))
+        }
+        "emadecay" => {
+            let w = param.unwrap_or(5.0).max(1.0) as usize;
+            Ok(pp_emadecay(&m1, w))
+        }
+        _ => Err(format!("未知的后处理算子: '{op_owned}'")),
+    });
+
+    let out = res_mat.map_err(PyValueError::new_err)?;
+    Ok(PyArray2::from_owned_array_bound(py, out))
 }

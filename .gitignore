@@ -89,3 +89,4 @@ data/
 runs/
 *.sqlite
 *.parquet
+Factor/data/sample_backtest_result.json

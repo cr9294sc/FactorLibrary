@@ -152,6 +152,103 @@ impl ASTNode {
     pub fn canon_hash_hex(&self) -> String {
         format!("{:016x}", self.canon_hash())
     }
+
+    /// 递归推导表达式所需的总预热期（`expression_lookback`）、各终端特征所需窗口及调用的算子列表。
+    pub fn analyze_lookback(&self) -> (usize, Vec<(String, usize)>, Vec<String>) {
+        match self {
+            ASTNode::Field(name) => (1, vec![(name.clone(), 1)], Vec::new()),
+            ASTNode::Constant(_) | ASTNode::Window(_) => (1, Vec::new(), Vec::new()),
+            ASTNode::UnaryCall { op, arg } => {
+                let (lb, vars, mut ops) = arg.analyze_lookback();
+                let op_name = op.name().to_string();
+                if !ops.contains(&op_name) {
+                    ops.push(op_name);
+                }
+                (lb, vars, ops)
+            }
+            ASTNode::BinaryCall { op, lhs, rhs } => {
+                let add_w = match (&op, rhs.as_ref()) {
+                    (
+                        BinaryOp::Delay
+                        | BinaryOp::Delta
+                        | BinaryOp::PctChange
+                        | BinaryOp::LogReturn,
+                        ASTNode::Window(w),
+                    ) => *w,
+                    (op_val, ASTNode::Window(w)) if op_val.category() == "ts_unary" => {
+                        w.saturating_sub(1)
+                    }
+                    _ => 0,
+                };
+                let (lb_l, vars_l, mut ops_l) = lhs.analyze_lookback();
+                let (lb_r, vars_r, ops_r) = rhs.analyze_lookback();
+                let max_child_lb = lb_l.max(lb_r);
+                let mut merged_vars: Vec<(String, usize)> = Vec::new();
+                for (k, v) in vars_l.into_iter().chain(vars_r.into_iter()) {
+                    let req = v + add_w;
+                    if let Some(existing) = merged_vars.iter_mut().find(|p| p.0 == k) {
+                        if req > existing.1 {
+                            existing.1 = req;
+                        }
+                    } else {
+                        merged_vars.push((k, req));
+                    }
+                }
+                for f in ops_r {
+                    if !ops_l.contains(&f) {
+                        ops_l.push(f);
+                    }
+                }
+                let op_name = op.name().to_string();
+                if !ops_l.contains(&op_name) {
+                    ops_l.push(op_name);
+                }
+                (max_child_lb + add_w, merged_vars, ops_l)
+            }
+            ASTNode::TernaryCall {
+                op,
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let add_w = match (&op, else_branch.as_ref()) {
+                    (op_val, ASTNode::Window(w)) if op_val.category() == "ts_binary" => {
+                        w.saturating_sub(1)
+                    }
+                    _ => 0,
+                };
+                let (lb_0, vars_0, mut ops_0) = cond.analyze_lookback();
+                let (lb_1, vars_1, ops_1) = then_branch.analyze_lookback();
+                let (lb_2, vars_2, ops_2) = else_branch.analyze_lookback();
+                let max_child_lb = lb_0.max(lb_1).max(lb_2);
+                let mut merged_vars: Vec<(String, usize)> = Vec::new();
+                for (k, v) in vars_0
+                    .into_iter()
+                    .chain(vars_1.into_iter())
+                    .chain(vars_2.into_iter())
+                {
+                    let req = v + add_w;
+                    if let Some(existing) = merged_vars.iter_mut().find(|p| p.0 == k) {
+                        if req > existing.1 {
+                            existing.1 = req;
+                        }
+                    } else {
+                        merged_vars.push((k, req));
+                    }
+                }
+                for f in ops_1.into_iter().chain(ops_2.into_iter()) {
+                    if !ops_0.contains(&f) {
+                        ops_0.push(f);
+                    }
+                }
+                let op_name = op.name().to_string();
+                if !ops_0.contains(&op_name) {
+                    ops_0.push(op_name);
+                }
+                (max_child_lb + add_w, merged_vars, ops_0)
+            }
+        }
+    }
 }
 
 impl fmt::Display for ASTNode {

@@ -1,0 +1,179 @@
+# 高频分钟行情变量 (Minute High-Frequency)
+
+包含 1 分钟（1m）与 5 分钟（5m）切片高频数据字段，包括分钟 K 线、成交分布、加权均价等共 162 个变量。
+
+> **总计收录**：`162` 个变量
+
+---
+
+## 分组：1m (52 个)
+
+| 变量名称 (Short Name) | 底层标识 (Actual Name) | 频度 | 维度 (Axes) | 数据类型 (Kind) | 缺失值处理策略 |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| `f_1m_bars_grid1mbar_close` | `1m-bars.Grid1mBar.close` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_cumsum_amt` | `1m-bars.Grid1mBar.cumsum_amt` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_cumsum_num` | `1m-bars.Grid1mBar.cumsum_num` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_cumsum_vol` | `1m-bars.Grid1mBar.cumsum_vol` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_first_total_ask_num` | `1m-bars.Grid1mBar.first_total_ask_num` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_first_total_ask_vol` | `1m-bars.Grid1mBar.first_total_ask_vol` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_first_total_bid_num` | `1m-bars.Grid1mBar.first_total_bid_num` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_first_total_bid_vol` | `1m-bars.Grid1mBar.first_total_bid_vol` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_first_weighted_ask_prc` | `1m-bars.Grid1mBar.first_weighted_ask_prc` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_first_weighted_bid_prc` | `1m-bars.Grid1mBar.first_weighted_bid_prc` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_high` | `1m-bars.Grid1mBar.high` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_low` | `1m-bars.Grid1mBar.low` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_number` | `1m-bars.Grid1mBar.number` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_turnover` | `1m-bars.Grid1mBar.turnover` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_volume` | `1m-bars.Grid1mBar.volume` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mbar_vwap` | `1m-bars.Grid1mBar.vwap` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_amount` | `1m-bars.Grid1mTradeBar.amount` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_buy_amount` | `1m-bars.Grid1mTradeBar.buy_amount` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_buy_number` | `1m-bars.Grid1mTradeBar.buy_number` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_buy_volume` | `1m-bars.Grid1mTradeBar.buy_volume` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_close` | `1m-bars.Grid1mTradeBar.close` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_high` | `1m-bars.Grid1mTradeBar.high` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_low` | `1m-bars.Grid1mTradeBar.low` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_number` | `1m-bars.Grid1mTradeBar.number` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_open` | `1m-bars.Grid1mTradeBar.open` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_sell_amount` | `1m-bars.Grid1mTradeBar.sell_amount` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_sell_number` | `1m-bars.Grid1mTradeBar.sell_number` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_sell_volume` | `1m-bars.Grid1mTradeBar.sell_volume` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_volume` | `1m-bars.Grid1mTradeBar.volume` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_bars_grid1mtradebar_vwap` | `1m-bars.Grid1mTradeBar.vwap` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_derived_values_gridreturns_c2c` | `1m-derived-values.GridReturns.c2c` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_derived_values_intradaylimitmask_buylimitmask` | `1m-derived-values.IntradayLimitMask.BuyLimitMask` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_derived_values_intradaylimitmask_limitmask` | `1m-derived-values.IntradayLimitMask.LimitMask` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_derived_values_intradaylimitmask_selllimitmask` | `1m-derived-values.IntradayLimitMask.SellLimitMask` | 1m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_1m_hfq_grid1mbar_close_hfq` | `1m-hfq.Grid1mBar.close_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_cumsum_vol_hfq` | `1m-hfq.Grid1mBar.cumsum_vol_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_first_total_ask_vol_hfq` | `1m-hfq.Grid1mBar.first_total_ask_vol_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_first_total_bid_vol_hfq` | `1m-hfq.Grid1mBar.first_total_bid_vol_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_first_weighted_ask_prc_hfq` | `1m-hfq.Grid1mBar.first_weighted_ask_prc_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_first_weighted_bid_prc_hfq` | `1m-hfq.Grid1mBar.first_weighted_bid_prc_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_high_hfq` | `1m-hfq.Grid1mBar.high_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_low_hfq` | `1m-hfq.Grid1mBar.low_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_volume_hfq` | `1m-hfq.Grid1mBar.volume_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mbar_vwap_hfq` | `1m-hfq.Grid1mBar.vwap_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_buy_volume_hfq` | `1m-hfq.Grid1mTradeBar.buy_volume_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_close_hfq` | `1m-hfq.Grid1mTradeBar.close_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_high_hfq` | `1m-hfq.Grid1mTradeBar.high_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_low_hfq` | `1m-hfq.Grid1mTradeBar.low_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_open_hfq` | `1m-hfq.Grid1mTradeBar.open_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_sell_volume_hfq` | `1m-hfq.Grid1mTradeBar.sell_volume_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_volume_hfq` | `1m-hfq.Grid1mTradeBar.volume_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_1m_hfq_grid1mtradebar_vwap_hfq` | `1m-hfq.Grid1mTradeBar.vwap_hfq` | 1m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+
+## 分组：5m (110 个)
+
+| 变量名称 (Short Name) | 底层标识 (Actual Name) | 频度 | 维度 (Axes) | 数据类型 (Kind) | 缺失值处理策略 |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| `f_5m_bars_interval5mvolline_mainactbuytransnum` | `5m-bars.Interval5mVolLine.MainActBuyTransNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_mainactbuytranssum` | `5m-bars.Interval5mVolLine.MainActBuyTransSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_mainactbuytransvol` | `5m-bars.Interval5mVolLine.MainActBuyTransVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_mainactselltransnum` | `5m-bars.Interval5mVolLine.MainActSellTransNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_mainactselltranssum` | `5m-bars.Interval5mVolLine.MainActSellTransSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_mainactselltransvol` | `5m-bars.Interval5mVolLine.MainActSellTransVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_smallactbuytransnum` | `5m-bars.Interval5mVolLine.SmallActBuyTransNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_smallactbuytranssum` | `5m-bars.Interval5mVolLine.SmallActBuyTransSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_smallactbuytransvol` | `5m-bars.Interval5mVolLine.SmallActBuyTransVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_smallactselltransnum` | `5m-bars.Interval5mVolLine.SmallActSellTransNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_smallactselltranssum` | `5m-bars.Interval5mVolLine.SmallActSellTransSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_interval5mvolline_smallactselltransvol` | `5m-bars.Interval5mVolLine.SmallActSellTransVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_close` | `5m-bars.Intv5mBar.close` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_cumsum_amt` | `5m-bars.Intv5mBar.cumsum_amt` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_cumsum_num` | `5m-bars.Intv5mBar.cumsum_num` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_cumsum_vol` | `5m-bars.Intv5mBar.cumsum_vol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_first_total_ask_num` | `5m-bars.Intv5mBar.first_total_ask_num` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_first_total_ask_vol` | `5m-bars.Intv5mBar.first_total_ask_vol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_first_total_bid_num` | `5m-bars.Intv5mBar.first_total_bid_num` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_first_total_bid_vol` | `5m-bars.Intv5mBar.first_total_bid_vol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_first_weighted_ask_prc` | `5m-bars.Intv5mBar.first_weighted_ask_prc` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_first_weighted_bid_prc` | `5m-bars.Intv5mBar.first_weighted_bid_prc` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_high` | `5m-bars.Intv5mBar.high` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_low` | `5m-bars.Intv5mBar.low` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_number` | `5m-bars.Intv5mBar.number` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_turnover` | `5m-bars.Intv5mBar.turnover` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_volume` | `5m-bars.Intv5mBar.volume` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mbar_vwap` | `5m-bars.Intv5mBar.vwap` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainbuylmtordernum` | `5m-bars.Intv5mOrderLine.MainBuyLmtOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainbuylmtordersum` | `5m-bars.Intv5mOrderLine.MainBuyLmtOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainbuylmtordervol` | `5m-bars.Intv5mOrderLine.MainBuyLmtOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainbuymktordernum` | `5m-bars.Intv5mOrderLine.MainBuyMktOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainbuymktordersum` | `5m-bars.Intv5mOrderLine.MainBuyMktOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainbuymktordervol` | `5m-bars.Intv5mOrderLine.MainBuyMktOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainselllmtordernum` | `5m-bars.Intv5mOrderLine.MainSellLmtOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainselllmtordersum` | `5m-bars.Intv5mOrderLine.MainSellLmtOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainselllmtordervol` | `5m-bars.Intv5mOrderLine.MainSellLmtOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainsellmktordernum` | `5m-bars.Intv5mOrderLine.MainSellMktOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainsellmktordersum` | `5m-bars.Intv5mOrderLine.MainSellMktOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_mainsellmktordervol` | `5m-bars.Intv5mOrderLine.MainSellMktOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallbuylmtordernum` | `5m-bars.Intv5mOrderLine.SmallBuyLmtOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallbuylmtordersum` | `5m-bars.Intv5mOrderLine.SmallBuyLmtOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallbuylmtordervol` | `5m-bars.Intv5mOrderLine.SmallBuyLmtOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallbuymktordernum` | `5m-bars.Intv5mOrderLine.SmallBuyMktOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallbuymktordersum` | `5m-bars.Intv5mOrderLine.SmallBuyMktOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallbuymktordervol` | `5m-bars.Intv5mOrderLine.SmallBuyMktOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallselllmtordernum` | `5m-bars.Intv5mOrderLine.SmallSellLmtOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallselllmtordersum` | `5m-bars.Intv5mOrderLine.SmallSellLmtOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallselllmtordervol` | `5m-bars.Intv5mOrderLine.SmallSellLmtOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallsellmktordernum` | `5m-bars.Intv5mOrderLine.SmallSellMktOrderNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallsellmktordersum` | `5m-bars.Intv5mOrderLine.SmallSellMktOrderSum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5morderline_smallsellmktordervol` | `5m-bars.Intv5mOrderLine.SmallSellMktOrderVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_amount` | `5m-bars.Intv5mTradeBar.amount` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_buy_amount` | `5m-bars.Intv5mTradeBar.buy_amount` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_buy_number` | `5m-bars.Intv5mTradeBar.buy_number` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_buy_volume` | `5m-bars.Intv5mTradeBar.buy_volume` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_close` | `5m-bars.Intv5mTradeBar.close` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_high` | `5m-bars.Intv5mTradeBar.high` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_low` | `5m-bars.Intv5mTradeBar.low` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_number` | `5m-bars.Intv5mTradeBar.number` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_open` | `5m-bars.Intv5mTradeBar.open` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_sell_amount` | `5m-bars.Intv5mTradeBar.sell_amount` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_sell_number` | `5m-bars.Intv5mTradeBar.sell_number` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_sell_volume` | `5m-bars.Intv5mTradeBar.sell_volume` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_volume` | `5m-bars.Intv5mTradeBar.volume` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mtradebar_vwap` | `5m-bars.Intv5mTradeBar.vwap` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_amt` | `5m-bars.Intv5mVolBar.Amt` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buyamt` | `5m-bars.Intv5mVolBar.BuyAmt` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buyclose` | `5m-bars.Intv5mVolBar.BuyClose` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buyhigh` | `5m-bars.Intv5mVolBar.BuyHigh` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buylow` | `5m-bars.Intv5mVolBar.BuyLow` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buynum` | `5m-bars.Intv5mVolBar.BuyNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buyopen` | `5m-bars.Intv5mVolBar.BuyOpen` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_buyvol` | `5m-bars.Intv5mVolBar.BuyVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_close` | `5m-bars.Intv5mVolBar.Close` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_high` | `5m-bars.Intv5mVolBar.High` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_low` | `5m-bars.Intv5mVolBar.Low` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_num` | `5m-bars.Intv5mVolBar.Num` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_open` | `5m-bars.Intv5mVolBar.Open` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_sellamt` | `5m-bars.Intv5mVolBar.SellAmt` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_sellclose` | `5m-bars.Intv5mVolBar.SellClose` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_sellhigh` | `5m-bars.Intv5mVolBar.SellHigh` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_selllow` | `5m-bars.Intv5mVolBar.SellLow` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_sellnum` | `5m-bars.Intv5mVolBar.SellNum` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_sellopen` | `5m-bars.Intv5mVolBar.SellOpen` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_sellvol` | `5m-bars.Intv5mVolBar.SellVol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_bars_intv5mvolbar_vol` | `5m-bars.Intv5mVolBar.Vol` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_derived_values_intradaylimitmask_buylimitmask` | `5m-derived-values.IntradayLimitMask.BuyLimitMask` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_derived_values_intradaylimitmask_limitmask` | `5m-derived-values.IntradayLimitMask.LimitMask` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_derived_values_intradaylimitmask_selllimitmask` | `5m-derived-values.IntradayLimitMask.SellLimitMask` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_derived_values_intvreturns_c2c` | `5m-derived-values.IntvReturns.c2c` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_derived_values_intvreturns_vwap_c2c` | `5m-derived-values.IntvReturns.vwap_c2c` | 5m | date × snaptime × code | intraday | 读取缺失日期或未匹配证券时返回 NaN，不自动前向填充或补零。生产器内部的填充规则另见字段说明。 |
+| `f_5m_hfq_intv5mbar_close_hfq` | `5m-hfq.Intv5mBar.close_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_cumsum_vol_hfq` | `5m-hfq.Intv5mBar.cumsum_vol_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_first_total_ask_vol_hfq` | `5m-hfq.Intv5mBar.first_total_ask_vol_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_first_total_bid_vol_hfq` | `5m-hfq.Intv5mBar.first_total_bid_vol_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_first_weighted_ask_prc_hfq` | `5m-hfq.Intv5mBar.first_weighted_ask_prc_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_first_weighted_bid_prc_hfq` | `5m-hfq.Intv5mBar.first_weighted_bid_prc_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_high_hfq` | `5m-hfq.Intv5mBar.high_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_low_hfq` | `5m-hfq.Intv5mBar.low_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_volume_hfq` | `5m-hfq.Intv5mBar.volume_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mbar_vwap_hfq` | `5m-hfq.Intv5mBar.vwap_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_buy_volume_hfq` | `5m-hfq.Intv5mTradeBar.buy_volume_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_close_hfq` | `5m-hfq.Intv5mTradeBar.close_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_high_hfq` | `5m-hfq.Intv5mTradeBar.high_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_low_hfq` | `5m-hfq.Intv5mTradeBar.low_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_open_hfq` | `5m-hfq.Intv5mTradeBar.open_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_sell_volume_hfq` | `5m-hfq.Intv5mTradeBar.sell_volume_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_volume_hfq` | `5m-hfq.Intv5mTradeBar.volume_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |
+| `f_5m_hfq_intv5mtradebar_vwap_hfq` | `5m-hfq.Intv5mTradeBar.vwap_hfq` | 5m | date × snaptime × code | intraday | 缺失日期和证券读取为 NaN；上游生产口径尚未核实。 |

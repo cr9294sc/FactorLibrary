@@ -6,6 +6,7 @@
 pub mod cs;
 pub mod elem;
 pub mod group;
+pub mod postprocess;
 pub mod ts;
 
 use crate::expr::types::DataType;
@@ -140,8 +141,8 @@ impl UnaryOp {
             "abs" => Some(UnaryOp::Abs),
             "sign" => Some(UnaryOp::Sign),
             "inv" => Some(UnaryOp::Inv),
-            "slog" => Some(UnaryOp::Slog),
-            "ssqrt" => Some(UnaryOp::Ssqrt),
+            "slog" | "log" => Some(UnaryOp::Slog),
+            "ssqrt" | "sqrt" => Some(UnaryOp::Ssqrt),
             "square" => Some(UnaryOp::Square),
             "cube" => Some(UnaryOp::Cube),
             "sigmoid" => Some(UnaryOp::Sigmoid),
@@ -287,12 +288,12 @@ impl BinaryOp {
             "lt_const" => Some(BinaryOp::LtConst),
             "and_cond" => Some(BinaryOp::AndCond),
             "or_cond" => Some(BinaryOp::OrCond),
-            "delay" => Some(BinaryOp::Delay),
-            "delta" => Some(BinaryOp::Delta),
+            "delay" | "ts_delay" => Some(BinaryOp::Delay),
+            "delta" | "ts_delta" => Some(BinaryOp::Delta),
             "pct_change" => Some(BinaryOp::PctChange),
             "log_return" => Some(BinaryOp::LogReturn),
             "ts_sum" => Some(BinaryOp::TsSum),
-            "ts_mean" => Some(BinaryOp::TsMean),
+            "ts_mean" | "decay" => Some(BinaryOp::TsMean),
             "ts_std" => Some(BinaryOp::TsStd),
             "ts_var" => Some(BinaryOp::TsVar),
             "ts_min" => Some(BinaryOp::TsMin),
@@ -304,7 +305,7 @@ impl BinaryOp {
             "ts_skew" => Some(BinaryOp::TsSkew),
             "ts_kurt" => Some(BinaryOp::TsKurt),
             "ts_ema" => Some(BinaryOp::TsEma),
-            "ts_decay_linear" => Some(BinaryOp::TsDecayLinear),
+            "ts_decay_linear" | "emadecay" => Some(BinaryOp::TsDecayLinear),
             "ts_mad" => Some(BinaryOp::TsMad),
             "cs_neutralize" => Some(BinaryOp::CsNeutralize),
             "group_demean" => Some(BinaryOp::GroupDemean),

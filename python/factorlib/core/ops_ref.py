@@ -1472,3 +1472,264 @@ def ref_correlation_matrix(
             mat[j, i] = rho
 
     return mat
+
+
+# ============================================================================
+# 10. 12 项声明式后处理算子纯 NumPy 参考实现 (C++ aresexpradapter 对齐)
+# ============================================================================
+
+
+def pp_mask_mul_ref(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+    """baseUniMask / trdMask 参考实现: x1 * x2 (任一为 NaN 则置 NaN)。"""
+    a = np.asarray(x1, dtype=np.float64)
+    b = np.asarray(x2, dtype=np.float64)
+    out = np.full(a.shape, np.nan, dtype=np.float64, order="F")
+    mask = np.isfinite(a) & np.isfinite(b)
+    with np.errstate(over="ignore", invalid="ignore"):
+        prod = a[mask] * b[mask]
+    prod[~np.isfinite(prod)] = np.nan
+    out[mask] = prod
+    return out
+
+
+def pp_drop_new_stock_ref(
+    x1: np.ndarray,
+    x2: np.ndarray,
+    min_days: float = 60.0,
+) -> np.ndarray:
+    """dropNewStock 参考实现: 当 x2 >= min_days 时保留 x1, 否则输出 NaN。"""
+    a = np.asarray(x1, dtype=np.float64)
+    b = np.asarray(x2, dtype=np.float64)
+    out = np.full(a.shape, np.nan, dtype=np.float64, order="F")
+    mask = np.isfinite(a) & np.isfinite(b) & (b >= float(min_days))
+    out[mask] = a[mask]
+    return out
+
+
+def pp_mad_ref(x1: np.ndarray, threshold: float = 3.0) -> np.ndarray:
+    """MAD 参考实现: 下中位数 (N-1)//2 与 1.4826 * threshold 极值裁剪。"""
+    a = np.asarray(x1, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    n_val = float(threshold)
+    if not np.isfinite(n_val):
+        return out
+    for t in range(t_len):
+        row = a[t]
+        fin = np.sort(row[np.isfinite(row)])
+        k = len(fin)
+        if k == 0:
+            continue
+        med = float(fin[(k - 1) // 2])
+        abs_devs = np.sort(np.abs(fin - med))
+        mad = float(abs_devs[(k - 1) // 2])
+        lo = med - n_val * 1.4826 * mad
+        hi = med + n_val * 1.4826 * mad
+        mask = np.isfinite(row)
+        out[t, mask] = np.clip(row[mask], lo, hi)
+    return out
+
+
+def pp_winsor_ref(x1: np.ndarray, quantile: float = 0.025) -> np.ndarray:
+    """winsor 参考实现: 线性内插分位数 [q, 1-q] 裁剪。"""
+    a = np.asarray(x1, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    q = float(quantile)
+    if not np.isfinite(q):
+        return out
+    q = min(max(q, 0.0), 0.5)
+
+    def _lin_q(sorted_vals: np.ndarray, p: float) -> float:
+        n = len(sorted_vals)
+        if n == 1:
+            return float(sorted_vals[0])
+        pos = p * (n - 1)
+        lo_i = int(np.floor(pos))
+        hi_i = int(np.ceil(pos))
+        frac = pos - lo_i
+        return float(sorted_vals[lo_i] + frac * (sorted_vals[hi_i] - sorted_vals[lo_i]))
+
+    for t in range(t_len):
+        row = a[t]
+        fin = np.sort(row[np.isfinite(row)])
+        if len(fin) == 0:
+            continue
+        lo = _lin_q(fin, q)
+        hi = _lin_q(fin, 1.0 - q)
+        mask = np.isfinite(row)
+        out[t, mask] = np.clip(row[mask], lo, hi)
+    return out
+
+
+def pp_ind_neut_ref(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+    """indNeut 参考实现: 对 x2 > 0 减去同板块均值; 若 x2 缺失或 <= 0 则保留原值 x1。"""
+    a = np.asarray(x1, dtype=np.float64)
+    b = np.asarray(x2, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    for t in range(t_len):
+        groups: dict[float, list[float]] = {}
+        for s in range(s_len):
+            v1 = float(a[t, s])
+            v2 = float(b[t, s])
+            if np.isfinite(v1) and np.isfinite(v2) and v2 > 0.0:
+                groups.setdefault(v2, []).append(v1)
+        means = {k: sum(vs) / len(vs) for k, vs in groups.items() if vs}
+        for s in range(s_len):
+            v1 = float(a[t, s])
+            v2 = float(b[t, s])
+            if not np.isfinite(v1):
+                out[t, s] = np.nan
+            elif not np.isfinite(v2) or v2 <= 0.0:
+                out[t, s] = v1
+            else:
+                out[t, s] = v1 - means.get(v2, 0.0)
+    return out
+
+
+def pp_risk_neut_ref(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+    """riskNeut 参考实现: 带截距单变量截面 OLS 残差 (缺失暴露保留原值)。"""
+    a = np.asarray(x1, dtype=np.float64)
+    b = np.asarray(x2, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    for t in range(t_len):
+        r1 = a[t]
+        r2 = b[t]
+        both_mask = np.isfinite(r1) & np.isfinite(r2)
+        if np.sum(both_mask) < 2:
+            continue
+        b1 = r1[both_mask]
+        b2 = r2[both_mask]
+        m1_b = float(np.mean(b1))
+        m2_b = float(np.mean(b2))
+        cov = float(np.sum((b1 - m1_b) * (b2 - m2_b)))
+        var2 = float(np.sum((b2 - m2_b) ** 2))
+        if var2 <= 1e-12:
+            continue
+        beta = cov / var2
+        fin1 = r1[np.isfinite(r1)]
+        fin2 = r2[np.isfinite(r2)]
+        alpha = float(np.mean(fin1)) - beta * float(np.mean(fin2))
+        for s in range(s_len):
+            v1 = float(r1[s])
+            v2 = float(r2[s])
+            if not np.isfinite(v1):
+                out[t, s] = np.nan
+            elif not np.isfinite(v2):
+                out[t, s] = v1
+            else:
+                out[t, s] = v1 - (alpha + beta * v2)
+    return out
+
+
+def pp_risk_neut_multi_ref(
+    x1: np.ndarray,
+    exposures: list[np.ndarray],
+) -> np.ndarray:
+    """riskNeutMulti 参考实现: 无截距多变量截面 1e-8 岭回归残差。"""
+    a = np.asarray(x1, dtype=np.float64)
+    if not exposures:
+        return a.copy(order="F")
+    exps = [np.asarray(e, dtype=np.float64) for e in exposures]
+    t_len, s_len = a.shape
+    k_len = len(exps)
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    for t in range(t_len):
+        valid_mask = np.isfinite(a[t]).copy()
+        for e in exps:
+            valid_mask &= np.isfinite(e[t])
+        valid_idx = np.where(valid_mask)[0]
+        if len(valid_idx) == 0:
+            continue
+        y_vec = a[t, valid_idx]
+        x_mat = np.column_stack([e[t, valid_idx] for e in exps])
+        a_sys = x_mat.T @ x_mat + 1e-8 * np.eye(k_len, dtype=np.float64)
+        b_sys = x_mat.T @ y_vec
+        try:
+            beta = np.linalg.solve(a_sys, b_sys)
+        except np.linalg.LinAlgError:
+            continue
+        out[t, valid_idx] = y_vec - (x_mat @ beta)
+    return out
+
+
+def pp_zscore_ref(x1: np.ndarray) -> np.ndarray:
+    """zScore 参考实现: 每日截面总体标准差 (ddof=0) 标准化。"""
+    a = np.asarray(x1, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    for t in range(t_len):
+        row = a[t]
+        mask = np.isfinite(row)
+        vals = row[mask]
+        if len(vals) == 0:
+            continue
+        mean_v = float(np.mean(vals))
+        std_v = float(np.sqrt(np.mean((vals - mean_v) ** 2)))
+        if std_v == 0.0 or not np.isfinite(std_v):
+            continue
+        out[t, mask] = (vals - mean_v) / std_v
+    return out
+
+
+def pp_rank_ref(x1: np.ndarray) -> np.ndarray:
+    """rank 参考实现: 6 位精度截断稳定排序百分位排名。"""
+    a = np.asarray(x1, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    for t in range(t_len):
+        row = a[t]
+        fin_idx = [s for s in range(s_len) if np.isfinite(row[s])]
+        n_fin = len(fin_idx)
+        if n_fin == 0:
+            continue
+        vals = np.array([row[s] for s in fin_idx], dtype=np.float64)
+        mean_v = float(np.mean(vals))
+        std_v = float(np.sqrt(np.mean((vals - mean_v) ** 2)))
+        if std_v < 1e-6:
+            continue
+        keyed = [(round(float(row[s]) / std_v, 6), s) for s in fin_idx]
+        keyed.sort(key=lambda pair: (pair[0], pair[1]))
+        for r_idx, (_, s) in enumerate(keyed, start=1):
+            out[t, s] = r_idx / n_fin
+    return out
+
+
+def pp_decay_ref(x1: np.ndarray, window: int = 5) -> np.ndarray:
+    """decay 参考实现: t < window - 1 置 NaN 的沿时间轴滚动均值。"""
+    a = np.asarray(x1, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    w = int(window)
+    if w <= 0 or w > t_len:
+        return out
+    for t in range(w - 1, t_len):
+        for s in range(s_len):
+            vals = [float(a[k, s]) for k in range(t - w + 1, t + 1) if np.isfinite(a[k, s])]
+            if vals:
+                out[t, s] = sum(vals) / len(vals)
+    return out
+
+
+def pp_emadecay_ref(x1: np.ndarray, window: int = 5) -> np.ndarray:
+    """emadecay 参考实现: t < window - 1 置 NaN 的 1..W 线性加权移动平均 (缺失权重重归一化)。"""
+    a = np.asarray(x1, dtype=np.float64)
+    t_len, s_len = a.shape
+    out = np.full((t_len, s_len), np.nan, dtype=np.float64, order="F")
+    w = int(window)
+    if w <= 0 or w > t_len:
+        return out
+    for t in range(w - 1, t_len):
+        for s in range(s_len):
+            num = 0.0
+            den = 0.0
+            for i in range(1, w + 1):
+                val = float(a[t - w + i, s])
+                if np.isfinite(val):
+                    num += i * val
+                    den += i
+            if den > 0.0:
+                out[t, s] = num / den
+    return out

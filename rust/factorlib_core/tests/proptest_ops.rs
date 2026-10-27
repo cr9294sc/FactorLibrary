@@ -13,7 +13,7 @@ use factorlib_core::expr::eval::{eval_batch_str, eval_expr_str};
 use factorlib_core::expr::parser::parse_expr;
 use factorlib_core::expr::typecheck::typecheck_factor_expr;
 use factorlib_core::nan::{clean_f64, STD_EPS, VAR_EPS};
-use factorlib_core::ops::{cs, elem, list_all_operators, ts};
+use factorlib_core::ops::{cs, elem, list_all_operators, postprocess, ts};
 use factorlib_core::panel::{alloc_nan_matrix, into_fortran_f64, Panel};
 use ndarray::{Array2, ShapeBuilder};
 use proptest::prelude::*;
@@ -331,6 +331,46 @@ proptest! {
         let d1 = cs::op_cs_demean(&x);
         let d2 = cs::op_cs_demean(&d1);
         assert_matrices_close(&d1, &d2, 1e-9, "cs_demean idempotency");
+    }
+
+    #[test]
+    fn prop_postprocess_operators_invariants(
+        x in matrix_strategy(20, 8),
+        y in matrix_strategy(20, 8),
+        d in 1usize..8usize,
+    ) {
+        // zScore (ddof=0) 幂等性
+        let z1 = postprocess::pp_zscore(&x);
+        let z2 = postprocess::pp_zscore(&z1);
+        assert_matrices_close(&z1, &z2, 1e-9, "pp_zscore idempotency");
+
+        // rank 范围在 (0, 1] 且不含 Inf
+        let r1 = postprocess::pp_rank(&x);
+        for &v in r1.iter() {
+            if !v.is_nan() {
+                prop_assert!(v > 0.0 && v <= 1.0);
+            }
+        }
+
+        // MAD & winsor 稳定性 (无 panic、无 Inf)
+        let m1 = postprocess::pp_mad(&x, 3.0);
+        let w1 = postprocess::pp_winsor(&x, 0.1);
+        for &v in m1.iter().chain(w1.iter()) {
+            prop_assert!(!v.is_infinite());
+        }
+
+        // indNeut 幂等性 (使用正整数行业编码)
+        let grp = elem::op_add(&elem::op_abs(&y), &Array2::from_elem(y.dim(), 1.0));
+        let in1 = postprocess::pp_ind_neut(&x, &grp);
+        let in2 = postprocess::pp_ind_neut(&in1, &grp);
+        assert_matrices_close(&in1, &in2, 1e-9, "pp_ind_neut idempotency");
+
+        // decay & emadecay 稳定性
+        let dec = postprocess::pp_decay(&x, d);
+        let ema = postprocess::pp_emadecay(&x, d);
+        for &v in dec.iter().chain(ema.iter()) {
+            prop_assert!(!v.is_infinite());
+        }
     }
 }
 

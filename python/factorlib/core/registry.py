@@ -1,21 +1,25 @@
 """SQLite 因子注册表 ORM 与因子资产全生命周期管理 (core/registry.py)。
 
-严格遵循白皮书 10.1 节与 10.2 节架构设计：
-- Schema 严格包含 factor (元数据), factor_metrics (多周期多切片评价), experiment_run (实验追踪)；
+严格遵循白皮书 10.1 节、10.2 节与 FactorLab 工作流规范：
+- Schema 包含 factor (元数据与草稿修订), factor_metrics (多周期多切片评价),
+  factor_version (不可变版本快照锁定), experiment_run (实验追踪)；
 - 维护严格的外键级联约束与 WAL 并发模式；
 - 实现因子生命周期流转状态机：candidate -> accepted -> active -> deprecated；
 - 记录唯一代数指纹 canon_hash，杜绝同质异构多项式重复入库；
-- 支持根据 ICIR、换手率、状态等维度快速过滤与特征组装。
+- 支持因子矩阵 `[T x N]` 物化落盘与快速读取，以及草稿迭代与不可变版本锁定。
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 VALID_STATUSES = {"candidate", "accepted", "active", "deprecated"}
 VALID_SOURCES = {"gp", "manual", "seed"}
@@ -23,6 +27,7 @@ VALID_MODES = {"cs", "ts"}
 VALID_SPLITS = {"train", "valid", "test", "full"}
 VALID_RUN_KINDS = {"gp", "ml", "backtest", "eval"}
 VALID_RUN_STATUSES = {"running", "completed", "failed"}
+VALID_FACTOR_TYPES = {"expression", "code"}
 
 
 @dataclass
@@ -55,6 +60,28 @@ class FactorMetricsRecord:
 
 
 @dataclass
+class FactorVersionRecord:
+    """因子不可变历史版本锁定记录 (对标 FactorLab Stage 4/5 Version Snapshot)。"""
+
+    factor_id: int
+    version: int
+    canon_expr: str
+    canon_hash: str
+    definition_json: str = "{}"
+    materialization_path: str | None = None
+    probe_json: str | None = None
+    eval_summary_json: str | None = None
+    created_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.created_at is None:
+            self.created_at = dt.datetime.now(dt.UTC).isoformat()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class FactorRecord:
     """因子元数据主表记录。"""
 
@@ -72,6 +99,11 @@ class FactorRecord:
     created_at: str | None = None
     updated_at: str | None = None
     metrics: list[FactorMetricsRecord] = field(default_factory=list)
+    name: str | None = None
+    factor_type: str = "expression"  # expression | code
+    definition_json: str | None = None
+    draft_revision: int = 1
+    materialization_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in VALID_STATUSES:
@@ -82,6 +114,10 @@ class FactorRecord:
             raise ValueError(f"无效的模式: {self.mode!r}, 必须在 {VALID_MODES} 中")
         if self.sign not in (-1, 1):
             raise ValueError(f"无效的方向: {self.sign}, 必须为 1 或 -1")
+        if self.factor_type not in VALID_FACTOR_TYPES:
+            raise ValueError(
+                f"无效的因子类型: {self.factor_type!r}, 必须在 {VALID_FACTOR_TYPES} 中"
+            )
         now_str = dt.datetime.now(dt.UTC).isoformat()
         if self.created_at is None:
             self.created_at = now_str
@@ -123,20 +159,25 @@ class ExperimentRunRecord:
 SCHEMA_SQL = """
 -- 因子元数据主表
 CREATE TABLE IF NOT EXISTS factor (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    canon_expr      TEXT NOT NULL,
-    canon_hash      TEXT NOT NULL UNIQUE,
-    mode            TEXT NOT NULL CHECK (mode IN ('cs', 'ts')),
-    sign            INTEGER NOT NULL CHECK (sign IN (-1, 1)),
-    n_nodes         INTEGER NOT NULL,
-    depth           INTEGER NOT NULL,
-    source          TEXT NOT NULL CHECK (source IN ('gp', 'manual', 'seed')),
-    source_run      TEXT,
-    data_version    TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'candidate'
-                    CHECK (status IN ('candidate', 'accepted', 'active', 'deprecated')),
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    canon_expr              TEXT NOT NULL,
+    canon_hash              TEXT NOT NULL UNIQUE,
+    mode                    TEXT NOT NULL CHECK (mode IN ('cs', 'ts')),
+    sign                    INTEGER NOT NULL CHECK (sign IN (-1, 1)),
+    n_nodes                 INTEGER NOT NULL,
+    depth                   INTEGER NOT NULL,
+    source                  TEXT NOT NULL CHECK (source IN ('gp', 'manual', 'seed')),
+    source_run              TEXT,
+    data_version            TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'candidate'
+                            CHECK (status IN ('candidate', 'accepted', 'active', 'deprecated')),
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    name                    TEXT,
+    factor_type             TEXT NOT NULL DEFAULT 'expression',
+    definition_json         TEXT,
+    draft_revision          INTEGER NOT NULL DEFAULT 1,
+    materialization_path    TEXT
 );
 
 -- 因子多时段评估指标明细表
@@ -156,6 +197,20 @@ CREATE TABLE IF NOT EXISTS factor_metrics (
     ls_max_dd       REAL NOT NULL,
     computed_at     TEXT NOT NULL,
     PRIMARY KEY (factor_id, split, horizon)
+);
+
+-- 因子不可变历史版本锁定表
+CREATE TABLE IF NOT EXISTS factor_version (
+    factor_id               INTEGER NOT NULL REFERENCES factor(id) ON DELETE CASCADE,
+    version                 INTEGER NOT NULL,
+    canon_expr              TEXT NOT NULL,
+    canon_hash              TEXT NOT NULL,
+    definition_json         TEXT NOT NULL,
+    materialization_path    TEXT,
+    probe_json              TEXT,
+    eval_summary_json       TEXT,
+    created_at              TEXT NOT NULL,
+    PRIMARY KEY (factor_id, version)
 );
 
 -- 实验运行元数据追踪表
@@ -195,6 +250,26 @@ class FactorRegistry:
     def _init_db(self) -> None:
         with self._get_connection() as conn:
             conn.executescript(SCHEMA_SQL)
+            # 幂等迁移检查：兼容旧版已存在的 factor 表结构
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(factor)")
+            existing_cols = {row["name"] for row in cur.fetchall()}
+            migrations = [
+                ("name", "ALTER TABLE factor ADD COLUMN name TEXT"),
+                (
+                    "factor_type",
+                    "ALTER TABLE factor ADD COLUMN factor_type TEXT NOT NULL DEFAULT 'expression'",
+                ),
+                ("definition_json", "ALTER TABLE factor ADD COLUMN definition_json TEXT"),
+                (
+                    "draft_revision",
+                    "ALTER TABLE factor ADD COLUMN draft_revision INTEGER NOT NULL DEFAULT 1",
+                ),
+                ("materialization_path", "ALTER TABLE factor ADD COLUMN materialization_path TEXT"),
+            ]
+            for col_name, ddl in migrations:
+                if col_name not in existing_cols:
+                    conn.execute(ddl)
 
     # =========================================================================
     # 因子元数据与评价指标注册 (CRUD)
@@ -206,24 +281,16 @@ class FactorRegistry:
         run_id: str | None = None,
         upsert: bool = False,
     ) -> int:
-        """原子化插入新因子及其全量评估指标，返回 factor_id。
-
-        Parameters
-        ----------
-        factor:
-            待注册的因子记录
-        run_id:
-            实验运行唯一标识 (覆盖 factor.source_run)
-        upsert:
-            若为 True 且哈希已存在，则更新已有因子的元数据并补充指标；
-            若为 False 且哈希存在，抛出 ValueError。
-        """
+        """原子化插入新因子及其全量评估指标，返回 factor_id。"""
         source_run = run_id or factor.source_run
         now_str = dt.datetime.now(dt.UTC).isoformat()
 
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id FROM factor WHERE canon_hash = ?", (factor.canon_hash,))
+            cur.execute(
+                "SELECT id, draft_revision FROM factor WHERE canon_hash = ?",
+                (factor.canon_hash,),
+            )
             row = cur.fetchone()
 
             if row is not None:
@@ -232,11 +299,14 @@ class FactorRegistry:
                         f"因子指纹 '{factor.canon_hash}' 已存在于库中 (id={row['id']})"
                     )
                 factor_id = int(row["id"])
+                next_rev = int(row["draft_revision"] or 1) + 1
                 cur.execute(
                     """
                     UPDATE factor
                     SET canon_expr = ?, mode = ?, sign = ?, n_nodes = ?, depth = ?,
-                        source = ?, source_run = ?, data_version = ?, status = ?, updated_at = ?
+                        source = ?, source_run = ?, data_version = ?, status = ?, updated_at = ?,
+                        name = COALESCE(?, name), factor_type = ?, definition_json = COALESCE(?, definition_json),
+                        draft_revision = ?, materialization_path = COALESCE(?, materialization_path)
                     WHERE id = ?
                     """,
                     (
@@ -250,6 +320,11 @@ class FactorRegistry:
                         factor.data_version,
                         factor.status,
                         now_str,
+                        factor.name,
+                        factor.factor_type,
+                        factor.definition_json,
+                        next_rev,
+                        factor.materialization_path,
                         factor_id,
                     ),
                 )
@@ -258,8 +333,9 @@ class FactorRegistry:
                     """
                     INSERT INTO factor (
                         canon_expr, canon_hash, mode, sign, n_nodes, depth,
-                        source, source_run, data_version, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source, source_run, data_version, status, created_at, updated_at,
+                        name, factor_type, definition_json, draft_revision, materialization_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         factor.canon_expr,
@@ -274,6 +350,11 @@ class FactorRegistry:
                         factor.status,
                         factor.created_at or now_str,
                         now_str,
+                        factor.name,
+                        factor.factor_type,
+                        factor.definition_json,
+                        factor.draft_revision,
+                        factor.materialization_path,
                     ),
                 )
                 factor_id = int(cur.lastrowid)
@@ -307,6 +388,180 @@ class FactorRegistry:
                 )
 
         return factor_id
+
+    # =========================================================================
+    # 草稿管理、因子物化与不可变版本锁定 (Stage 2/4/5)
+    # =========================================================================
+
+    def save_draft(
+        self,
+        definition: Any,
+        probe_report: dict[str, Any] | None = None,
+        mode: str = "cs",
+        sign: int = 1,
+        source: str = "manual",
+        data_version: str = "v1",
+    ) -> int:
+        """创建或更新因子草稿记录 (Stage 2: factor_create / factor_update_draft)。"""
+        from factorlib.core.probe import FactorDefinition, probe_factor
+
+        defn = (
+            definition
+            if isinstance(definition, FactorDefinition)
+            else FactorDefinition.from_dict(definition)
+            if isinstance(definition, dict)
+            else FactorDefinition(name="draft_factor", expression=str(definition))
+        )
+        rep = probe_report if probe_report is not None else probe_factor(defn)
+        if rep["status"] != "ok":
+            raise ValueError(f"草稿静态探针校验失败: {rep['errors']}")
+
+        rec = FactorRecord(
+            canon_expr=rep["canon_expr"],
+            canon_hash=rep["canon_hash"],
+            mode=mode,
+            sign=sign,
+            n_nodes=int(rep.get("n_nodes", 1)),
+            depth=int(rep.get("depth", 1)),
+            source=source,
+            data_version=data_version,
+            status="candidate",
+            name=defn.name,
+            factor_type=defn.factor_type,
+            definition_json=defn.to_json(),
+        )
+        return self.register_factor(rec, upsert=True)
+
+    def materialize_factor(
+        self,
+        factor_id: int,
+        factor_matrix: np.ndarray,
+        dates: Sequence[Any],
+        symbols: Sequence[str],
+        mat_dir: str | Path | None = None,
+    ) -> Path:
+        """将计算完成的 `[T x N]` 因子矩阵物化落盘 (`.npz` 压缩格式) 并绑定至注册表记录。"""
+        rec = self.get_factor(factor_id, include_metrics=False)
+        if rec is None:
+            raise ValueError(f"factor_id={factor_id} 不存在")
+
+        base_dir = Path(mat_dir) if mat_dir is not None else (self.db_path.parent / "materialized")
+        base_dir.mkdir(parents=True, exist_ok=True)
+        out_path = base_dir / f"factor_{factor_id}_{rec.canon_hash}.npz"
+
+        np.savez_compressed(
+            out_path,
+            matrix=np.asarray(factor_matrix, dtype=np.float64),
+            dates=np.array([str(d) for d in dates]),
+            symbols=np.array([str(s) for s in symbols]),
+        )
+
+        now_str = dt.datetime.now(dt.UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE factor SET materialization_path = ?, updated_at = ? WHERE id = ?",
+                (str(out_path), now_str, factor_id),
+            )
+        return out_path
+
+    def load_materialized_factor(
+        self, factor_id: int
+    ) -> tuple[np.ndarray, list[str], list[str]] | None:
+        """加载已物化落盘的因子矩阵 `(matrix, dates, symbols)`。"""
+        rec = self.get_factor(factor_id, include_metrics=False)
+        if rec is None or not rec.materialization_path:
+            return None
+        p = Path(rec.materialization_path)
+        if not p.exists():
+            return None
+        with np.load(p, allow_pickle=False) as data:
+            mat = np.asfortranarray(data["matrix"], dtype=np.float64)
+            dates = [str(x) for x in data["dates"].tolist()]
+            symbols = [str(x) for x in data["symbols"].tolist()]
+        return mat, dates, symbols
+
+    def lock_factor_version(
+        self,
+        factor_id: int,
+        probe_report: dict[str, Any] | None = None,
+        eval_summary: dict[str, Any] | None = None,
+    ) -> FactorVersionRecord:
+        """在物化或回测时为当前因子生成不可变版本号快照 (v1, v2, ...)。"""
+        rec = self.get_factor(factor_id, include_metrics=False)
+        if rec is None:
+            raise ValueError(f"factor_id={factor_id} 不存在")
+
+        now_str = dt.datetime.now(dt.UTC).isoformat()
+        probe_str = (
+            json.dumps(probe_report, ensure_ascii=False) if probe_report is not None else None
+        )
+        eval_str = (
+            json.dumps(eval_summary, ensure_ascii=False) if eval_summary is not None else None
+        )
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COALESCE(MAX(version), 0) AS max_v FROM factor_version WHERE factor_id = ?",
+                (factor_id,),
+            )
+            next_v = int(cur.fetchone()["max_v"]) + 1
+            defn_json = rec.definition_json or json.dumps(
+                {"name": rec.name or f"factor_{factor_id}", "expression": rec.canon_expr}
+            )
+            cur.execute(
+                """
+                INSERT INTO factor_version (
+                    factor_id, version, canon_expr, canon_hash, definition_json,
+                    materialization_path, probe_json, eval_summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    factor_id,
+                    next_v,
+                    rec.canon_expr,
+                    rec.canon_hash,
+                    defn_json,
+                    rec.materialization_path,
+                    probe_str,
+                    eval_str,
+                    now_str,
+                ),
+            )
+        return FactorVersionRecord(
+            factor_id=factor_id,
+            version=next_v,
+            canon_expr=rec.canon_expr,
+            canon_hash=rec.canon_hash,
+            definition_json=defn_json,
+            materialization_path=rec.materialization_path,
+            probe_json=probe_str,
+            eval_summary_json=eval_str,
+            created_at=now_str,
+        )
+
+    def list_factor_versions(self, factor_id: int) -> list[FactorVersionRecord]:
+        """查询指定因子的全部历史不可变版本快照。"""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM factor_version WHERE factor_id = ? ORDER BY version ASC",
+                (factor_id,),
+            )
+            return [
+                FactorVersionRecord(
+                    factor_id=int(r["factor_id"]),
+                    version=int(r["version"]),
+                    canon_expr=r["canon_expr"],
+                    canon_hash=r["canon_hash"],
+                    definition_json=r["definition_json"],
+                    materialization_path=r["materialization_path"],
+                    probe_json=r["probe_json"],
+                    eval_summary_json=r["eval_summary_json"],
+                    created_at=r["created_at"],
+                )
+                for r in cur.fetchall()
+            ]
 
     def add_metrics(
         self,
@@ -457,7 +712,7 @@ class FactorRegistry:
                 )
 
     def delete_factor(self, factor_id: int) -> bool:
-        """物理删除因子（级联删除 metrics 明细）。"""
+        """物理删除因子（级联删除 metrics 与 version 明细）。"""
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("DELETE FROM factor WHERE id = ?", (factor_id,))
@@ -611,6 +866,7 @@ class FactorRegistry:
                     )
                 )
 
+        row_keys = set(row.keys())
         return FactorRecord(
             id=factor_id,
             canon_expr=row["canon_expr"],
@@ -626,4 +882,15 @@ class FactorRegistry:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             metrics=metrics,
+            name=row["name"] if "name" in row_keys else None,
+            factor_type=row["factor_type"]
+            if "factor_type" in row_keys and row["factor_type"]
+            else "expression",
+            definition_json=row["definition_json"] if "definition_json" in row_keys else None,
+            draft_revision=int(row["draft_revision"])
+            if "draft_revision" in row_keys and row["draft_revision"]
+            else 1,
+            materialization_path=row["materialization_path"]
+            if "materialization_path" in row_keys
+            else None,
         )

@@ -1340,6 +1340,14 @@ class StockMarketAdapter(MarketAdapter):
         ...
 ```
 
+### 17.3 米筐 RQData 股票原始日频仓库与整年断点续传规范（Phase 2 数据底座）
+
+- **隔离环境与密钥安全**：通过独立虚拟环境 `.venv-rqsdk` 安装 `rqdatac`（开启 Zstandard 传输压缩与 `enable_bjse=True` 北交所覆盖），许可证密钥隔离存储于本地受限权限 `.env`（严禁入库）。
+- **防幸存者偏差与省流落盘（`scripts/download_rq_stocks.py` -> `data/raw/stocks/`）**：
+  - 一次性拉取全局 `calendar`、`instruments_info`（含全部历史退市 A 股）、`ex_factor`（稀疏除权除息因子表）与宽基指数 `index_bar_1d`；
+  - 按自然年正向（`2010 -> 2026`）原子打包 `bar_1d`（`adjust_type='none'` 原始日线）、`trade_status`（逐日真实 ST 与停牌掩码）、`daily_basic`（换手率、总市值、流通市值、PE/PB/PS）、`industry_sw`（申万 2021 一/二/三级历史月度截面）及 `index_weights`（沪深300/中证500/中证1000历史成分权重）；
+  - 内置 `get_quota()` 实测单股单日流量哨兵，当日剩余配额不足下一完整自然年时主动在上一整年年末安全停机，并通过 `_state/{export_tasks.json, watermarks.json}` 支持次日一键断点续传。
+
 ---
 
 ## 结语

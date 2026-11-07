@@ -61,9 +61,9 @@ check_git_safety() {
         while IFS= read -r file; do
             [[ -z "${file}" ]] && continue
             
-            # 1. 检查禁止的敏感目录
-            if [[ "${file}" =~ ^(exports/|data/|runs/) ]]; then
-                log_fail "严禁将数据资产目录暂存到 Git 仓库: ${file}"
+            # 1. 检查禁止的敏感目录与密钥文件
+            if [[ "${file}" =~ ^(exports/|data/|runs/|\.venv|\.env) ]]; then
+                log_fail "严禁将数据资产目录、虚拟环境或密钥文件暂存到 Git 仓库: ${file}"
                 leak_detected=1
             fi
             
@@ -218,6 +218,7 @@ check_scripts() {
     python scripts/run_pipeline.py --help > /dev/null
     python scripts/catalog.py --help > /dev/null
     python scripts/run_web.py --help > /dev/null
+    python scripts/download_rq_stocks.py --help > /dev/null
     log_pass "CLI 工具脚本 --help 入口响应正常"
 }
 

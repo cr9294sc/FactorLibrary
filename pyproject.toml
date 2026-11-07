@@ -46,6 +46,7 @@ target-version = "py312"
 exclude = [
     ".git",
     ".venv",
+    ".venv-*",
     "legacy",
     "pyrust-bt-main",
     "python/pyrust_bt",

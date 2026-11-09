@@ -67,6 +67,23 @@ def test_active_stocks_includes_delisted_without_survivorship_bias() -> None:
     active_2010 = _active_stocks_in_range(inst_df, "2010-01-04", "2010-12-31")
     assert active_2010 == ["000001.XSHE", "600002.XSHG"]
 
+    # 验证 BJSE 标的在 include_bjse=False 时被正确排除
+    inst_df_bjse = pl.DataFrame(
+        {
+            "order_book_id": ["000001.XSHE", "830001.BJSE"],
+            "exchange": ["XSHE", "BJSE"],
+            "listed_date_clean": ["1991-04-03", "2020-01-01"],
+            "delisted_date_clean": [None, None],
+        }
+    )
+    assert _active_stocks_in_range(
+        inst_df_bjse, "2020-01-02", "2020-12-31", include_bjse=False
+    ) == ["000001.XSHE"]
+    assert _active_stocks_in_range(inst_df_bjse, "2020-01-02", "2020-12-31", include_bjse=True) == [
+        "000001.XSHE",
+        "830001.BJSE",
+    ]
+
 
 def test_month_anchor_dates() -> None:
     """验证首交易日与月末交易日截面锚点提取。"""

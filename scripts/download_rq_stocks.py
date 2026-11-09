@@ -113,6 +113,12 @@ def parse_args() -> argparse.Namespace:
         help="可选指定年份列表, 逗号分隔, 如 '2023,2024'",
     )
     parser.add_argument(
+        "--include-bjse",
+        action="store_true",
+        default=False,
+        help="是否包含北交所 (BJSE) 标的 (默认: False, 仅包含沪深主板/创业板/科创板 XSHG/XSHE, 避免无 BJSE 行情权限报错)",
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="仅查看本地落盘水位线与当前米筐账户配额, 不执行下载",
@@ -176,8 +182,8 @@ def _load_dotenv(dotenv_path: Path) -> None:
             os.environ[key] = val
 
 
-def _init_rqdatac() -> Any:
-    """安全初始化 rqdatac 并开启 Zstd 压缩与北交所支持。"""
+def _init_rqdatac(enable_bjse: bool = False) -> Any:
+    """安全初始化 rqdatac 并开启 Zstd 压缩。"""
     import rqdatac
 
     _load_dotenv(REPO_ROOT / ".env")
@@ -185,11 +191,11 @@ def _init_rqdatac() -> Any:
     conf_uri = os.environ.get("RQDATAC2_CONF") or os.environ.get("RQDATAC_CONF")
 
     if license_key:
-        rqdatac.init("license", license_key, use_zstd=True, enable_bjse=True)
+        rqdatac.init("license", license_key, use_zstd=True, enable_bjse=enable_bjse)
     elif conf_uri:
-        rqdatac.init(uri=conf_uri, use_zstd=True, enable_bjse=True)
+        rqdatac.init(uri=conf_uri, use_zstd=True, enable_bjse=enable_bjse)
     else:
-        rqdatac.init(use_zstd=True, enable_bjse=True)
+        rqdatac.init(use_zstd=True, enable_bjse=enable_bjse)
     return rqdatac
 
 
@@ -363,14 +369,19 @@ def _format_mb(num_bytes: float) -> str:
     return f"{num_bytes / (1024.0 * 1024.0):.2f} MB"
 
 
-def _active_stocks_in_range(inst_df: Any, start_str: str, end_str: str) -> list[str]:
+def _active_stocks_in_range(
+    inst_df: Any, start_str: str, end_str: str, include_bjse: bool = False
+) -> list[str]:
     """筛选在 [start_str, end_str] 区间内处于已上市且未在区间开始前退市的股票代码列表。"""
     import polars as pl
 
-    filtered = inst_df.filter(
-        (pl.col("listed_date_clean").is_null() | (pl.col("listed_date_clean") <= end_str))
-        & (pl.col("delisted_date_clean").is_null() | (pl.col("delisted_date_clean") >= start_str))
+    cond = (pl.col("listed_date_clean").is_null() | (pl.col("listed_date_clean") <= end_str)) & (
+        pl.col("delisted_date_clean").is_null() | (pl.col("delisted_date_clean") >= start_str)
     )
+    if not include_bjse and "exchange" in inst_df.columns:
+        cond = cond & (pl.col("exchange") != "BJSE")
+
+    filtered = inst_df.filter(cond)
     return sorted(filtered["order_book_id"].to_list())
 
 
@@ -567,6 +578,7 @@ def _export_year_bundle(
     y_dates: list[date],
     batch_size: int,
     force: bool,
+    include_bjse: bool = False,
 ) -> int:
     """原子导出单个自然年的全部 5 张股票核心日频与截面表, 返回当年总消耗字节。"""
     import numpy as np
@@ -574,7 +586,7 @@ def _export_year_bundle(
 
     y_start = y_dates[0].isoformat()
     y_end = y_dates[-1].isoformat()
-    active_ids = _active_stocks_in_range(inst_df, y_start, y_end)
+    active_ids = _active_stocks_in_range(inst_df, y_start, y_end, include_bjse=include_bjse)
     stock_days = len(active_ids) * len(y_dates)
     year_wire_bytes = 0
 
@@ -776,7 +788,7 @@ def _export_year_bundle(
         ind_parts: list[pl.DataFrame] = []
         for anchor_dt in anchors:
             dt_str = anchor_dt.isoformat()
-            snap_ids = _active_stocks_in_range(inst_df, dt_str, dt_str)
+            snap_ids = _active_stocks_in_range(inst_df, dt_str, dt_str, include_bjse=include_bjse)
             if not snap_ids:
                 continue
             ind_pd = rqdatac.get_instrument_industry(
@@ -906,7 +918,7 @@ def main() -> int:
     )
 
     _ensure_rqsdk_runtime()
-    rqdatac = _init_rqdatac()
+    rqdatac = _init_rqdatac(enable_bjse=args.include_bjse)
     from rqdatac.share.errors import QuotaExceeded
 
     raw_dir = args.raw_dir if args.raw_dir.is_absolute() else (REPO_ROOT / args.raw_dir)
@@ -972,7 +984,10 @@ def main() -> int:
             q_curr = _quota_snapshot(rqdatac)
             if q_curr["bytes_limit"] > 0:
                 active_ids_y = _active_stocks_in_range(
-                    inst_df, y_dates[0].isoformat(), y_dates[-1].isoformat()
+                    inst_df,
+                    y_dates[0].isoformat(),
+                    y_dates[-1].isoformat(),
+                    include_bjse=args.include_bjse,
                 )
                 stock_days_y = len(active_ids_y) * len(y_dates)
                 bpsd = max(state.empirical_bytes_per_stock_day() or 78.0, 72.0)
@@ -999,6 +1014,7 @@ def main() -> int:
                 y_dates=y_dates,
                 batch_size=args.batch_size,
                 force=args.force,
+                include_bjse=args.include_bjse,
             )
 
     except QuotaExceeded as exc:

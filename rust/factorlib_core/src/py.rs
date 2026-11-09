@@ -29,7 +29,7 @@ use crate::ops::postprocess::{
 };
 use crate::panel::Panel;
 use ndarray::{s, Array2, ArrayView2, ShapeBuilder};
-use numpy::{PyArray1, PyArray2, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -170,6 +170,7 @@ fn arc_matrix_to_pyarray<'py>(
     // SAFETY: `container` 持有 `Arc<Array2<f64>>`，且 NumPy 数组的 base 指针绑定到 `container`，
     // 在 Python GC 销毁该 NumPy 数组前，`ptr` 指向的堆内存始终有效且不可变。
     let py_arr = unsafe { PyArray2::borrow_from_array_bound(&*ptr, container.into_any()) };
+    py_arr.readwrite().make_nonwriteable();
     Ok(py_arr)
 }
 

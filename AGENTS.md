@@ -59,6 +59,10 @@
 4. **文档与注释规范**：
    - 保持代码文档与架构设计（`docs/futures_platform_plan.md`）严格同步。
    - 提交代码必须遵循上方的 Git Commit 规范。
+5. **Context7 权威文档审查与跨语言安全红线（Context7 Authoritative Verification & Memory Safety）**：
+   - 凡涉及核心第三方库（PyO3、rust-numpy、Polars、LightGBM、Scikit-Learn 等）的跨语言接口、版本升级、破坏性变更（Breaking Changes）或生命周期与内存安全约定（如 FFI 边界、只读/可变视图借用、并发线程安全），智能体**严禁凭经验臆测编写 API 调用**，必须通过 Context7 MCP 工具（`resolve-library-id` 与 `query-docs`）检索最新官方权威文档、API 签名与废弃声明；
+   - 跨语言导出共享矩阵（如 Rust `Arc<Array2<f64>>` 通过 `PyArray2::borrow_from_array_bound` 暴露给 Python）时，必须通过 `py_arr.readwrite().make_nonwriteable()` 强制锁定为只读视图，严防 Python 端就地修改（in-place mutation）造成底座面板与全局 LRU 缓存的隐式污染；
+   - 严禁在 Rust 算子中使用 `Array2::uninit().assume_init()` 等产生未定义行为（UB）的代码，统一使用 `Array2::zeros` 或 `alloc_nan_matrix` 保证安全。
 
 ---
 
@@ -167,3 +171,10 @@ bash scripts/verify.sh --fast
 - 任何架构升级、算子扩充或配置变更，必须同步更新技术白皮书 `docs/futures_platform_plan.md`；
 - Git Commit Message 必须严格遵循中文 Angular Commit 规范，格式为 `<type>(<scope>): <subject>`。
 
+#### 9. 权威 API 规范与依赖对齐门禁（Context7 API Compliance & Dependency Gate）
+- **Context7 文档核验规范**：
+  - 针对 Rust/PyO3 跨语言绑定与 Python 科学计算栈的关键调用，必须比对 Context7 查得的对应版本 API 文档，杜绝已被弃用（Deprecated）或行为发生变更的接口；
+- **只读不可变性与内存安全审计**：
+  - `Engine.eval()` 与算子批求值输出的 NumPy 数组必须确保 `flags.writeable == False`，若尝试就地赋值必须抛出 `ValueError`；
+- **锁文件与依赖版本一致性**：
+  - `pyproject.toml` 中的任何依赖增减必须同步刷新并检验 `uv.lock`（执行 `uv lock --check`），确保可重复构建。

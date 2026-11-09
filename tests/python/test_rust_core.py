@@ -319,3 +319,25 @@ def test_Throughput_1000_exprs_on_4000x80_panel():
     stats = eng.cache_stats()
     assert stats["hits"] > 0
     assert throughput >= 1000.0, f"批求值吞吐量不足 1000 expr/s: 实际 {throughput:.1f} expr/s"
+
+
+def test_eval_output_is_immutable_and_prevents_cache_corruption() -> None:
+    """验证 Engine.eval 导出的 NumPy 矩阵被标记为只读 (writeable=False)，
+    杜绝 Python 端就地修改破坏底层 Arc 内存与 SubExprCache 缓存。
+    """
+    import pytest
+
+    t, n = 20, 5
+    fields = {"close": np.ones((t, n), order="F", dtype=np.float64)}
+    mask = np.ones((t, n), dtype=bool, order="F")
+    eng = factorlib_core.Engine(fields, mask)
+
+    arr = eng.eval("close")
+    assert not arr.flags.writeable, "导出的 NumPy 矩阵必须为只读 (writeable=False)"
+
+    with pytest.raises(ValueError, match="read-only"):
+        arr[0, 0] = 999.0
+
+    # 再次求值验证底层缓存未被篡改
+    arr_again = eng.eval("close")
+    assert arr_again[0, 0] == 1.0

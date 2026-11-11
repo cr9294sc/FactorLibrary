@@ -124,6 +124,11 @@ def parse_args() -> argparse.Namespace:
         help="仅查看本地落盘水位线与当前米筐账户配额, 不执行下载",
     )
     parser.add_argument(
+        "--ignore-quota-guard",
+        action="store_true",
+        help="忽略整年边界流量预判保护 (直接尝试下载，即便剩余配额可能接近耗尽)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="强制重下已完成任务",
@@ -982,7 +987,7 @@ def main() -> int:
 
             # 进入新年度前执行动态流量配额预判, 确保停在完整自然年边界
             q_curr = _quota_snapshot(rqdatac)
-            if q_curr["bytes_limit"] > 0:
+            if not args.ignore_quota_guard and q_curr["bytes_limit"] > 0:
                 active_ids_y = _active_stocks_in_range(
                     inst_df,
                     y_dates[0].isoformat(),

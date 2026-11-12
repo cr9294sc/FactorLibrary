@@ -95,7 +95,9 @@ fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Opti
         ASTNode::Field(_) | ASTNode::Constant(_) | ASTNode::Window(_) => (node.clone(), None),
 
         ASTNode::UnaryCall { op, arg } => {
-            let (c_arg, arg_degen) = canonicalize_rec(arg, compress_outer_rank);
+            let child_compress =
+                *op == UnaryOp::CsRank || (compress_outer_rank && op.is_strictly_increasing());
+            let (c_arg, arg_degen) = canonicalize_rec(arg, child_compress);
             if arg_degen.is_some() {
                 return (
                     ASTNode::UnaryCall {
@@ -113,16 +115,6 @@ fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Opti
                     UnaryOp::Neg,
                     ASTNode::UnaryCall {
                         op: UnaryOp::Neg,
-                        arg: inner,
-                    },
-                ) => {
-                    return (*inner.clone(), None);
-                }
-                // inv(inv(x)) => x
-                (
-                    UnaryOp::Inv,
-                    ASTNode::UnaryCall {
-                        op: UnaryOp::Inv,
                         arg: inner,
                     },
                 ) => {
@@ -338,8 +330,8 @@ fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Opti
         }
 
         ASTNode::BinaryCall { op, lhs, rhs } => {
-            let (mut c_lhs, l_degen) = canonicalize_rec(lhs, compress_outer_rank);
-            let (mut c_rhs, r_degen) = canonicalize_rec(rhs, compress_outer_rank);
+            let (mut c_lhs, l_degen) = canonicalize_rec(lhs, false);
+            let (mut c_rhs, r_degen) = canonicalize_rec(rhs, false);
 
             if let Some(reason) = l_degen.or(r_degen) {
                 return (
@@ -537,9 +529,9 @@ fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Opti
             then_branch,
             else_branch,
         } => {
-            let (mut c0, d0) = canonicalize_rec(cond, compress_outer_rank);
-            let (mut c1, d1) = canonicalize_rec(then_branch, compress_outer_rank);
-            let (c2, d2) = canonicalize_rec(else_branch, compress_outer_rank);
+            let (mut c0, d0) = canonicalize_rec(cond, false);
+            let (mut c1, d1) = canonicalize_rec(then_branch, false);
+            let (c2, d2) = canonicalize_rec(else_branch, false);
 
             if let Some(reason) = d0.or(d1).or(d2) {
                 return (

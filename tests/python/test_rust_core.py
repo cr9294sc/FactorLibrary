@@ -252,6 +252,16 @@ def test_dsl_sugar_typechecking_and_canon():
     c_idem = canonicalize_expr("cs_rank(slog(cs_rank(close)))")
     assert c_idem.canon_expr == "cs_rank(close)"
 
+    # P0-04: 单调压缩不得越界穿透至子节点，inv(inv(x)) 不得化简为 x
+    c_sub_cube = canonicalize_expr("sub(cube(cs_rank(close)), cs_rank(open))")
+    assert c_sub_cube.canon_expr == "sub(cube(cs_rank(close)), cs_rank(open))"
+
+    c_ts_mean_slog = canonicalize_expr("ts_mean(slog(cs_rank(close)), 10)")
+    assert c_ts_mean_slog.canon_expr == "ts_mean(slog(cs_rank(close)), 10)"
+
+    c_inv_inv = canonicalize_expr("inv(inv(close))")
+    assert c_inv_inv.canon_expr == "inv(inv(close))"
+
     # 退化表达式标记
     c_degen = canonicalize_expr("sub(ts_mean(close, 10), ts_mean(close, 10))")
     assert c_degen.is_degenerate
@@ -263,6 +273,42 @@ def test_dsl_sugar_typechecking_and_canon():
     assert not validate_expr("ts_mean(y_5, 10)")["valid"]
     assert not validate_expr("y_1")["valid"]
     assert not validate_expr("unknown_col", available_fields=["close", "open"])["valid"]
+
+
+def test_canonicalization_p0_04_eval_parity_and_nan_mask():
+    """验证 P0-04：规范化化简不改变子树数学数值（canonicalize=True 与 False 逐元素误差 < 1e-12），
+
+    且 inv(inv(x)) 在 x=0 处严格保留 NaN 掩码。
+    """
+    T, N = 20, 6
+    dates = np.array([f"2024-01-{i:02d}" for i in range(1, T + 1)])
+    symbols = [f"S{j}" for j in range(N)]
+    rng = np.random.default_rng(42)
+
+    close = np.asfortranarray(10.0 + rng.uniform(0.1, 5.0, (T, N)), dtype=np.float64)
+    open_ = np.asfortranarray(9.5 + rng.uniform(0.1, 5.0, (T, N)), dtype=np.float64)
+    # 人为设置奇异点
+    close[0, 0] = 0.0
+
+    mask = np.ones((T, N), dtype=bool, order="F")
+    panel = Panel(dates=dates, symbols=symbols, fields={"close": close, "open": open_}, mask=mask)
+    eng = panel.to_rust_engine(cache_mb=16, n_threads=1)
+
+    # 1. 验证非线性复合子树的求值等价性
+    test_exprs = [
+        "sub(cube(cs_rank(close)), cs_rank(open))",
+        "ts_mean(slog(cs_rank(close)), 5)",
+        "inv(inv(close))",
+    ]
+    for expr in test_exprs:
+        v_true = eng.eval(expr, canonicalize=True)
+        v_false = eng.eval(expr, canonicalize=False)
+        _assert_close_with_nan(v_true, v_false, f"canonicalize parity for {expr}")
+
+    # 2. 验证奇异点 NaN 掩码保留
+    inv_true = eng.eval("inv(inv(close))", canonicalize=True)
+    assert np.isnan(inv_true[0, 0]), "inv(inv(0.0)) 必须为 NaN"
+    assert np.isfinite(inv_true[1, 0]), "非零位置必须有限有效"
 
 
 def test_Throughput_1000_exprs_on_4000x80_panel():

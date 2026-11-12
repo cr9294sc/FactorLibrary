@@ -452,6 +452,23 @@ fn test_canonicalization_and_degenerate_pruning() {
     let m2 = canonicalize(&parse_expr("cs_rank(ssqrt(close))").unwrap());
     assert_eq!(m2.canon_expr, "cs_rank(close)");
 
+    // P0-04: 单调压缩不得越界递归穿透至二元/三元子节点
+    let m3 = canonicalize(&parse_expr("sub(cube(cs_rank(close)), cs_rank(open))").unwrap());
+    assert_eq!(m3.canon_expr, "sub(cube(cs_rank(close)), cs_rank(open))");
+
+    let m4 = canonicalize(&parse_expr("ts_mean(slog(cs_rank(close)), 10)").unwrap());
+    assert_eq!(m4.canon_expr, "ts_mean(slog(cs_rank(close)), 10)");
+
+    let m5 = canonicalize(&parse_expr("slog(ssqrt(cs_rank(close)))").unwrap());
+    assert_eq!(m5.canon_expr, "cs_rank(close)");
+
+    let m6 = canonicalize(&parse_expr("cs_rank(slog(cube(close)))").unwrap());
+    assert_eq!(m6.canon_expr, "cs_rank(close)");
+
+    // P0-04: inv(inv(x)) 不得化简为 x，保证零点奇点 NaN 掩码不被篡改
+    let inv_node = canonicalize(&parse_expr("inv(inv(close))").unwrap());
+    assert_eq!(inv_node.canon_expr, "inv(inv(close))");
+
     // 4. 退化结构阻断
     let d1 = canonicalize(&parse_expr("sub(close, close)").unwrap());
     assert!(d1.is_degenerate);
@@ -509,4 +526,56 @@ fn test_dag_eval_batch_and_lru_cache() {
     let stats = cache.stats();
     assert!(stats.entries >= 5);
     assert!(stats.hits >= 4);
+}
+
+#[test]
+fn test_canonicalization_value_equivalence() {
+    let t = 30;
+    let n = 6;
+    let dates: Vec<String> = (0..t).map(|i| format!("2024-01-{i:02}")).collect();
+    let symbols: Vec<String> = (0..n).map(|j| format!("S{j}")).collect();
+    let mask = Array2::from_elem((t, n).f(), true);
+
+    let mut close = Array2::<f64>::zeros((t, n).f());
+    let mut open = Array2::<f64>::zeros((t, n).f());
+    for c in 0..n {
+        for r in 0..t {
+            close[[r, c]] = 10.0 + (r as f64) * 0.2 + (c as f64) * 1.5;
+            open[[r, c]] = 9.8 + (r as f64) * 0.22 + (c as f64) * 1.4;
+        }
+    }
+    // 设置奇异点：close[0, 0] = 0.0，检验 inv(inv(close)) 是否正确保留 NaN
+    close[[0, 0]] = 0.0;
+
+    let mut fields = HashMap::new();
+    fields.insert("close".to_string(), Arc::new(close));
+    fields.insert("open".to_string(), Arc::new(open));
+
+    let panel = Panel::new(dates, symbols, fields, mask, HashMap::new()).unwrap();
+
+    let test_exprs = vec![
+        "sub(cube(cs_rank(close)), cs_rank(open))",
+        "ts_mean(slog(cs_rank(close)), 5)",
+        "add(ts_std(close, 5), cs_rank(open))",
+        "where(gt(close, open), mulc(close, 2.0), sub(close, open))",
+        "cs_demean(sub(cube(close), open))",
+        "inv(inv(close))",
+    ];
+
+    for expr in test_exprs {
+        let val_false = eval_expr_str(expr, &panel, None, false).unwrap();
+        let val_true = eval_expr_str(expr, &panel, None, true).unwrap();
+        assert_matrices_close(&val_true, &val_false, 1e-12, expr);
+    }
+
+    // 独立核查奇异点 NaN
+    let inv_res = eval_expr_str("inv(inv(close))", &panel, None, true).unwrap();
+    assert!(
+        inv_res[[0, 0]].is_nan(),
+        "inv(inv(0.0)) 必须为 NaN，不能被化简为 0.0"
+    );
+    assert!(
+        (inv_res[[1, 0]] - (10.0 + 0.2)).abs() < 1e-9,
+        "非零元素 inv(inv(x)) 保持数学数值等价"
+    );
 }

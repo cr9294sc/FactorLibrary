@@ -590,6 +590,9 @@ impl PyEngine {
     ) -> PyResult<Bound<'py, PyDict>> {
         let f_raw = self.resolve_factor_mat(py, factor)?;
         let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
+        if n_quantiles < 2 {
+            return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
+        }
         let r_name = ret_name.unwrap_or("y_1");
         let ret_arc = self
             .panel
@@ -677,6 +680,9 @@ impl PyEngine {
     ) -> PyResult<Bound<'py, PyDict>> {
         let f_raw = self.resolve_factor_mat(py, factor)?;
         let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
+        if n_quantiles < 2 {
+            return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
+        }
         let label_arc = self
             .panel
             .labels

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import factorlib_core
 import numpy as np
+import pytest
 from factorlib.core import ops_ref
 
 
@@ -236,3 +237,21 @@ def test_metrics_extreme_edge_cases():
     const_l = np.ones((T, N), dtype=np.float64, order="F") * 10.0
     ic_const = factorlib_core.calc_ic(const_f, const_l, mask_true, min_names=3)
     assert ic_const["valid_days"] == 0  # 零方差无有效相关系数
+
+    # 4. P0-08: n_quantiles < 2 必须优雅抛出 ValueError 而非触发跨 FFI Rust Panic
+    with pytest.raises(ValueError, match="n_quantiles"):
+        factorlib_core.calc_quantile_returns(all_zero, all_zero, mask_true, n_quantiles=1)
+    with pytest.raises(ValueError, match="n_quantiles"):
+        factorlib_core.calc_top_quantile_turnover(all_zero, mask_true, n_quantiles=1)
+
+    eng = factorlib_core.Engine(
+        fields={"close": all_zero},
+        mask=mask_true,
+        labels={"y_1": all_zero, "y_5": all_zero},
+    )
+    with pytest.raises(ValueError, match="n_quantiles"):
+        eng.quantile_returns(all_zero, n_quantiles=1)
+    with pytest.raises(ValueError, match="n_quantiles"):
+        eng.top_quantile_turnover(all_zero, n_quantiles=1)
+    with pytest.raises(ValueError, match="n_quantiles"):
+        eng.factor_metrics(all_zero, n_quantiles=1)

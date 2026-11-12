@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -200,10 +200,16 @@ class WalkForwardPipeline:
         target_mat = np.asfortranarray(self.panel.get_label(self.config.target_label))
         T, N = self.panel.shape
 
-        # 2. 初始化切分器并生成时序折叠
-        splitter = PurgedWalkForwardSplitter.from_config(
-            self.config.walk_forward, strict_min_years=strict_min_years
-        )
+        # 2. 初始化切分器并生成时序折叠 (P0-05: 强制校验 purge_window >= 标签预测周期 h)
+        lbl_horizon = 1
+        if "_" in self.config.target_label:
+            tail = self.config.target_label.rsplit("_", 1)[-1].rstrip("dD")
+            if tail.isdigit():
+                lbl_horizon = max(1, int(tail))
+        effective_purge = max(self.config.walk_forward.purge_window, lbl_horizon)
+        wf_cfg = replace(self.config.walk_forward, purge_window=effective_purge)
+
+        splitter = PurgedWalkForwardSplitter.from_config(wf_cfg, strict_min_years=strict_min_years)
         folds: list[WalkForwardFold] = splitter.split(self.panel.dates)
         if not folds:
             raise RuntimeError(

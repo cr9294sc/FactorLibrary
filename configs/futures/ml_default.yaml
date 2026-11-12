@@ -4,9 +4,9 @@
 target_label: "y_5"
 features_status: ["accepted", "active"]
 
-# Walk-Forward 滚动配置
+# Walk-Forward 滚动配置 (P0-05: 严格在 GP 准入窗口 2011~2021 之后启动预测，杜绝选择偏差泄露)
 walk_forward:
-  start_predict_year: 2018
+  start_predict_year: 2022
   end_predict_year: 2026
   train_window: "expanding"       # expanding: 扩展窗口; rolling: 固定滚动
   min_train_years: 5

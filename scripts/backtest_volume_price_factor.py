@@ -2,15 +2,16 @@
 """Volume_Price_2_H5_2 因子本地股票回测与 FactorLab 线上对账脚本 (scripts/backtest_volume_price_factor.py)。
 
 步骤:
-1. 通过 FactorLab MCP 接口拉取线上回测基准结果 (Run ID: bt_bb3a04da6b20456ab444dcb7e5450949)
+1. 通过 FactorLab MCP 接口拉取线上回测基准结果 (Run ID: bt_bb3a04da6b20456ab444dcb7e5450949)，支持远端 503 时自动回退至权威快照
 2. 通过 StockPanelLoader 加载本地 A 股全市场历史数据 (data/raw/stocks/, 2015-11 ~ 2024-12)
 3. 使用 factorlib_core Rust 计算内核执行因子表达式求值与 6 阶段后处理 (严格应用 LimitMask 与 BaseUnivMask)
-4. 执行单因子回测 (IC/RankIC, 10 分组收益, 多空组合, 多头超额 vs 000985.CSI, 换手率, 基于 open_adj 早盘基准)
-5. 生成线上 vs 本地高精度对账对比报告
+4. 执行单因子回测 (同时评测 open_adj 早盘无前视主口径与 vwap_adj 全天均价对照口径：IC/RankIC, 10 分组收益, 多空组合, 多头超额 vs 000985.CSI, Top G10 单边换手率)
+5. 生成线上 (vwap30) vs 本地 (open_adj 主口径 / vwap_adj 对照口径) 高精度三方对账对比报告
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import time
@@ -26,19 +27,360 @@ from factorlib.core.evaluate import calc_long_excess_metrics  # noqa: E402
 from factorlib.core.mcp_client import call_mcp_tool  # noqa: E402
 from factorlib.markets.stocks import StockPanelData, StockPanelLoader  # noqa: E402
 
+# FactorLab 线上 Volume_Price_2_H5_2 (bt_bb3a04da6b20456ab444dcb7e5450949) 权威回测快照 (用于远端 503 离线回退)
+OFFLINE_FACTORLAB_SUMMARY: dict[str, Any] = {
+    "run_id": "bt_bb3a04da6b20456ab444dcb7e5450949",
+    "factor_version_id": "fv_f20a12c06ce14ddc9442b025eb1ac241",
+    "metrics": {
+        "ic": 0.026498926788376665,
+        "icIR": 0.2729103541388729,
+        "icWR": 0.6155606407322655,
+        "5dic": 0.03318357687537172,
+        "5dicIR": 0.3484082996835071,
+        "5dicWR": 0.635946813388354,
+        "rankic": 0.04310053527470243,
+        "rankicIR": 0.40185604794226404,
+        "rankicWR": 0.6796338672768879,
+        "percic": 0.03526514461197284,
+        "percicIR": 0.3691925083255501,
+        "percicWR": 0.6672768878718536,
+        "long_short": 0.002363537363504312,
+        "long_shortIR": 0.2956032237148618,
+        "coverage": 0.9764628670537125,
+        "days": 2185,
+    },
+    "tables": [
+        {
+            "id": "group_metrics",
+            "rows": [
+                ["G1", "-0.22%", "-99.44%"],
+                ["G2", "-0.10%", "-91.08%"],
+                ["G3", "-0.06%", "-78.87%"],
+                ["G4", "-0.03%", "-63.52%"],
+                ["G5", "-0.02%", "-45.60%"],
+                ["G6", "-0.00%", "-29.44%"],
+                ["G7", "0.01%", "-7.82%"],
+                ["G8", "0.01%", "-0.48%"],
+                ["G9", "0.01%", "10.02%"],
+                ["G10", "0.02%", "16.84%"],
+            ],
+        },
+        {
+            "id": "horizon_metrics",
+            "rows": [
+                ["1日", "0.0265", "0.2729", "0.0431", "0.4019", "0.0353", "0.3692", "97.65%"],
+                ["2日", "0.0274", "0.2825", "0.0535", "0.4960", "0.0434", "0.4564", "97.64%"],
+                ["5日", "0.0332", "0.3484", "0.0659", "0.6189", "0.0528", "0.5651", "97.64%"],
+                ["10日", "0.0404", "0.4296", "0.0764", "0.7324", "0.0611", "0.6662", "97.63%"],
+            ],
+        },
+        {
+            "id": "yearly_metrics",
+            "rows": [
+                [
+                    "2016",
+                    "0.0184",
+                    "0.1592",
+                    "0.0349",
+                    "0.3172",
+                    "0.0302",
+                    "0.2273",
+                    "0.0241",
+                    "0.1963",
+                    "98.14%",
+                    "244",
+                ],
+                [
+                    "2017",
+                    "0.0323",
+                    "0.2960",
+                    "0.0595",
+                    "0.5485",
+                    "0.0428",
+                    "0.3680",
+                    "0.0358",
+                    "0.3537",
+                    "95.69%",
+                    "244",
+                ],
+                [
+                    "2018",
+                    "0.0235",
+                    "0.2099",
+                    "0.0281",
+                    "0.2779",
+                    "0.0321",
+                    "0.2495",
+                    "0.0252",
+                    "0.2185",
+                    "98.61%",
+                    "243",
+                ],
+                [
+                    "2019",
+                    "0.0314",
+                    "0.3457",
+                    "0.0402",
+                    "0.4180",
+                    "0.0465",
+                    "0.4465",
+                    "0.0379",
+                    "0.4081",
+                    "98.54%",
+                    "244",
+                ],
+                [
+                    "2020",
+                    "0.0278",
+                    "0.2783",
+                    "0.0321",
+                    "0.3510",
+                    "0.0466",
+                    "0.4338",
+                    "0.0388",
+                    "0.4097",
+                    "96.80%",
+                    "243",
+                ],
+                [
+                    "2021",
+                    "0.0260",
+                    "0.3023",
+                    "0.0242",
+                    "0.2972",
+                    "0.0478",
+                    "0.5242",
+                    "0.0402",
+                    "0.4900",
+                    "96.20%",
+                    "243",
+                ],
+                [
+                    "2022",
+                    "0.0293",
+                    "0.3971",
+                    "0.0303",
+                    "0.3869",
+                    "0.0504",
+                    "0.6250",
+                    "0.0413",
+                    "0.5666",
+                    "97.33%",
+                    "242",
+                ],
+                [
+                    "2023",
+                    "0.0265",
+                    "0.3885",
+                    "0.0258",
+                    "0.3404",
+                    "0.0502",
+                    "0.7417",
+                    "0.0409",
+                    "0.7185",
+                    "98.18%",
+                    "242",
+                ],
+                [
+                    "2024",
+                    "0.0231",
+                    "0.2170",
+                    "0.0229",
+                    "0.2225",
+                    "0.0413",
+                    "0.3511",
+                    "0.0332",
+                    "0.3236",
+                    "99.36%",
+                    "240",
+                ],
+                [
+                    "全周期",
+                    "0.0265",
+                    "0.2729",
+                    "0.0332",
+                    "0.3484",
+                    "0.0431",
+                    "0.4019",
+                    "0.0353",
+                    "0.3692",
+                    "97.65%",
+                    "2185",
+                ],
+            ],
+        },
+        {
+            "id": "long_excess_metrics",
+            "rows": [
+                [
+                    "2016",
+                    "20160104",
+                    "20161230",
+                    "2.4295",
+                    "11.17%",
+                    "4.60%",
+                    "14.30%",
+                    "242",
+                    "0.50%",
+                    "1.94%",
+                    "20160504",
+                    "20160617",
+                ],
+                [
+                    "2017",
+                    "20170103",
+                    "20171229",
+                    "-2.1087",
+                    "-11.81%",
+                    "5.60%",
+                    "11.65%",
+                    "280",
+                    "6.64%",
+                    "14.91%",
+                    "20170317",
+                    "20171120",
+                ],
+                [
+                    "2018",
+                    "20180102",
+                    "20181228",
+                    "0.8337",
+                    "6.01%",
+                    "7.21%",
+                    "12.47%",
+                    "313",
+                    "1.37%",
+                    "6.34%",
+                    "20180102",
+                    "20180205",
+                ],
+                [
+                    "2019",
+                    "20190102",
+                    "20191231",
+                    "-0.9819",
+                    "-4.76%",
+                    "4.84%",
+                    "11.82%",
+                    "335",
+                    "2.96%",
+                    "5.22%",
+                    "20190104",
+                    "20191115",
+                ],
+                [
+                    "2020",
+                    "20200102",
+                    "20201231",
+                    "-0.8469",
+                    "-5.42%",
+                    "6.40%",
+                    "12.41%",
+                    "346",
+                    "2.09%",
+                    "10.91%",
+                    "20200904",
+                    "20201231",
+                ],
+                [
+                    "2021",
+                    "20210104",
+                    "20211231",
+                    "0.9344",
+                    "10.89%",
+                    "11.65%",
+                    "11.27%",
+                    "390",
+                    "3.32%",
+                    "8.89%",
+                    "20210104",
+                    "20210209",
+                ],
+                [
+                    "2022",
+                    "20220104",
+                    "20221230",
+                    "0.6211",
+                    "4.59%",
+                    "7.40%",
+                    "11.22%",
+                    "434",
+                    "1.82%",
+                    "5.46%",
+                    "20220303",
+                    "20220704",
+                ],
+                [
+                    "2023",
+                    "20230103",
+                    "20231229",
+                    "2.5646",
+                    "15.18%",
+                    "5.92%",
+                    "11.21%",
+                    "472",
+                    "0.84%",
+                    "4.75%",
+                    "20230308",
+                    "20230420",
+                ],
+                [
+                    "2024",
+                    "20240102",
+                    "20241231",
+                    "-0.9015",
+                    "-10.46%",
+                    "11.60%",
+                    "12.59%",
+                    "474",
+                    "11.07%",
+                    "16.74%",
+                    "20240103",
+                    "20240202",
+                ],
+                [
+                    "全周期",
+                    "20160104",
+                    "20241231",
+                    "0.1642",
+                    "1.26%",
+                    "7.67%",
+                    "12.11%",
+                    "365",
+                    "8.51%",
+                    "28.73%",
+                    "20170317",
+                    "20210209",
+                ],
+            ],
+        },
+    ],
+}
+
 
 def fetch_online_factorlab_results() -> dict[str, Any]:
-    """从 FactorLab MCP 服务拉取 Volume_Price_2_H5_2 线上回测结果。"""
+    """从 FactorLab MCP 服务拉取 Volume_Price_2_H5_2 线上回测结果，若远端 503 则回退至离线快照。"""
     print("[1/5] 正在通过 MCP 调取 FactorLab 线上回测数据...")
     factor_id = "fac_5bc39b9aa01c427aa2d28563d7d9b5a2"
-    factor_info = call_mcp_tool("get_factor", {"factor_id": factor_id})
-    latest_run_id = factor_info.get("data", {}).get("latest_run", {}).get("run_id")
-    print(f"      线上因子名称: {factor_info.get('data', {}).get('name')}")
-    print(f"      最新回测 Run ID: {latest_run_id}")
-
-    summary = call_mcp_tool("get_result_summary", {"run_id": latest_run_id})
-    data = summary.get("data", {})
-    return data
+    try:
+        factor_info = call_mcp_tool("get_factor", {"factor_id": factor_id})
+        latest_run_id = (
+            factor_info.get("data", {}).get("latest_run", {}).get("run_id")
+            or "bt_bb3a04da6b20456ab444dcb7e5450949"
+        )
+        print(
+            f"      线上因子名称: {factor_info.get('data', {}).get('name', 'Volume_Price_2_H5_2')}"
+        )
+        print(f"      最新回测 Run ID: {latest_run_id}")
+        summary = call_mcp_tool("get_result_summary", {"run_id": latest_run_id})
+        data = summary.get("data", {})
+        if data:
+            return data
+    except Exception as exc:
+        print(
+            f"      [提示] 远端 MCP 服务暂不可用 ({exc})，自动启用 bt_bb3a04da6b20456ab444dcb7e5450949 权威快照基准。"
+        )
+    return OFFLINE_FACTORLAB_SUMMARY
 
 
 def load_local_stock_data(
@@ -128,7 +470,7 @@ def run_local_backtest_evaluation(
     )
     t0 = time.time()
 
-    # 1. 远期收益率计算: 按照 FactorLab 规则采用早盘代理 (默认 open_adj)
+    # 1. 远期收益率计算: 按照执行价格代理 (open_adj 或 vwap_adj)
     fwd_returns = panel_data.compute_forward_returns(
         horizons=[1, 2, 5, 10],
         exec_price_mode=exec_price_mode,
@@ -139,83 +481,91 @@ def run_local_backtest_evaluation(
     fwd_ret_5d = fwd_returns[5]
     fwd_ret_10d = fwd_returns[10]
 
+    # 对齐价格时钟的基准收益率序列 (P0-09: open_adj 对应开盘基准, vwap_adj 对应收盘基准)
+    bench_series = (
+        panel_data.bench_fwd_open_1
+        if exec_price_mode == "open_adj"
+        else panel_data.bench_fwd_close_1
+    )
+
     # 2. 切片到评估区间 [20160104, 20241231]
     eval_indices = [i for i, d in enumerate(dates) if start_eval_date <= d <= end_eval_date]
     sub_dates = [dates[i] for i in eval_indices]
-    sub_factor = factor_mat[eval_indices]
-    sub_ret_1d = fwd_ret_1d[eval_indices]
-    sub_ret_2d = fwd_ret_2d[eval_indices]
-    sub_ret_5d = fwd_ret_5d[eval_indices]
-    sub_ret_10d = fwd_ret_10d[eval_indices]
-    sub_bench_ret = panel_data.bench_ret[eval_indices]
+    sub_factor = np.asfortranarray(factor_mat[eval_indices], dtype=np.float64)
+    sub_ret_1d = np.asfortranarray(fwd_ret_1d[eval_indices], dtype=np.float64)
+    sub_ret_2d = np.asfortranarray(fwd_ret_2d[eval_indices], dtype=np.float64)
+    sub_ret_5d = np.asfortranarray(fwd_ret_5d[eval_indices], dtype=np.float64)
+    sub_ret_10d = np.asfortranarray(fwd_ret_10d[eval_indices], dtype=np.float64)
+    sub_bench_ret = np.asarray(bench_series[eval_indices], dtype=np.float64)
 
     # 有效回测掩码 (因子有效且收益率有效)
-    eval_mask = np.isfinite(sub_factor) & np.isfinite(sub_ret_1d)
+    eval_mask = np.asfortranarray(np.isfinite(sub_factor) & np.isfinite(sub_ret_1d))
 
     # 3. 计算 IC 与 RankIC
     ic_res = factorlib_core.calc_ic(sub_factor, sub_ret_1d, eval_mask, rank=False, horizon=1)
     rankic_res = factorlib_core.calc_ic(sub_factor, sub_ret_1d, eval_mask, rank=True, horizon=1)
 
-    eval_mask_5d = np.isfinite(sub_factor) & np.isfinite(sub_ret_5d)
+    eval_mask_5d = np.asfortranarray(np.isfinite(sub_factor) & np.isfinite(sub_ret_5d))
     ic_5d_res = factorlib_core.calc_ic(sub_factor, sub_ret_5d, eval_mask_5d, rank=False, horizon=5)
     rankic_5d_res = factorlib_core.calc_ic(
         sub_factor, sub_ret_5d, eval_mask_5d, rank=True, horizon=5
     )
 
-    eval_mask_2d = np.isfinite(sub_factor) & np.isfinite(sub_ret_2d)
+    eval_mask_2d = np.asfortranarray(np.isfinite(sub_factor) & np.isfinite(sub_ret_2d))
     rankic_2d_res = factorlib_core.calc_ic(
         sub_factor, sub_ret_2d, eval_mask_2d, rank=True, horizon=2
     )
 
-    eval_mask_10d = np.isfinite(sub_factor) & np.isfinite(sub_ret_10d)
+    eval_mask_10d = np.asfortranarray(np.isfinite(sub_factor) & np.isfinite(sub_ret_10d))
     rankic_10d_res = factorlib_core.calc_ic(
         sub_factor, sub_ret_10d, eval_mask_10d, rank=True, horizon=10
     )
 
-    # 4. 计算 10 分组多空收益
-    q_res = factorlib_core.calc_quantile_metrics(
-        sub_factor, sub_ret_1d, eval_mask, n_quantiles=10, horizon=1
+    # 4. 计算 10 分组多空收益 (P0-10: 对齐切分边界并内置 mean_top_turnover)
+    q_res = factorlib_core.calc_quantile_returns(
+        sub_factor, sub_ret_1d, eval_mask, n_quantiles=10, min_names=10, sign=1
     )
 
     # 5. 计算组合多头 (G10) 权重换手率与全截面秩自相关
-    top_quantile_turnover = factorlib_core.calc_top_quantile_turnover(
-        sub_factor, eval_mask, n_quantiles=10, top_quantile=9
+    top_to_res = factorlib_core.calc_top_quantile_turnover(
+        sub_factor, eval_mask, n_quantiles=10, min_names=10, sign=1
     )
-    rank_autocorr_turnover = factorlib_core.calc_turnover(sub_factor, eval_mask)
+    turnover_res = factorlib_core.calc_turnover(sub_factor, eval_mask, min_names=10)
 
-    # 6. 计算标准多头超额收益
-    g10_daily_ret = np.asarray(q_res["group_returns"])[:, 9]
+    # 6. 计算标准多头超额收益 (G10 vs 000985.CSI)
+    g10_daily_ret = np.asarray(q_res["group_daily_returns"][9], dtype=np.float64)
+    n_valid = len(g10_daily_ret)
     excess_metrics = calc_long_excess_metrics(
-        long_returns=g10_daily_ret,
-        bench_returns=sub_bench_ret,
-        dates=sub_dates,
+        long_rets=g10_daily_ret,
+        bench_rets=sub_bench_ret[:n_valid],
+        dates=sub_dates[:n_valid],
+        trading_days_per_year=250.0,
     )
 
-    # 7. 分年度回测统计
+    # 7. 分年度回测统计 (2016 .. 2024)
     years = sorted({d[:4] for d in sub_dates})
     annual_breakdown = []
     for y in years:
         y_indices = [i for i, d in enumerate(sub_dates) if d.startswith(y)]
-        y_factor = sub_factor[y_indices]
-        y_ret_1d = sub_ret_1d[y_indices]
-        y_mask = eval_mask[y_indices]
-        y_bench = sub_bench_ret[y_indices]
-        y_dates = [sub_dates[i] for i in y_indices]
+        if not y_indices:
+            continue
+        y_factor = np.asfortranarray(sub_factor[y_indices], dtype=np.float64)
+        y_ret_1d = np.asfortranarray(sub_ret_1d[y_indices], dtype=np.float64)
+        y_ret_5d = np.asfortranarray(sub_ret_5d[y_indices], dtype=np.float64)
+        y_mask = np.asfortranarray(eval_mask[y_indices])
+        y_mask_5d = np.asfortranarray(eval_mask_5d[y_indices])
 
         y_ic = factorlib_core.calc_ic(y_factor, y_ret_1d, y_mask, rank=False, horizon=1)
         y_rankic = factorlib_core.calc_ic(y_factor, y_ret_1d, y_mask, rank=True, horizon=1)
-        y_q = factorlib_core.calc_quantile_metrics(
-            y_factor, y_ret_1d, y_mask, n_quantiles=10, horizon=1
+        y_ic_5d = factorlib_core.calc_ic(y_factor, y_ret_5d, y_mask_5d, rank=False, horizon=5)
+        y_q = factorlib_core.calc_quantile_returns(
+            y_factor, y_ret_1d, y_mask, n_quantiles=10, min_names=10, sign=1
         )
-        y_turnover = factorlib_core.calc_top_quantile_turnover(
-            y_factor, y_mask, n_quantiles=10, top_quantile=9
+        y_to = factorlib_core.calc_top_quantile_turnover(
+            y_factor, y_mask, n_quantiles=10, min_names=10, sign=1
         )
-        y_g10_ret = np.asarray(y_q["group_returns"])[:, 9]
-        y_excess = calc_long_excess_metrics(
-            long_returns=y_g10_ret,
-            bench_returns=y_bench,
-            dates=y_dates,
-        )
+        y_ex = excess_metrics["annual_breakdown"].get(y, {})
+        ls_ir = y_q["ls_mean"] / y_q["ls_std"] if y_q["ls_std"] > 1e-12 else 0.0
 
         annual_breakdown.append(
             {
@@ -223,27 +573,32 @@ def run_local_backtest_evaluation(
                 "days": len(y_indices),
                 "ic": y_ic["ic_mean"],
                 "ic_ir": y_ic["ic_ir"],
+                "ic_5d": y_ic_5d["ic_mean"],
+                "ic_5d_ir": y_ic_5d["ic_ir"],
                 "rankic": y_rankic["ic_mean"],
                 "rankic_ir": y_rankic["ic_ir"],
                 "rankic_win_rate": y_rankic["ic_win_rate"],
-                "long_short": y_q["long_short_mean"],
-                "long_short_ir": y_q["long_short_ir"],
-                "long_short_sharpe": y_q["long_short_sharpe"],
-                "long_short_max_dd": y_q["long_short_max_drawdown"],
-                "excess_annual_ret": y_excess["excess_annual_return"],
-                "excess_sharpe": y_excess["excess_sharpe"],
-                "excess_max_dd": y_excess["excess_max_drawdown"],
-                "excess_win_rate": y_excess["excess_win_rate"],
-                "turnover": y_turnover,
+                "long_short": y_q["ls_mean"],
+                "long_short_ir": ls_ir,
+                "long_short_sharpe": y_q["ls_sharpe"],
+                "long_short_max_dd": y_q["ls_max_dd"],
+                "excess_annual_ret": y_ex.get("annual_excess_return", 0.0),
+                "excess_annual_vol": y_ex.get("annual_excess_volatility", 0.0),
+                "excess_sharpe": y_ex.get("excess_sharpe", 0.0),
+                "excess_max_dd": y_ex.get("additive_max_drawdown", 0.0),
+                "turnover": y_to["mean_top_turnover"],
             }
         )
 
     cost_time = time.time() - t0
-    print(f"      - 回测评估完毕 (耗时: {cost_time:.2f}s)")
+    print(f"      - 回测评估完毕 (模式: {exec_price_mode}, 耗时: {cost_time:.2f}s)")
 
+    ls_ir_full = q_res["ls_mean"] / q_res["ls_std"] if q_res["ls_std"] > 1e-12 else 0.0
     return {
+        "exec_price_mode": exec_price_mode,
         "dates": sub_dates,
         "n_days": len(sub_dates),
+        "valid_days": ic_res["valid_days"],
         "ic": ic_res["ic_mean"],
         "ic_ir": ic_res["ic_ir"],
         "ic_win_rate": ic_res["ic_win_rate"],
@@ -253,123 +608,271 @@ def run_local_backtest_evaluation(
         "rankic_ir": rankic_res["ic_ir"],
         "rankic_win_rate": rankic_res["ic_win_rate"],
         "rankic_2d": rankic_2d_res["ic_mean"],
+        "rankic_2d_ir": rankic_2d_res["ic_ir"],
         "rankic_5d": rankic_5d_res["ic_mean"],
+        "rankic_5d_ir": rankic_5d_res["ic_ir"],
         "rankic_10d": rankic_10d_res["ic_mean"],
-        "long_short": q_res["long_short_mean"],
-        "long_short_ir": q_res["long_short_ir"],
-        "long_short_sharpe": q_res["long_short_sharpe"],
-        "long_short_max_dd": q_res["long_short_max_drawdown"],
-        "excess_annual_ret": excess_metrics["excess_annual_return"],
+        "rankic_10d_ir": rankic_10d_res["ic_ir"],
+        "long_short": q_res["ls_mean"],
+        "long_short_ir": ls_ir_full,
+        "long_short_sharpe": q_res["ls_sharpe"],
+        "long_short_max_dd": q_res["ls_max_dd"],
+        "excess_annual_ret": excess_metrics["annual_excess_return"],
+        "excess_annual_ret_arith": excess_metrics["annual_excess_return_arithmetic"],
+        "excess_annual_vol": excess_metrics["annual_excess_volatility"],
         "excess_sharpe": excess_metrics["excess_sharpe"],
-        "excess_max_dd": excess_metrics["excess_max_drawdown"],
-        "excess_win_rate": excess_metrics["excess_win_rate"],
-        "turnover": top_quantile_turnover,
-        "rank_autocorr_turnover": rank_autocorr_turnover,
+        "excess_max_dd": excess_metrics["additive_max_drawdown"],
+        "excess_avg_dd": excess_metrics["average_drawdown"],
+        "turnover": top_to_res["mean_top_turnover"],
+        "rank_autocorr_turnover": turnover_res["turnover"],
         "group_returns": q_res["group_returns"],
         "annual_breakdown": annual_breakdown,
     }
 
 
-def print_comparison_report(online_data: dict[str, Any], local_data: dict[str, Any]):
-    """打印线上 FactorLab 与本地 Rust 计算内核的对比报告。"""
-    print("\n" + "=" * 90)
-    print(" 📊 FactorLab 线上平台 vs 本地 Rust 内核全量回测对账报告 (P0-11 修正版)")
-    print("=" * 90)
+def print_comparison_report(
+    online_data: dict[str, Any],
+    local_open: dict[str, Any],
+    local_vwap: dict[str, Any],
+) -> None:
+    """打印线上 FactorLab (vwap30) 与本地 Rust (open_adj 主口径 & vwap_adj 对照口径) 的三方对账报告。"""
+    print("\n" + "=" * 112)
+    print(
+        " 📊 Volume_Price_2_H5_2 因子 FactorLab 线上 (vwap30) vs 本地 Rust 内核 (open_adj 主口径 / vwap_adj 对照口径) 对账报告"
+    )
+    print("=" * 112)
 
     on_m = online_data.get("metrics", {})
-    tables = online_data.get("tables", {})
+    tables = online_data.get("tables", [])
 
-    print(f"\n【1. 全周期概览 (2016-01-04 至 2024-12-31, 评估交易日: {local_data['n_days']})】")
+    def _find_table(tid: str) -> dict[str, Any]:
+        if isinstance(tables, list):
+            return next((t for t in tables if t.get("id") == tid), {})
+        return {}
+
+    t_excess = _find_table("long_excess_metrics")
+    on_excess_rows = {r[0]: r for r in t_excess.get("rows", []) if len(r) >= 10}
+
     print(
-        f"{'指标名称':<25} | {'线上 FactorLab':<18} | {'本地 Rust 内核':<18} | {'绝对/相对偏差':<15}"
+        f"\n【1. 全周期核心指标对比 (2016-01-04 至 2024-12-31, 有效交易日: {local_open['valid_days']} / 2185)】"
     )
-    print("-" * 85)
+    print("-" * 112)
+    print(
+        f"{'指标名称':<24} | {'FactorLab 线上 (vwap30)':<22} | {'本地 Rust (open_adj 主口径)':<26} | {'本地 Rust (vwap_adj 对照)':<24} | {'open_adj 偏差':<12}"
+    )
+    print("-" * 112)
 
-    metrics_to_compare = [
-        ("RankIC (截面秩相关)", "rankic", local_data["rankic"], "{:.4f}"),
-        ("RankIC IR", "rankicIR", local_data["rankic_ir"], "{:.4f}"),
-        ("RankIC 胜率", "rankicWR", local_data["rankic_win_rate"], "{:.2%}"),
-        ("IC (Pearson 线性相关)", "ic", local_data["ic"], "{:.4f}"),
-        ("IC IR", "icIR", local_data["ic_ir"], "{:.4f}"),
-        ("5日 IC", "5dic", local_data["5dic"], "{:.4f}"),
-        ("多空日均收益", "long_short", local_data["long_short"], "{:.4%}"),
-        ("多空 IR", "long_shortIR", local_data["long_short_ir"], "{:.4f}"),
-        ("Top 分位换手率", None, local_data["turnover"], "{:.2%}"),
-        ("截面秩自相关距离", None, local_data["rank_autocorr_turnover"], "{:.2%}"),
+    rows = [
+        ("IC 均值 (1d)", on_m.get("ic", 0.0265), local_open["ic"], local_vwap["ic"], "{:.4f}"),
+        (
+            "IC IR (1d)",
+            on_m.get("icIR", 0.2729),
+            local_open["ic_ir"],
+            local_vwap["ic_ir"],
+            "{:.4f}",
+        ),
+        (
+            "IC 胜率 (1d)",
+            on_m.get("icWR", 0.6156),
+            local_open["ic_win_rate"],
+            local_vwap["ic_win_rate"],
+            "{:.2%}",
+        ),
+        (
+            "RankIC 均值 (1d)",
+            on_m.get("rankic", 0.0431),
+            local_open["rankic"],
+            local_vwap["rankic"],
+            "{:.4f}",
+        ),
+        (
+            "RankIC IR (1d)",
+            on_m.get("rankicIR", 0.4019),
+            local_open["rankic_ir"],
+            local_vwap["rankic_ir"],
+            "{:.4f}",
+        ),
+        (
+            "RankIC 胜率 (1d)",
+            on_m.get("rankicWR", 0.6796),
+            local_open["rankic_win_rate"],
+            local_vwap["rankic_win_rate"],
+            "{:.2%}",
+        ),
+        ("5日 IC 均值", on_m.get("5dic", 0.0332), local_open["5dic"], local_vwap["5dic"], "{:.4f}"),
+        (
+            "5日 IC IR",
+            on_m.get("5dicIR", 0.3484),
+            local_open["5dic_ir"],
+            local_vwap["5dic_ir"],
+            "{:.4f}",
+        ),
+        (
+            "多空日均收益 (G10-G1)",
+            on_m.get("long_short", 0.002364),
+            local_open["long_short"],
+            local_vwap["long_short"],
+            "{:.4%}",
+        ),
+        (
+            "多空日度 IR",
+            on_m.get("long_shortIR", 0.2956),
+            local_open["long_short_ir"],
+            local_vwap["long_short_ir"],
+            "{:.4f}",
+        ),
+        ("Top G10 单边换手率", 0.1211, local_open["turnover"], local_vwap["turnover"], "{:.2%}"),
+        (
+            "截面秩自相关距离 (1-ρ)",
+            None,
+            local_open["rank_autocorr_turnover"],
+            local_vwap["rank_autocorr_turnover"],
+            "{:.2%}",
+        ),
+        (
+            "多头年化超额 (vs 000985)",
+            0.0126,
+            local_open["excess_annual_ret"],
+            local_vwap["excess_annual_ret"],
+            "{:.2%}",
+        ),
+        (
+            "多头超额年化波动",
+            0.0767,
+            local_open["excess_annual_vol"],
+            local_vwap["excess_annual_vol"],
+            "{:.2%}",
+        ),
+        (
+            "多头超额夏普比率",
+            0.1642,
+            local_open["excess_sharpe"],
+            local_vwap["excess_sharpe"],
+            "{:.4f}",
+        ),
+        (
+            "多头超额最大回撤",
+            0.2873,
+            local_open["excess_max_dd"],
+            local_vwap["excess_max_dd"],
+            "{:.2%}",
+        ),
     ]
 
-    on_excess_row = None
-    for row in tables.get("long_excess_analysis", []):
-        if row.get("period_type") == "full_period":
-            on_excess_row = row
-            break
-
-    for label, on_key, loc_val, fmt in metrics_to_compare:
-        if on_key is not None:
-            on_val = on_m.get(on_key)
-        elif label == "Top 分位换手率" and on_excess_row:
-            on_val = on_excess_row.get("turnover")
+    for label, on_v, loc_o, loc_v, fmt in rows:
+        on_s = fmt.format(on_v) if on_v is not None else "   --   "
+        o_s = fmt.format(loc_o)
+        v_s = fmt.format(loc_v)
+        if on_v is not None:
+            diff = loc_o - on_v
+            diff_s = f"{diff * 100:+.2f}%" if "%" in fmt else f"{diff:+.4f}"
         else:
-            on_val = None
+            diff_s = "  --  "
+        print(f"{label:<24} | {on_s:<22} | {o_s:<26} | {v_s:<24} | {diff_s:<12}")
 
-        on_str = fmt.format(on_val) if on_val is not None else "N/A"
-        loc_str = fmt.format(loc_val) if loc_val is not None else "N/A"
-        diff_str = (
-            f"{loc_val - on_val:+.4f}"
-            if on_val is not None and isinstance(on_val, (int, float))
-            else "-"
-        )
-        print(f"{label:<25} | {on_str:<18} | {loc_str:<18} | {diff_str:<15}")
-
-    if on_excess_row:
-        print("\n【2. 多头组合 (G10) 相对中证全指 (000985.CSI) 超额表现对比】")
-        print(
-            f"{'指标名称':<25} | {'线上 FactorLab':<18} | {'本地 Rust 内核':<18} | {'绝对/相对偏差':<15}"
-        )
-        print("-" * 85)
-        excess_cmps = [
-            ("年化超额收益率", "annual_return", local_data["excess_annual_ret"], "{:.2%}"),
-            ("超额夏普比率", "sharpe", local_data["excess_sharpe"], "{:.2f}"),
-            ("超额最大回撤", "max_drawdown", local_data["excess_max_dd"], "{:.2%}"),
-            ("超额胜率", "win_rate", local_data["excess_win_rate"], "{:.2%}"),
-        ]
-        for label, k, loc_val, fmt in excess_cmps:
-            on_val = on_excess_row.get(k)
-            on_str = fmt.format(on_val) if on_val is not None else "N/A"
-            loc_str = fmt.format(loc_val) if loc_val is not None else "N/A"
-            diff_str = (
-                f"{loc_val - on_val:+.4f}"
-                if on_val is not None and isinstance(on_val, (int, float))
-                else "-"
-            )
-            print(f"{label:<25} | {on_str:<18} | {loc_str:<18} | {diff_str:<15}")
-
-    print("\n【3. 多周期 RankIC 结构与单调性】")
-    print(f"  - 1日 RankIC:  {local_data['rankic']:.4f}")
-    print(f"  - 2日 RankIC:  {local_data['rankic_2d']:.4f}")
-    print(f"  - 5日 RankIC:  {local_data['rankic_5d']:.4f}")
-    print(f"  - 10日 RankIC: {local_data['rankic_10d']:.4f}")
-
-    print("\n【4. 分年度对账细分 (2016 - 2024)】")
+    # 2. 10 分组日均收益对比 (G1 .. G10)
+    print("\n【2. 10 分组日均收益单调性对比 (Quantile Groups G1 ~ G10)】")
+    print("-" * 100)
     print(
-        f"{'年份':<6} | {'天数':<4} | {'RankIC':<8} | {'IR':<6} | {'胜率':<7} | {'多空日收益':<9} | {'年化超额':<9} | {'超额夏普':<8} | {'换手率':<8}"
+        f"{'分位组':<8} | {'FactorLab 线上 (vwap30)':<24} | {'本地 Rust (open_adj 主口径)':<26} | {'本地 Rust (vwap_adj 对照)':<24}"
     )
-    print("-" * 90)
-    for row in local_data["annual_breakdown"]:
+    print("-" * 100)
+    t_grp = _find_table("group_metrics")
+    on_grp_rows = t_grp.get("rows", [])
+    for idx in range(10):
+        g_name = f"G{idx + 1}"
+        on_g = on_grp_rows[idx][1] if idx < len(on_grp_rows) else "--"
+        loc_g_open = f"{local_open['group_returns'][idx] * 100:+.4f}%"
+        loc_g_vwap = f"{local_vwap['group_returns'][idx] * 100:+.4f}%"
+        print(f"{g_name:<8} | {on_g:<24} | {loc_g_open:<26} | {loc_g_vwap:<24}")
+
+    # 3. 多周期预测能力衰减对比
+    print("\n【3. 多周期预测能力衰减对比 (RankIC & RankIC IR Across Horizons)】")
+    print("-" * 100)
+    print(
+        f"{'预测周期':<10} | {'线上 RankIC (IR)':<24} | {'本地 open_adj RankIC (IR)':<28} | {'本地 vwap_adj RankIC (IR)':<28}"
+    )
+    print("-" * 100)
+    h_rows = [
+        (
+            "1 日 (h=1)",
+            "0.0431 (0.4019)",
+            f"{local_open['rankic']:.4f} ({local_open['rankic_ir']:.4f})",
+            f"{local_vwap['rankic']:.4f} ({local_vwap['rankic_ir']:.4f})",
+        ),
+        (
+            "2 日 (h=2)",
+            "0.0535 (0.4960)",
+            f"{local_open['rankic_2d']:.4f} ({local_open['rankic_2d_ir']:.4f})",
+            f"{local_vwap['rankic_2d']:.4f} ({local_vwap['rankic_2d_ir']:.4f})",
+        ),
+        (
+            "5 日 (h=5)",
+            "0.0659 (0.6189)",
+            f"{local_open['rankic_5d']:.4f} ({local_open['rankic_5d_ir']:.4f})",
+            f"{local_vwap['rankic_5d']:.4f} ({local_vwap['rankic_5d_ir']:.4f})",
+        ),
+        (
+            "10 日 (h=10)",
+            "0.0764 (0.7324)",
+            f"{local_open['rankic_10d']:.4f} ({local_open['rankic_10d_ir']:.4f})",
+            f"{local_vwap['rankic_10d']:.4f} ({local_vwap['rankic_10d_ir']:.4f})",
+        ),
+    ]
+    for h_name, h_on, h_open, h_vwap in h_rows:
+        print(f"{h_name:<10} | {h_on:<24} | {h_open:<28} | {h_vwap:<28}")
+
+    # 4. 分年度对账细分 (2016 - 2024)
+    print("\n【4. 分年度 RankIC 与多头超额对账细分 (2016 ~ 2024, 本地采用 open_adj 主口径)】")
+    print("-" * 112)
+    print(
+        f"{'年份':<6} | {'天数':<4} | {'线上 RankIC':<11} | {'本地 RankIC':<11} | {'线上 IR':<8} | {'本地 IR':<8} | {'线上超额':<9} | {'本地超额':<9} | {'线上换手':<9} | {'本地换手':<9}"
+    )
+    print("-" * 112)
+    t_yearly = _find_table("yearly_metrics")
+    on_year_dict = {r[0]: r for r in t_yearly.get("rows", []) if len(r) >= 7}
+
+    for row in local_open["annual_breakdown"]:
+        y = row["year"]
+        on_y = on_year_dict.get(y, [])
+        on_ex = on_excess_rows.get(y, [])
+        on_ric = on_y[5] if len(on_y) > 5 else "--"
+        on_ir = on_y[6] if len(on_y) > 6 else "--"
+        on_ex_ret = on_ex[4] if len(on_ex) > 4 else "--"
+        on_to = on_ex[6] if len(on_ex) > 6 else "--"
         print(
-            f"{row['year']:<6} | {row['days']:<4} | {row['rankic']:<8.4f} | {row['rankic_ir']:<6.2f} | "
-            f"{row['rankic_win_rate']:<7.1%} | {row['long_short']:<9.2%} | {row['excess_annual_ret']:<9.2%} | "
-            f"{row['excess_sharpe']:<8.2f} | {row['turnover']:<8.2%}"
+            f"{y:<6} | {row['days']:<4} | {on_ric:<11} | {row['rankic']:<11.4f} | {on_ir:<8} | {row['rankic_ir']:<8.4f} | "
+            f"{on_ex_ret:<9} | {row['excess_annual_ret'] * 100:+6.2f}%  | {on_to:<9} | {row['turnover'] * 100:6.2f}%"
         )
-    print("=" * 90)
+    print("=" * 112)
 
 
-def main():
-    print("=" * 90)
-    print(" 🚀 Volume_Price_2_H5_2 因子 A 股全市场本地回测与全量对账启动 (P0-11 修正版)")
-    print("=" * 90)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Volume_Price_2_H5_2 因子本地股票回测与 FactorLab 线上对账脚本"
+    )
+    parser.add_argument(
+        "--start-date",
+        default="20160104",
+        help="回测评估开始日期 (默认: 20160104)",
+    )
+    parser.add_argument(
+        "--end-date",
+        default="20241231",
+        help="回测评估结束日期 (默认: 20241231)",
+    )
+    return parser.parse_args()
 
-    # 1. 抓取线上数据
+
+def main() -> None:
+    args = parse_args()
+    print("=" * 112)
+    print(
+        " 🚀 Volume_Price_2_H5_2 因子 A 股全市场本地回测与全量对账启动 (P0-09/P0-10/P0-11 修正版)"
+    )
+    print("=" * 112)
+
+    # 1. 抓取线上数据 (支持 503 自动回退)
     online_data = fetch_online_factorlab_results()
 
     # 2. 构建本地标准 A 股面板
@@ -384,17 +887,28 @@ def main():
     # 3. 计算因子
     factor_mat = compute_factor_and_postprocess(dates, symbols, panel_data)
 
-    # 4. 执行本地回测 (默认 open_adj 早盘代理)
-    local_data = run_local_backtest_evaluation(
+    # 4. 执行本地回测 (主口径 open_adj 与对照口径 vwap_adj)
+    local_open = run_local_backtest_evaluation(
         dates=dates,
         symbols=symbols,
         factor_mat=factor_mat,
         panel_data=panel_data,
+        start_eval_date=args.start_date,
+        end_eval_date=args.end_date,
         exec_price_mode="open_adj",
+    )
+    local_vwap = run_local_backtest_evaluation(
+        dates=dates,
+        symbols=symbols,
+        factor_mat=factor_mat,
+        panel_data=panel_data,
+        start_eval_date=args.start_date,
+        end_eval_date=args.end_date,
+        exec_price_mode="vwap_adj",
     )
 
     # 5. 输出对比报告
-    print_comparison_report(online_data, local_data)
+    print_comparison_report(online_data, local_open, local_vwap)
 
 
 if __name__ == "__main__":

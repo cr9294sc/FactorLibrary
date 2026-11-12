@@ -226,6 +226,7 @@ pub fn run_futures_backtest(
     }
 
     // 逐日推进状态机 (从 d=1 到 T-1)
+    let mut is_bankrupt = false;
     for d in 1..t {
         let prev_e = equity[d - 1];
         let mut daily_gross_pnl = 0.0;
@@ -277,7 +278,10 @@ pub fn run_futures_backtest(
         // -------------------------------------------------------------
         let mut target_lots = current_lots.clone();
         if prev_e <= 0.0 {
-            // P0-06: 账户已穿仓破产：触发强制清盘，禁止开新仓，所有品种目标手数归零
+            is_bankrupt = true;
+        }
+        if is_bankrupt {
+            // P0-06: 账户已穿仓破产（粘性状态）：触发强制清盘，永久禁止开新仓，所有品种目标手数归零
             target_lots.fill(0);
         } else {
             for i in 0..n {

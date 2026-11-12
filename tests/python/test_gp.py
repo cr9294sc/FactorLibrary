@@ -436,3 +436,42 @@ def test_gp_1000_pop_50_gen_throughput_benchmark(synthetic_gp_panel: Panel):
     assert len(gp_engine.history) == 51
     assert gp_engine.total_unique_evaluated > 1000
     assert len(admitted) >= 1
+
+
+def test_gp_splits_purge_and_non_overlapping_fallback_p0_05(synthetic_gp_panel: Panel):
+    """验证 P0-05: GP 切分边界强制扣除 horizon 作为 Purge 隔离带，且短样本回退三段完全互斥。"""
+    cfg = GPConfig(
+        seed=42,
+        mode="cs",
+        label="y_5",
+        splits={
+            "train": ("2015-01-01", "2015-12-31"),
+            "valid": ("2020-01-01", "2020-12-31"),
+            "test": ("2023-01-01", "2023-12-31"),
+        },
+        population=20,
+        generations=1,
+        islands=2,
+    )
+    eng = GPEngine(cfg=cfg, panel=synthetic_gp_panel, registry=None)
+    # train 与 valid、valid 与 test 交界处必须留出 >= horizon (5) 的 Purge 间隔
+    assert eng.train_slice[1] + eng.horizon <= eng.valid_slice[0]
+    assert eng.valid_slice[1] + eng.horizon <= eng.test_slice[0]
+
+    # 短样本回退场景 (日期不匹配默认配置)
+    cfg_short = GPConfig(
+        seed=42,
+        mode="cs",
+        label="y_5",
+        splits={
+            "train": ("1990-01-01", "1991-12-31"),
+            "valid": ("1992-01-01", "1993-12-31"),
+            "test": ("1994-01-01", "1995-12-31"),
+        },
+        population=20,
+        generations=1,
+        islands=2,
+    )
+    eng_short = GPEngine(cfg=cfg_short, panel=synthetic_gp_panel, registry=None)
+    assert eng_short.train_slice[1] + eng_short.horizon <= eng_short.valid_slice[0]
+    assert eng_short.valid_slice[1] + eng_short.horizon <= eng_short.test_slice[0]

@@ -470,3 +470,50 @@ def test_calc_rank_ic():
     assert abs(stats["ic_mean"] - 1.0) < 1e-9
     assert abs(stats["ic_win_rate"] - 1.0) < 1e-9
     assert stats["valid_days"] == T
+
+
+def test_ml_pipeline_enforces_min_purge_from_label_horizon_p0_05(synthetic_ml_panel):
+    """验证 P0-05: 当配置 purge_window 小于 target_label 预测周期 h 时，自动提升至 >= h。"""
+    panel, factor_matrices, factor_signs = synthetic_ml_panel
+    cfg = MLConfig(
+        target_label="y_5",
+        walk_forward=WalkForwardConfig(
+            start_predict_year=2018,
+            end_predict_year=2019,
+            train_window="expanding",
+            min_train_years=2,
+            purge_window=1,  # 故意设为 1 < 5
+            validation_size_days=60,
+        ),
+        models=("equal_weight",),
+    )
+    pipeline = WalkForwardPipeline(
+        panel=panel,
+        config=cfg,
+        factor_matrices=factor_matrices,
+        factor_signs=factor_signs,
+    )
+    res_p1 = pipeline.run(strict_min_years=False)
+
+    cfg_p5 = MLConfig(
+        target_label="y_5",
+        walk_forward=WalkForwardConfig(
+            start_predict_year=2018,
+            end_predict_year=2019,
+            train_window="expanding",
+            min_train_years=2,
+            purge_window=5,
+            validation_size_days=60,
+        ),
+        models=("equal_weight",),
+    )
+    res_p5 = WalkForwardPipeline(
+        panel=panel,
+        config=cfg_p5,
+        factor_matrices=factor_matrices,
+        factor_signs=factor_signs,
+    ).run(strict_min_years=False)
+
+    assert len(res_p1.fold_metrics) == 2
+    assert res_p1.fold_metrics[0]["n_train"] == res_p5.fold_metrics[0]["n_train"]
+    assert res_p1.fold_metrics[1]["n_train"] == res_p5.fold_metrics[1]["n_train"]

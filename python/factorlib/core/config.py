@@ -453,7 +453,7 @@ def load_gp_config(path: Path) -> GPConfig:
 class WalkForwardConfig:
     """Purged & Embargoed 滚动扩展/滚动窗口配置。"""
 
-    start_predict_year: int = 2018
+    start_predict_year: int = 2022
     end_predict_year: int = 2026
     train_window: str = "expanding"  # expanding | rolling
     min_train_years: int = 5

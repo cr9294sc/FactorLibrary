@@ -148,7 +148,7 @@ def test_load_ml_config_and_validation(tmp_path: Path):
     assert isinstance(mcfg, MLConfig)
     assert mcfg.target_label == "y_5"
     assert "accepted" in mcfg.features_status
-    assert mcfg.walk_forward.start_predict_year == 2018
+    assert mcfg.walk_forward.start_predict_year == 2022
     assert mcfg.walk_forward.end_predict_year == 2026
     assert mcfg.walk_forward.train_window == "expanding"
     assert mcfg.walk_forward.purge_window == 5

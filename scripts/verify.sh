@@ -219,6 +219,8 @@ check_scripts() {
     python scripts/catalog.py --help > /dev/null
     python scripts/run_web.py --help > /dev/null
     python scripts/download_rq_stocks.py --help > /dev/null
+    python scripts/backtest_volume_price_factor.py --help > /dev/null
+    python scripts/backtest_multi_factors.py --help > /dev/null
     log_pass "CLI 工具脚本 --help 入口响应正常"
 }
 

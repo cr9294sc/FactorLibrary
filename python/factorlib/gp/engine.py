@@ -172,8 +172,28 @@ class GPEngine:
         te_s = _find_slice(te_cfg[0], te_cfg[1])
 
         if tr_s is not None and va_s is not None:
-            if te_s is None:
-                te_s = va_s
+            # P0-05: 在 train 与 valid、valid 与 test 交界处强制扣除 self.horizon 作为 Purge 隔离带，
+            # 防止边界末尾 h 个交易日的前瞻收益标签跨越切分边界泄露
+            if tr_s[1] > va_s[0] - self.horizon and (tr_s[1] - tr_s[0]) > self.horizon + 3:
+                tr_s = (tr_s[0], max(tr_s[0] + 3, min(tr_s[1], va_s[0] - self.horizon)))
+
+            if te_s is not None:
+                if va_s[1] > te_s[0] - self.horizon and (va_s[1] - va_s[0]) > self.horizon + 3:
+                    va_s = (va_s[0], max(va_s[0] + 3, min(va_s[1], te_s[0] - self.horizon)))
+            else:
+                # 若面板未覆盖默认 test 日期，优先取 valid 之后的独立区间；否则从 valid 尾部切出独立 test
+                rem_start = min(T, va_s[1] + self.horizon)
+                if T - rem_start >= 3:
+                    te_s = (rem_start, T)
+                elif (va_s[1] - va_s[0]) >= 6 + self.horizon:
+                    mid = va_s[0] + max(3, (va_s[1] - va_s[0] - self.horizon) // 2)
+                    te_s = (min(va_s[1] - 3, mid + self.horizon), va_s[1])
+                    va_s = (va_s[0], mid)
+                else:
+                    mid = va_s[0] + max(1, (va_s[1] - va_s[0]) // 2)
+                    te_s = (mid, va_s[1])
+                    va_s = (va_s[0], mid)
+
             eff_splits = {
                 "train": (str(dates_str[tr_s[0]]), str(dates_str[tr_s[1] - 1])),
                 "valid": (str(dates_str[va_s[0]]), str(dates_str[va_s[1] - 1])),
@@ -182,18 +202,34 @@ class GPEngine:
             tr_active = int(np.sum(valid_lbl_per_day[tr_s[0] : tr_s[1]] >= eff_min_names))
             return tr_s, va_s, te_s, eff_splits, eff_min_names, max(1, tr_active)
 
-        # 若面板日期范围不在默认 2011-2021 区间内（如样本面板 v1 或单测小面板），按有效标签在池区间比例切分
+        # 若面板日期范围不在默认 2011-2021 区间内（如样本面板 v1 或单测小面板），
+        # P0-05: 严格按 60% / 20% / 20% 切分为三段完全互斥的 (train, valid, test) 并插入 Purge 隔离带
         valid_lbl_rows = np.where(valid_lbl_per_day >= eff_min_names)[0]
-        if len(valid_lbl_rows) >= 6:
+        if len(valid_lbl_rows) >= 9:
             eff_start = int(valid_lbl_rows[0])
             eff_end = int(valid_lbl_rows[-1]) + 1
             span = eff_end - eff_start
-            n_train = max(3, int(round(span * 0.60)))
-            if span - n_train < 3:
-                n_train = span - 3
+            purge = self.horizon if span >= 9 + 2 * self.horizon else max(0, (span - 9) // 2)
+            usable = span - 2 * purge
+            n_train = max(3, int(round(usable * 0.60)))
+            n_valid = max(3, int(round(usable * 0.20)))
+            if usable - n_train - n_valid < 3:
+                n_valid = max(3, (usable - 3) // 2)
+                n_train = max(3, usable - n_valid - 3)
             tr_fallback = (eff_start, eff_start + n_train)
-            va_fallback = (eff_start + n_train, eff_end)
-            te_fallback = (va_fallback[0], T)
+            va_start = tr_fallback[1] + purge
+            va_fallback = (va_start, va_start + n_valid)
+            te_start = va_fallback[1] + purge
+            te_fallback = (te_start, max(te_start + 1, eff_end))
+        elif len(valid_lbl_rows) >= 6:
+            eff_start = int(valid_lbl_rows[0])
+            eff_end = int(valid_lbl_rows[-1]) + 1
+            span = eff_end - eff_start
+            n_train = max(2, span // 2)
+            n_valid = max(2, (span - n_train) // 2)
+            tr_fallback = (eff_start, eff_start + n_train)
+            va_fallback = (eff_start + n_train, eff_start + n_train + n_valid)
+            te_fallback = (eff_start + n_train + n_valid, eff_end)
         else:
             tr_fallback = (0, T)
             va_fallback = (0, T)
@@ -283,17 +319,16 @@ class GPEngine:
         """按照白皮书 9.4 节公式计算综合适应度：
         F(expr) = |ICIR_train| - lambda * NodesCount - Penalty_cov - Penalty_corr
         """
-        if not math.isfinite(raw_fitness):
+        if not math.isfinite(raw_fitness) or coverage < self.cfg.fitness.min_coverage:
             return -10.0
 
         parsimony_pen = self.cfg.fitness.parsimony_penalty * float(n_nodes)
-        cov_pen = 10.0 if coverage < self.cfg.fitness.min_coverage else 0.0
         corr_pen = (
             self.cfg.fitness.corr_penalty_factor * raw_fitness
             if max_abs_corr > self.cfg.fitness.corr_penalty_threshold
             else 0.0
         )
-        return raw_fitness - parsimony_pen - cov_pen - corr_pen
+        return raw_fitness - parsimony_pen - corr_pen
 
     def evaluate_individuals(self, individuals: Sequence[Individual]) -> int:
         """对一批个体进行批量规范化、Rust 并行求值与综合适应度指派。返回新求值的唯一表达式数。"""

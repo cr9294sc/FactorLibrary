@@ -238,18 +238,40 @@ def _extract_python_code_dependencies(code: str) -> tuple[list[tuple[str, int]],
     except SyntaxError as exc:
         return [], [f"Python 语法错误 (line {exc.lineno}): {exc.msg}"]
 
+    forbidden_io_attrs = {
+        "load",
+        "save",
+        "savez",
+        "savez_compressed",
+        "fromfile",
+        "tofile",
+        "loadtxt",
+        "genfromtxt",
+        "savetxt",
+        "memmap",
+        "ctypeslib",
+        "DataSource",
+    }
+
     has_compute = False
     for node in py_ast.walk(tree):
         if isinstance(node, py_ast.FunctionDef) and node.name == "compute":
             has_compute = True
             if len(node.args.args) < 1:
                 errors.append("函数 `def compute(context):` 必须接受至少 1 个参数 `context`")
-        # 阻断危险系统调用
+        # 阻断危险系统调用与沙箱逃逸 (P0-08)
         if isinstance(node, (py_ast.Import, py_ast.ImportFrom)):
             for alias in node.names:
                 root_mod = alias.name.split(".")[0]
                 if root_mod not in {"numpy", "np", "math"}:
                     errors.append(f"因子沙箱禁止导入外部模块: {alias.name!r} (仅允许 numpy / math)")
+        if isinstance(node, py_ast.Attribute):
+            if node.attr.startswith("_"):
+                errors.append(f"因子沙箱禁止访问私有或双下划线属性: {node.attr!r}")
+            elif node.attr in forbidden_io_attrs:
+                errors.append(f"因子沙箱禁止访问文件或内存 I/O 接口: {node.attr!r}")
+        if isinstance(node, py_ast.Name) and node.id.startswith("__"):
+            errors.append(f"因子沙箱禁止引用双下划线内置名称: {node.id!r}")
         if isinstance(node, py_ast.Call) and isinstance(node.func, py_ast.Attribute):
             if node.func.attr == "history" and len(node.args) >= 1:
                 arg0 = node.args[0]
@@ -498,6 +520,8 @@ class PythonFactorContext:
     的历史切片（不足 `window` 行时顶部填充 NaN 保持 `(window, N)` 形状），从物理内存视图上彻底阻断未来数据访问。
     """
 
+    __slots__ = ("_dates", "_symbols", "_t", "_n_symbols", "_history_fn")
+
     def __init__(
         self,
         fields: dict[str, np.ndarray],
@@ -505,11 +529,37 @@ class PythonFactorContext:
         symbols: Sequence[str],
         current_t: int,
     ) -> None:
-        self._fields = fields
         self._dates = dates
         self._symbols = list(symbols)
         self._t = int(current_t)
         self._n_symbols = len(self._symbols)
+
+        # P0-08: 通过闭包隔离底层全量 fields 引用，不在实例属性上暴露原字典，彻底阻断未来行读取
+        t_idx = self._t
+        n_sym = self._n_symbols
+
+        def _fetch_history(field_name: str, window: int = 1) -> np.ndarray:
+            if window <= 0:
+                raise ValueError(f"history window 必须为正整数, 收到: {window}")
+            if field_name not in fields:
+                raise KeyError(f"面板中不存在字段: {field_name!r}")
+
+            mat = fields[field_name]
+            end_idx = t_idx + 1
+            start_idx = max(0, end_idx - window)
+            avail = mat[start_idx:end_idx, :]
+
+            if avail.shape[0] < window:
+                pad_rows = window - avail.shape[0]
+                out = np.full((window, n_sym), np.nan, dtype=np.float64)
+                out[pad_rows:, :] = avail
+            else:
+                out = avail.copy()
+
+            out.flags.writeable = False
+            return out
+
+        self._history_fn = _fetch_history
 
     @property
     def t(self) -> int:
@@ -525,30 +575,16 @@ class PythonFactorContext:
 
     def history(self, field_name: str, window: int = 1) -> np.ndarray:
         """获取截至当前交易日 t 的过去 `window` 日面板切片，返回形状固定为 `(window, N)` 的只读数组。"""
-        if window <= 0:
-            raise ValueError(f"history window 必须为正整数, 收到: {window}")
-        if field_name not in self._fields:
-            raise KeyError(f"面板中不存在字段: {field_name!r}")
-
-        mat = self._fields[field_name]
-        end_idx = self._t + 1
-        start_idx = max(0, end_idx - window)
-        avail = mat[start_idx:end_idx, :]
-
-        if avail.shape[0] < window:
-            pad_rows = window - avail.shape[0]
-            out = np.full((window, self._n_symbols), np.nan, dtype=np.float64)
-            out[pad_rows:, :] = avail
-        else:
-            out = avail.copy()
-
-        out.flags.writeable = False
-        return out
+        return self._history_fn(field_name, window)
 
 
 def _execute_python_factor(code: str, panel: Panel) -> np.ndarray:
     """在因果沙箱中按时间步执行 `def compute(context):` 并组装 `(T, N)` 因子矩阵。"""
     import math
+
+    _, ast_errors = _extract_python_code_dependencies(code)
+    if ast_errors:
+        raise ValueError(f"Python 因子未通过静态沙箱安全检查: {'; '.join(ast_errors)}")
 
     safe_globals: dict[str, Any] = {
         "__builtins__": {

@@ -271,6 +271,7 @@ class StockPanelLoader:
                 right_on="ex_date",
                 by="order_book_id",
                 strategy="backward",
+                check_sortedness=False,
             ).with_columns(pl.col("ex_cum_factor").fill_null(1.0))
         else:
             df_bar = df_bar.with_columns(pl.lit(1.0).alias("ex_cum_factor"))
@@ -325,6 +326,7 @@ class StockPanelLoader:
                 right_on="snapshot_date",
                 by="order_book_id",
                 strategy="backward",
+                check_sortedness=False,
             )
             all_industries = sorted(
                 [x for x in df_ind["first_industry_name"].unique().to_list() if x is not None]

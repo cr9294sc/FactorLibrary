@@ -19,6 +19,7 @@ from pathlib import Path
 
 import factorlib_core
 import numpy as np
+import pytest
 from factorlib.core.catalog import FactorCatalog
 from factorlib.core.evaluate import run_factor_workflow
 from factorlib.core.ops_ref import (
@@ -460,3 +461,40 @@ def test_futures_styles_universe_mask_isolation():
 
         # 3. 标的 7 在前 10 天（仍在池时）计算结果不受后 20 天退池极端值影响
         _assert_mat_close(sc[:10, 7], sp[:10, 7], tol=1e-12, msg=f"style {s_name} s7 early")
+
+
+def test_python_factor_sandbox_security_p0_08():
+    """验证 P0-08 Python 因子沙箱安全红线：阻断私有属性访问、双下划线逃逸与 numpy 文件 I/O。"""
+    panel = _make_synthetic_panel(T=10, N=6, seed=7)
+
+    # 1. 尝试访问 context._fields 越权读取未来数据
+    bad_priv = FactorDefinition(
+        name="bad_priv",
+        factor_type="code",
+        code="def compute(context):\n    return context._fields['close'][-1]\n",
+    )
+    rep1 = probe_factor(bad_priv, panel=panel)
+    assert rep1["status"] == "error"
+    assert any("私有或双下划线属性" in e for e in rep1["errors"])
+    with pytest.raises(ValueError, match="私有或双下划线属性"):
+        evaluate_factor_definition(bad_priv, panel)
+
+    # 2. 尝试通过 numpy.loadtxt / fromfile 读取磁盘文件
+    bad_io = FactorDefinition(
+        name="bad_io",
+        factor_type="code",
+        code="import numpy as np\ndef compute(context):\n    return np.fromfile('/etc/passwd')\n",
+    )
+    rep2 = probe_factor(bad_io, panel=panel)
+    assert rep2["status"] == "error"
+    assert any("文件或内存 I/O" in e for e in rep2["errors"])
+
+    # 3. 尝试引用双下划线内置名称
+    bad_dunder = FactorDefinition(
+        name="bad_dunder",
+        factor_type="code",
+        code="def compute(context):\n    x = __builtins__\n    return context.history('close', 1)[0]\n",
+    )
+    rep3 = probe_factor(bad_dunder, panel=panel)
+    assert rep3["status"] == "error"
+    assert any("双下划线" in e for e in rep3["errors"])

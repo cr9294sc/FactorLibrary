@@ -21,7 +21,8 @@ h 期标签:
 **相对白皮书 4.1 节文字的修正**: 白皮书写作 ``prod_{k=1}^{h}(1 + r_{T+k-1 -> T+k})``, 即从 **T 日**执行价
 (T 日早盘, 早于 T 日收盘信号) 起算, 其收益区间覆盖了特征本身所处的交易日, 会把 T 日日内走势
 (如 ``close/open-1`` 类因子) 直接泄露进标签并使 IC 虚高, 同时与“T+1 建仓”的执行约定自相矛盾。
-本实现的标签起点为 T+1 日执行价, 与回测一致、无信息重叠。
+本实现的标签起点为 T+1 日执行价, 与回测一致、无信息重叠。导出的 ``r_exec_next``
+亦同步平移为 T+1 开盘至 T+2 开盘的 1 日真实执行收益 (与 ``y_1`` 严格等价)。
 
 任一环节价格缺失 (停牌/无成交) 时 ``y_h`` 为 null (严格, 不做填补)。
 """
@@ -68,7 +69,11 @@ def build_labels(
     # y_h(T) 需要 r_{T+1->T+2} .. r_{T+h->T+h+1}, 即 lg 在行 T+1..T+h。先把 lg 前移一行
     # (行 T 持有 lg[T+1]), 再取从 T 起向前的 h 行窗口和 (稠密网格上行偏移 == 交易日偏移),
     # 这样 T 日自身的 r_{T->T+1} (起点为 T 日早盘, 早于 T 日收盘信号) 不会进入标签。
-    grid = grid.with_columns(_lg_next=pl.col("_lg").shift(-1).over("symbol"))
+    # P0-01: r_exec_next 必须同步 shift(-1)，确保导出的 1 日执行收益与 y_1 等价，彻底杜绝日内前视偏差。
+    grid = grid.with_columns(
+        r_exec_next=pl.col("r_exec_next").shift(-1).over("symbol"),
+        _lg_next=pl.col("_lg").shift(-1).over("symbol"),
+    )
     exprs = []
     for h in horizons:
         fwd_sum = (

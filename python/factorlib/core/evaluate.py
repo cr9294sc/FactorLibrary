@@ -244,7 +244,9 @@ def _evaluate_factor_matrix_core(
             met = engine.factor_metrics(
                 f_sub,
                 label_name=lbl_name,
-                ret_name="r_exec_next" if "r_exec_next" in engine.label_names else None,
+                ret_name="y_1"
+                if "y_1" in engine.label_names
+                else ("r_exec_next" if "r_exec_next" in engine.label_names else None),
                 horizon=h,
                 n_quantiles=n_quantiles,
                 min_names=min_names,

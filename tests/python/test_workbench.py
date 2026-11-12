@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from factorlib.core.workbench import FactorWorkbenchService, create_synthetic_futures_panel
-from server_main import WorkbenchHTTPHandler
+from factorlib.workbench_server import WorkbenchHTTPHandler
 
 
 def test_synthetic_futures_panel_creation():

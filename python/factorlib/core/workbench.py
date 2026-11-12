@@ -253,10 +253,10 @@ def create_synthetic_futures_panel(n_days: int = 120, seed: int = 42) -> Panel:
     labels: dict[str, np.ndarray] = {}
     for h in (1, 3, 5, 10, 20):
         yh = np.full((T, N), np.nan, dtype=np.float64, order="F")
-        if T > h:
-            yh[:-h, :] = exec_vwap[h:, :] / exec_vwap[:-h, :] - 1.0
+        if T > h + 1:
+            yh[: -(h + 1), :] = exec_vwap[1 + h :, :] / exec_vwap[1:-h, :] - 1.0
         labels[f"y_{h}"] = yh
-    labels["r_exec_next"] = np.where(np.isfinite(labels["y_1"]), labels["y_1"], 0.0)
+    labels["r_exec_next"] = labels["y_1"].copy(order="F")
 
     valid_mask = np.ones((T, N), dtype=bool, order="F")
     return Panel(

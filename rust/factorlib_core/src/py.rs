@@ -564,12 +564,12 @@ impl PyEngine {
     ) -> PyResult<Bound<'py, PyDict>> {
         let f_raw = self.resolve_factor_mat(py, factor)?;
         let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
-        let r_name = ret_name.unwrap_or("r_exec_next");
+        let r_name = ret_name.unwrap_or("y_1");
         let ret_arc = self
             .panel
             .labels
             .get(r_name)
-            .or_else(|| self.panel.labels.get("y_1"))
+            .or_else(|| self.panel.labels.get("r_exec_next"))
             .ok_or_else(|| {
                 PyValueError::new_err(format!(
                     "未在面板中找到用于分位数评估的收益标签: '{r_name}'"
@@ -631,12 +631,12 @@ impl PyEngine {
                 PyValueError::new_err(format!("未在面板中找到预测标签: '{label_name}'"))
             })?
             .clone();
-        let r_name = ret_name.unwrap_or("r_exec_next");
+        let r_name = ret_name.unwrap_or("y_1");
         let ret_arc = self
             .panel
             .labels
             .get(r_name)
-            .or_else(|| self.panel.labels.get("y_1"))
+            .or_else(|| self.panel.labels.get("r_exec_next"))
             .unwrap_or(&label_arc)
             .clone();
         let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));

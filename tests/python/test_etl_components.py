@@ -203,6 +203,97 @@ def test_labels_no_lookahead():
     # y_1(T=0) 为持有 1 天从 T=1 到 T=2 的收益: 105.06 / 102.0 - 1 = 3.0% (而非泄露从 T=0 到 T=1 的 2%!)
     row0 = labels.filter(pl.col("trading_date") == date(2024, 1, 1))
     assert abs(row0["y_1"][0] - 0.03) < 1e-5
+    # P0-01: r_exec_next 必须同步平移至 T+1->T+2, 与 y_1 严格等价 (3.0%), 严禁泄漏 T=0 日内收益 (2.0%)
+    assert abs(row0["r_exec_next"][0] - 0.03) < 1e-5
+    assert row0["r_exec_next"][0] == row0["y_1"][0]
 
     # y_2(T=0) 为持有 2 天从 T=1 到 T=3 的累计复利: 110.313 / 102.0 - 1 = (1 + 0.03) * (1 + 0.05) - 1 = 8.15%
     assert abs(row0["y_2"][0] - 0.0815) < 1e-5
+
+
+def test_intraday_factor_no_lookahead_correlation():
+    """P0-01 回归测试: 验证日内因子 (close/open - 1) 与 y_1 及平移后的 r_exec_next 无前视伪高相关。
+
+    若标签误用当期未平移早盘收益 r_{T->T+1}, 因其区间包含了 T 日日内走势,
+    会导致纯随机行情的日内涨跌幅对标签产生高达 +0.8 左右的虚假 RankIC。
+    修复后 (T+1->T+2), 因果严格隔离, 截面平均 RankIC 应当收敛于 0。
+    """
+    rng = np.random.default_rng(42)
+    n_days = 80
+    n_symbols = 25
+    symbols = [f"S{i:02d}" for i in range(n_symbols)]
+    dates = [date(2024, 1, 1) + dt.timedelta(days=i) for i in range(n_days)]
+
+    cal = pl.DataFrame(
+        {
+            "trading_date": dates,
+            "date_idx": list(range(n_days)),
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
+
+    # 生成随机游走价格序列
+    # 日内收益率与隔夜收益率均为独立白噪声
+    rows = []
+    for s in symbols:
+        price = 100.0
+        for d_idx, d in enumerate(dates):
+            intraday_ret = rng.normal(0.0, 0.02)
+            overnight_ret = rng.normal(0.0, 0.01)
+            open_p = price * (1.0 + overnight_ret)
+            close_p = open_p * (1.0 + intraday_ret)
+            exec_vwap = open_p  # 早盘开盘 VWAP 约等于 open
+            rows.append(
+                {
+                    "symbol": s,
+                    "trading_date": d,
+                    "date_idx": d_idx,
+                    "open": open_p,
+                    "close": close_p,
+                    "exec_vwap": exec_vwap,
+                    "exec_vwap_old": exec_vwap,
+                }
+            )
+            price = close_p
+
+    df_panel = pl.DataFrame(rows).with_columns(pl.col("date_idx").cast(pl.Int64))
+    labels = build_labels(df_panel, cal, horizons=[1])
+
+    # 合并因子与标签
+    merged = df_panel.join(labels, on=["trading_date", "symbol"], how="inner").with_columns(
+        factor=pl.col("close") / pl.col("open") - 1.0,
+    )
+
+    # 逐日计算 factor 与 y_1 及 r_exec_next 的截面 RankIC
+    def spearman_rank_corr(x: np.ndarray, y: np.ndarray) -> float:
+        valid = np.isfinite(x) & np.isfinite(y)
+        if valid.sum() < 5:
+            return np.nan
+        rx = np.argsort(np.argsort(x[valid]))
+        ry = np.argsort(np.argsort(y[valid]))
+        c = np.corrcoef(rx, ry)[0, 1]
+        return float(c)
+
+    rank_ics_y1 = []
+    rank_ics_rexec = []
+    for d in dates[:-2]:  # 排除最后无标签的两天
+        sub = merged.filter(pl.col("trading_date") == d)
+        f_vals = sub["factor"].to_numpy()
+        y1_vals = sub["y_1"].to_numpy()
+        r_vals = sub["r_exec_next"].to_numpy()
+
+        ic_y1 = spearman_rank_corr(f_vals, y1_vals)
+        ic_r = spearman_rank_corr(f_vals, r_vals)
+        if np.isfinite(ic_y1):
+            rank_ics_y1.append(ic_y1)
+        if np.isfinite(ic_r):
+            rank_ics_rexec.append(ic_r)
+
+    mean_ic_y1 = float(np.mean(rank_ics_y1))
+    mean_ic_r = float(np.mean(rank_ics_rexec))
+
+    # 断言 1: y_1 与 r_exec_next 的 RankIC 必须完全一致
+    assert abs(mean_ic_y1 - mean_ic_r) < 1e-12
+
+    # 断言 2: 无前视偏差时，独立白噪声行情的日内涨跌幅对未来收益无预测力 (|IC| < 0.1)
+    # 若存在前视偏差 (未平移)，此处 mean_ic 会高达 +0.7 ~ +0.8
+    assert abs(mean_ic_y1) < 0.1, f"检测到前视偏差泄漏! mean_ic_y1 = {mean_ic_y1:.4f}"

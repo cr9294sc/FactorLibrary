@@ -267,7 +267,7 @@ DSL_FIELDS: list[str] = [f.name for f in PANEL_FIELDS if f.role == "dsl"]
 
 #: 标签列的规格 (写入 fields.json 的 labels 段, 仅文档用途)
 LABEL_DESCRIPTIONS: dict[str, str] = {
-    "r_exec_next": "r_{T->T+1}: 持有 c_T 从 T 日到 T+1 日的 VWAP-to-VWAP 收益 (链式构件)",
+    "r_exec_next": "r_{T+1->T+2}: 信号 T 日收盘, T+1 开盘 30m VWAP 建仓至 T+2 开盘 30m VWAP 的 1 日执行收益 (同 y_1)",
     "y_{h}": "y_h(T)=prod_{k=1..h}(1+r_{T+k->T+k+1})-1: 信号 T 日收盘, T+1 开盘 30m VWAP 建仓, 持有 h 日的真实累计收益",
 }
 

@@ -30,8 +30,8 @@ import numpy as np
 import polars as pl
 
 # 引入本地 FactorLab 客户端
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from Factor.factorlab_client import call_mcp_tool
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")))
+from factorlib.core.mcp_client import call_mcp_tool  # noqa: E402
 
 FACTOR_CONFIGS = [
     {

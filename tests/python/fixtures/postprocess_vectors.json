@@ -1,0 +1,1324 @@
+{
+  "postprocess_operators": [
+    {
+      "name": "trdMask",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "trdMask(x1,x2)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ],
+              "x2": [
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                1.0,
+                4.0,
+                null,
+                16.0
+              ],
+              [
+                2.0,
+                4.0,
+                9.0,
+                32.0
+              ],
+              [
+                3.0,
+                0.0,
+                18.0,
+                16.0
+              ],
+              [
+                4.0,
+                12.0,
+                9.0,
+                48.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              },
+              {
+                "name": "x2",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "baseUniMask",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "baseUniMask(x1,x2)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ],
+              "x2": [
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                1.0,
+                4.0,
+                null,
+                16.0
+              ],
+              [
+                2.0,
+                4.0,
+                9.0,
+                32.0
+              ],
+              [
+                3.0,
+                0.0,
+                18.0,
+                16.0
+              ],
+              [
+                4.0,
+                12.0,
+                9.0,
+                48.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              },
+              {
+                "name": "x2",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dropNewStock",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "dropNewStock(x1,x2,3)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ],
+              "x2": [
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                null,
+                null,
+                null,
+                4.0
+              ],
+              [
+                null,
+                null,
+                3.0,
+                8.0
+              ],
+              [
+                null,
+                null,
+                6.0,
+                4.0
+              ],
+              [
+                null,
+                null,
+                3.0,
+                12.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              },
+              {
+                "name": "x2",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "decay",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "decay(x1,3)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                null,
+                null,
+                null,
+                null
+              ],
+              [
+                null,
+                null,
+                null,
+                null
+              ],
+              [
+                2.0,
+                1.3333333333333333,
+                4.5,
+                5.333333333333333
+              ],
+              [
+                3.0,
+                2.6666666666666665,
+                4.0,
+                8.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 3,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "emadecay",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "emadecay(x1,3)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                null,
+                null,
+                null,
+                null
+              ],
+              [
+                null,
+                null,
+                null,
+                null
+              ],
+              [
+                2.3333333333333335,
+                1.0,
+                4.8,
+                5.333333333333333
+              ],
+              [
+                3.3333333333333335,
+                3.3333333333333335,
+                4.0,
+                8.666666666666666
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 3,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "MAD",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "MAD(x1,2)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                1.0,
+                2.0,
+                null,
+                4.0
+              ],
+              [
+                2.0,
+                2.0,
+                2.0,
+                2.0
+              ],
+              [
+                3.0,
+                0.034800000000000164,
+                5.965199999999999,
+                4.0
+              ],
+              [
+                4.0,
+                6.0,
+                3.0,
+                6.965199999999999
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "winsor",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "winsor(x1,0.25)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                1.5,
+                2.0,
+                null,
+                3.0
+              ],
+              [
+                2.0,
+                2.0,
+                3.0,
+                4.25
+              ],
+              [
+                3.0,
+                2.25,
+                4.5,
+                4.0
+              ],
+              [
+                4.0,
+                6.0,
+                3.75,
+                7.5
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "zScore",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "zScore(x1)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                -1.0690449676496978,
+                -0.2672612419124245,
+                null,
+                1.3363062095621219
+              ],
+              [
+                -0.7035264706814485,
+                -0.7035264706814485,
+                -0.30151134457776363,
+                1.7085642859406605
+              ],
+              [
+                -0.11547005383792514,
+                -1.5011106998930268,
+                1.2701705922171767,
+                0.3464101615137754
+              ],
+              [
+                -0.6445033866354896,
+                -0.0716114874039433,
+                -0.9309493362512627,
+                1.6470642102906956
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "rank",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "rank(x1)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                0.3333333333333333,
+                0.6666666666666666,
+                null,
+                1.0
+              ],
+              [
+                0.25,
+                0.5,
+                0.75,
+                1.0
+              ],
+              [
+                0.5,
+                0.25,
+                1.0,
+                0.75
+              ],
+              [
+                0.5,
+                0.75,
+                0.25,
+                1.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "indNeut",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "indNeut(x1,x2)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ],
+              "x2": [
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ],
+                [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                0.0,
+                0.0,
+                null,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              },
+              {
+                "name": "x2",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "riskNeut",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "riskNeut(x1,x2)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ],
+              "x2": [
+                [
+                  2.4,
+                  2.8,
+                  null,
+                  3.6
+                ],
+                [
+                  2.8,
+                  2.8,
+                  3.2,
+                  5.2
+                ],
+                [
+                  3.2,
+                  2.0,
+                  4.4,
+                  3.6
+                ],
+                [
+                  3.6,
+                  4.4,
+                  3.2,
+                  6.800000000000001
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                -8.881784197001252e-16,
+                0.0,
+                null,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -8.881784197001252e-16,
+                0.0
+              ],
+              [
+                8.881784197001252e-16,
+                8.881784197001252e-16,
+                1.7763568394002505e-15,
+                1.7763568394002505e-15
+              ],
+              [
+                0.0,
+                0.0,
+                -8.881784197001252e-16,
+                0.0
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              },
+              {
+                "name": "x2",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "riskNeutMulti",
+      "documentation": {
+        "examples": [
+          {
+            "expression": "riskNeutMulti(x1,x2)",
+            "inputs": {
+              "x1": [
+                [
+                  1.0,
+                  2.0,
+                  null,
+                  4.0
+                ],
+                [
+                  2.0,
+                  2.0,
+                  3.0,
+                  8.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  6.0,
+                  4.0
+                ],
+                [
+                  4.0,
+                  6.0,
+                  3.0,
+                  12.0
+                ]
+              ],
+              "x2": [
+                [
+                  2.4,
+                  2.8,
+                  null,
+                  3.6
+                ],
+                [
+                  2.8,
+                  2.8,
+                  3.2,
+                  5.2
+                ],
+                [
+                  3.2,
+                  2.0,
+                  4.4,
+                  3.6
+                ],
+                [
+                  3.6,
+                  4.4,
+                  3.2,
+                  6.800000000000001
+                ]
+              ]
+            },
+            "date_axis": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "stock_axis": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "output": [
+              [
+                -1.024096384780084,
+                -0.36144578224343116,
+                null,
+                0.9638554228298739
+              ],
+              [
+                -1.2990936549661827,
+                -1.2990936549661827,
+                -0.7703927485327804,
+                1.873111783634232
+              ],
+              [
+                -0.46391752502922623,
+                -2.1649484531432663,
+                1.2371134030848134,
+                0.10309278434212032
+              ],
+              [
+                -1.351351350748721,
+                -0.5405405398039926,
+                -1.756756756221086,
+                1.8918918930301931
+              ]
+            ],
+            "nonfinite_encoding": "null denotes NaN/Inf",
+            "verification": "executed_against_locked_native_runtime",
+            "output_shape": [
+              4,
+              4
+            ],
+            "output_axes": [
+              "date",
+              "code"
+            ],
+            "input_requirements": [
+              {
+                "name": "x1",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              },
+              {
+                "name": "x2",
+                "observations": 1,
+                "lookahead": 0,
+                "full_history": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

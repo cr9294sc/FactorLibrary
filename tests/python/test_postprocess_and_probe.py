@@ -19,7 +19,6 @@ from pathlib import Path
 
 import factorlib_core
 import numpy as np
-import pytest
 from factorlib.core.catalog import FactorCatalog
 from factorlib.core.evaluate import run_factor_workflow
 from factorlib.core.ops_ref import (
@@ -72,9 +71,8 @@ def _assert_mat_close(
 
 def test_postprocess_12_ops_against_locked_cpp_vectors():
     """验证 12 个后处理算子的 Rust 实现与 NumPy 参考实现严格对齐 C++ 真值向量 (< 1e-12)。"""
-    catalog_path = Path("Factor/data/catalog_full.json")
-    if not catalog_path.exists():
-        pytest.skip("Factor/data/catalog_full.json 不存在，跳过锁定真值向量测试")
+    catalog_path = Path(__file__).resolve().parent / "fixtures" / "postprocess_vectors.json"
+    assert catalog_path.exists(), f"缺少后处理锁定真值向量文件: {catalog_path}"
 
     data = json.loads(catalog_path.read_text(encoding="utf-8"))
     pp_entries = {e["name"]: e for e in data["postprocess_operators"]}

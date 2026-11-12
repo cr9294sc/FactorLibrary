@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FactorLibrary 研发工作台 REST API 与 Web 服务端 (python/server_main.py)。
+"""FactorLibrary 研发工作台 REST API 与 Web 服务端 (factorlib/workbench_server.py)。
 
 支持双模启动：
 1. 标准库模式 (零外部依赖，内置 ThreadingHTTPServer，在基础 Python 虚拟环境中开箱即用)；
@@ -19,9 +19,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-
-# 确保 python/ 目录可正常导入
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from factorlib.core.workbench import FactorWorkbenchService
 
@@ -86,7 +83,7 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
     """基于标准库的可并发 HTTP 请求处理器。"""
 
     service: FactorWorkbenchService = None  # type: ignore[assignment]
-    frontend_dir: Path = Path(__file__).resolve().parent.parent / "frontend"
+    frontend_dir: Path = Path(__file__).resolve().parents[2] / "frontend"
 
     def log_message(self, format: str, *args: Any) -> None:
         # 重定向至 Python 标准 logging 模块
@@ -404,7 +401,7 @@ try:
             raise HTTPException(status_code=404, detail="Report not found")
         return html
 
-    frontend_path = Path(__file__).resolve().parent.parent / "frontend"
+    frontend_path = Path(__file__).resolve().parents[2] / "frontend"
     if frontend_path.exists():
         app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
 except ImportError:

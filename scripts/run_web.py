@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 from factorlib.core.workbench import FactorWorkbenchService
-from server_main import run_std_server
+from factorlib.workbench_server import run_std_server
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:

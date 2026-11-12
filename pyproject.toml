@@ -48,10 +48,6 @@ exclude = [
     ".venv",
     ".venv-*",
     "legacy",
-    "pyrust-bt-main",
-    "python/pyrust_bt",
-    "python/server_main.py",
-    "tests/test_*.py",
     "build",
     "dist",
 ]

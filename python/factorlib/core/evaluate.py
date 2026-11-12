@@ -370,12 +370,151 @@ def _summarize_ic_slice(
     }
 
 
+def calc_long_excess_metrics(
+    long_rets: np.ndarray,
+    bench_rets: np.ndarray,
+    dates: list[str] | None = None,
+    trading_days_per_year: float = 250.0,
+    compute_annual: bool = True,
+) -> dict[str, Any]:
+    """计算多头超额收益系列指标（严格对齐 FactorLab 规范：复利几何年化、加法回撤、分年统计）。
+
+    Parameters
+    ----------
+    long_rets : np.ndarray
+        多头（如 G10）日收益率 1D 数组
+    bench_rets : np.ndarray
+        对齐到相同持仓窗口的基准日收益率 1D 数组
+    dates : list[str] | None
+        日期字符串列表（如 "20160104"），用于分年度切分与回撤起止点定位
+    trading_days_per_year : float
+        年化交易日基数（默认 250.0）
+    compute_annual : bool
+        是否递归切分计算分年度统计 (默认 True)
+
+    Returns
+    -------
+    dict[str, Any]
+        含 annual_excess_return (几何复利), annual_excess_return_arithmetic (算术单利),
+        annual_excess_volatility, excess_sharpe, win_rate,
+        additive_max_drawdown, average_drawdown, drawdown_start, drawdown_end,
+        annual_breakdown, cumulative_additive, cumulative_compound
+    """
+    l_arr = np.asarray(long_rets, dtype=np.float64)
+    b_arr = np.asarray(bench_rets, dtype=np.float64)
+    n_total = min(len(l_arr), len(b_arr))
+    if n_total == 0:
+        return {
+            "annual_excess_return": 0.0,
+            "annual_excess_return_arithmetic": 0.0,
+            "annual_excess_volatility": 0.0,
+            "excess_sharpe": 0.0,
+            "win_rate": 0.0,
+            "average_drawdown": 0.0,
+            "additive_max_drawdown": 0.0,
+            "drawdown_start": "",
+            "drawdown_end": "",
+            "annual_breakdown": {},
+            "cumulative_additive": [],
+            "cumulative_compound": [],
+        }
+
+    excess_daily = l_arr[:n_total] - b_arr[:n_total]
+    valid_mask = np.isfinite(excess_daily)
+    valid_ex = excess_daily[valid_mask]
+    n_valid = len(valid_ex)
+
+    if n_valid > 0 and np.all(1.0 + valid_ex > 0.0):
+        # 几何复利年化: (prod(1 + r))^(250 / N) - 1
+        log_sum = float(np.sum(np.log1p(valid_ex)))
+        ann_ret = float(np.expm1(log_sum * (trading_days_per_year / float(n_valid))))
+    elif n_valid > 0:
+        ann_ret = float(np.mean(valid_ex) * trading_days_per_year)
+    else:
+        ann_ret = 0.0
+
+    ann_ret_arith = float(np.mean(valid_ex) * trading_days_per_year) if n_valid > 0 else 0.0
+    ann_vol = (
+        float(np.std(valid_ex, ddof=1) * np.sqrt(trading_days_per_year)) if n_valid > 1 else 0.0
+    )
+    sharpe = ann_ret / ann_vol if ann_vol > 1e-12 else 0.0
+    win_rate = float(np.mean(valid_ex > 0.0)) if n_valid > 0 else 0.0
+
+    # 加法累计超额收益曲线与最大回撤（FactorLab 规范: DD_t = Peak_t - Cum_t）
+    cum_clean = np.where(valid_mask, excess_daily, 0.0)
+    cum_excess_additive = np.cumsum(cum_clean)
+    cum_excess_compound = np.cumprod(1.0 + cum_clean) - 1.0
+
+    cum = 0.0
+    peak = 0.0
+    first_date = dates[0] if dates and len(dates) > 0 else ""
+    peak_date = first_date
+    max_dd = 0.0
+    max_dd_start = first_date
+    max_dd_end = first_date
+    dds: list[float] = []
+
+    for i in range(n_total):
+        if not valid_mask[i]:
+            continue
+        r = excess_daily[i]
+        cum += r
+        d_str = dates[i] if dates and i < len(dates) else str(i)
+        if cum > peak:
+            peak = cum
+            peak_date = d_str
+        dd = peak - cum
+        dds.append(dd)
+        if dd > max_dd:
+            max_dd = dd
+            max_dd_start = peak_date
+            max_dd_end = d_str
+    avg_dd = float(np.mean(dds)) if dds else 0.0
+
+    annual_breakdown: dict[str, dict[str, Any]] = {}
+    if compute_annual and dates and len(dates) >= n_total:
+        sub_dates = dates[:n_total]
+        years = sorted({d[:4] for d in sub_dates if len(d) >= 4})
+        for y in years:
+            y_indices = [i for i, d in enumerate(sub_dates) if d.startswith(y)]
+            if not y_indices:
+                continue
+            y_long = l_arr[y_indices]
+            y_bench = b_arr[y_indices]
+            y_d = [sub_dates[i] for i in y_indices]
+            y_res = calc_long_excess_metrics(
+                y_long,
+                y_bench,
+                dates=y_d,
+                trading_days_per_year=trading_days_per_year,
+                compute_annual=False,
+            )
+            annual_breakdown[y] = y_res
+
+    return {
+        "annual_excess_return": ann_ret,
+        "annual_excess_return_arithmetic": ann_ret_arith,
+        "annual_excess_volatility": ann_vol,
+        "excess_sharpe": sharpe,
+        "win_rate": win_rate,
+        "average_drawdown": avg_dd,
+        "additive_max_drawdown": max_dd,
+        "drawdown_start": max_dd_start,
+        "drawdown_end": max_dd_end,
+        "annual_breakdown": annual_breakdown,
+        "cumulative_additive": [float(x) for x in cum_excess_additive],
+        "cumulative_compound": [float(x) for x in cum_excess_compound],
+    }
+
+
 def evaluate_factor_v4_stats(
     factor_matrix: np.ndarray,
     panel: Panel,
     n_quantiles: int = 5,
     sign: int = 1,
     min_names: int = 5,
+    benchmark_rets: np.ndarray | None = None,
+    trading_days_per_year: float = 250.0,
 ) -> dict[str, Any]:
     """执行 FactorLab Schema v4 标准统计分布评价 (Layer 1 Statistical Evaluation)。"""
     T, N = factor_matrix.shape
@@ -403,8 +542,11 @@ def evaluate_factor_v4_stats(
     ic_5d_series = np.full(T, np.nan, dtype=np.float64)
 
     group_daily_rets = {f"G{q + 1}": np.zeros(T, dtype=np.float64) for q in range(n_quantiles)}
-    bench_daily_rets = np.zeros(T, dtype=np.float64)
-    top_turnover = np.zeros(T, dtype=np.float64)
+    if benchmark_rets is not None:
+        bench_daily_rets = np.asarray(benchmark_rets, dtype=np.float64)
+    else:
+        bench_daily_rets = np.full(T, np.nan, dtype=np.float64)
+    top_turnover = np.full(T, np.nan, dtype=np.float64)
     prev_top_set: set[int] = set()
 
     for t in range(T):
@@ -431,8 +573,9 @@ def evaluate_factor_v4_stats(
                 ext_pos = order
             perc_ic_series[t] = _pearson_corr_1d(fx[ext_pos], ry[ext_pos])
 
-            # 等权商品池基准日收益 (Equal-Weight Universe Benchmark)
-            bench_daily_rets[t] = float(np.mean(ry))
+            # 等权商品池基准日收益 (Equal-Weight Universe Benchmark: 若未传入外部基准)
+            if benchmark_rets is None:
+                bench_daily_rets[t] = float(np.mean(ry))
 
             # 分位数分组收益 G1 (最低) .. G{n_quantiles} (最高/多头组)
             for q in range(n_quantiles):
@@ -470,14 +613,18 @@ def evaluate_factor_v4_stats(
     # 分组复利净值与年化收益
     group_nav_series: dict[str, list[float]] = {}
     group_summary: dict[str, dict[str, float]] = {}
-    n_years = max(T / 252.0, 1.0 / 252.0)
+    n_years = max(T / trading_days_per_year, 1.0 / trading_days_per_year)
 
     for g_key, g_rets in group_daily_rets.items():
         nav = np.cumprod(1.0 + g_rets)
         group_nav_series[g_key] = [float(x) for x in nav]
         tot_ret = float(nav[-1] - 1.0) if len(nav) > 0 else 0.0
         ann_ret = float((1.0 + max(tot_ret, -0.9999)) ** (1.0 / n_years) - 1.0)
-        vol = float(np.std(g_rets, ddof=1) * np.sqrt(252.0)) if len(g_rets) > 1 else 0.0
+        vol = (
+            float(np.std(g_rets, ddof=1) * np.sqrt(trading_days_per_year))
+            if len(g_rets) > 1
+            else 0.0
+        )
         sharpe = ann_ret / vol if vol > 1e-12 else 0.0
         group_summary[g_key] = {
             "total_return": tot_ret,
@@ -486,42 +633,24 @@ def evaluate_factor_v4_stats(
             "sharpe": sharpe,
         }
 
-    # 多头超额分析 (Long Excess Analysis: Top Group vs Equal-Weight Universe Benchmark)
+    # 多头超额分析 (Long Excess Analysis: Top Group vs Benchmark)
     top_key = f"G{n_quantiles}"
     long_rets = group_daily_rets[top_key]
-    excess_rets = long_rets - bench_daily_rets
-    cum_excess_additive = np.cumsum(excess_rets)
-    cum_excess_compound = np.cumprod(1.0 + excess_rets)
-
-    # 加法口径超额最大回撤 (FactorLab 规范: peak(cum_excess) - cum_excess)
-    peaks_add = np.maximum.accumulate(np.insert(cum_excess_additive, 0, 0.0))[1:]
-    dd_add = peaks_add - cum_excess_additive
-    additive_max_dd = float(np.max(dd_add)) if len(dd_add) > 0 else 0.0
-
-    ex_ann_ret = float(np.mean(excess_rets) * 252.0) if len(excess_rets) > 0 else 0.0
-    ex_ann_vol = (
-        float(np.std(excess_rets, ddof=1) * np.sqrt(252.0)) if len(excess_rets) > 1 else 0.0
+    excess_res = calc_long_excess_metrics(
+        long_rets,
+        bench_daily_rets,
+        dates=dates,
+        trading_days_per_year=trading_days_per_year,
     )
-    ex_sharpe = ex_ann_ret / ex_ann_vol if ex_ann_vol > 1e-12 else 0.0
-    ex_win_rate = float(np.mean(excess_rets > 0.0)) if len(excess_rets) > 0 else 0.0
 
-    long_annual: dict[str, dict[str, float]] = {}
-    for y in years:
+    valid_to = top_turnover[np.isfinite(top_turnover)]
+    mean_top_turnover = float(np.mean(valid_to)) if len(valid_to) > 0 else 0.0
+
+    long_annual = excess_res["annual_breakdown"]
+    for y, y_dict in long_annual.items():
         y_idx = [i for i, d in enumerate(dates) if d.startswith(y)]
-        y_ex = excess_rets[y_idx]
-        y_cum = np.cumsum(y_ex)
-        y_peaks = np.maximum.accumulate(np.insert(y_cum, 0, 0.0))[1:]
-        y_dd = float(np.max(y_peaks - y_cum)) if len(y_cum) > 0 else 0.0
-        y_ret = float(np.mean(y_ex) * 252.0) if len(y_ex) > 0 else 0.0
-        y_vol = float(np.std(y_ex, ddof=1) * np.sqrt(252.0)) if len(y_ex) > 1 else 0.0
-        long_annual[y] = {
-            "annual_excess_return": y_ret,
-            "annual_excess_volatility": y_vol,
-            "excess_sharpe": y_ret / y_vol if y_vol > 1e-12 else 0.0,
-            "additive_max_drawdown": y_dd,
-            "win_rate": float(np.mean(y_ex > 0.0)) if len(y_ex) > 0 else 0.0,
-            "daily_turnover": float(np.mean(top_turnover[y_idx])) if len(y_idx) > 0 else 0.0,
-        }
+        y_to = top_turnover[y_idx][np.isfinite(top_turnover[y_idx])]
+        y_dict["daily_turnover"] = float(np.mean(y_to)) if len(y_to) > 0 else 0.0
 
     # 6 大期货风格暴露归因
     styles_dict = compute_futures_styles(panel)
@@ -533,6 +662,7 @@ def evaluate_factor_v4_stats(
         sign=sign,
     )
 
+    clean_bench_rets = np.where(np.isfinite(bench_daily_rets), bench_daily_rets, 0.0)
     return {
         "schema_version": "v4",
         "sign": sign,
@@ -551,20 +681,24 @@ def evaluate_factor_v4_stats(
             "n_quantiles": n_quantiles,
             "summary": group_summary,
             "nav_series": group_nav_series,
-            "benchmark_nav": [float(x) for x in np.cumprod(1.0 + bench_daily_rets)],
+            "benchmark_nav": [float(x) for x in np.cumprod(1.0 + clean_bench_rets)],
         },
         "long_analysis": {
             "summary": {
-                "annual_excess_return": ex_ann_ret,
-                "annual_excess_volatility": ex_ann_vol,
-                "excess_sharpe": ex_sharpe,
-                "additive_max_drawdown": additive_max_dd,
-                "win_rate": ex_win_rate,
-                "daily_turnover": float(np.mean(top_turnover)) if len(top_turnover) > 0 else 0.0,
+                "annual_excess_return": excess_res["annual_excess_return"],
+                "annual_excess_return_arithmetic": excess_res["annual_excess_return_arithmetic"],
+                "annual_excess_volatility": excess_res["annual_excess_volatility"],
+                "excess_sharpe": excess_res["excess_sharpe"],
+                "additive_max_drawdown": excess_res["additive_max_drawdown"],
+                "average_drawdown": excess_res["average_drawdown"],
+                "drawdown_start": excess_res["drawdown_start"],
+                "drawdown_end": excess_res["drawdown_end"],
+                "win_rate": excess_res["win_rate"],
+                "daily_turnover": mean_top_turnover,
             },
             "annual": long_annual,
-            "cum_excess_additive": [float(x) for x in cum_excess_additive],
-            "cum_excess_compound": [float(x) for x in cum_excess_compound],
+            "cum_excess_additive": excess_res["cumulative_additive"],
+            "cum_excess_compound": excess_res["cumulative_compound"],
         },
         "style_exposure": style_exp,
     }

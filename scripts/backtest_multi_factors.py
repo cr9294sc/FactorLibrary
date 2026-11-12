@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import glob
-import math
 import os
 import sys
 import time
@@ -29,8 +28,9 @@ import factorlib_core
 import numpy as np
 import polars as pl
 
-# 引入本地 FactorLab 客户端
+# 引入本地 FactorLab 客户端与核心评价指标
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")))
+from factorlib.core.evaluate import calc_long_excess_metrics  # noqa: E402
 from factorlib.core.mcp_client import call_mcp_tool  # noqa: E402
 
 FACTOR_CONFIGS = [
@@ -304,10 +304,17 @@ def load_shared_stock_data(
         )
         .sort("trading_date")
     )
-    bench_dict = {row[1]: row[5] for row in df_bench.iter_rows()}
-    bench_close = np.array([bench_dict.get(d, np.nan) for d in dates], dtype=np.float64)
-    bench_ret = np.full(T, np.nan, dtype=np.float64)
-    bench_ret[1:] = (bench_close[1:] / bench_close[:-1]) - 1.0
+    bench_open_dict = {row[1]: row[2] for row in df_bench.iter_rows()}
+    bench_close_dict = {row[1]: row[5] for row in df_bench.iter_rows()}
+    bench_open = np.array([bench_open_dict.get(d, np.nan) for d in dates], dtype=np.float64)
+    bench_close = np.array([bench_close_dict.get(d, np.nan) for d in dates], dtype=np.float64)
+
+    # 严格对齐信号日 t 对应的 [T+1, T+2] 远期持仓窗口 (消灭 2 个交易日跨期错配)
+    bench_fwd_open_1 = np.full(T, np.nan, dtype=np.float64)
+    bench_fwd_open_1[:-2] = (bench_open[2:] / bench_open[1:-1]) - 1.0
+
+    bench_fwd_close_1 = np.full(T, np.nan, dtype=np.float64)
+    bench_fwd_close_1[:-2] = (bench_close[2:] / bench_close[1:-1]) - 1.0
 
     print(f"      数据构建完成，耗时: {time.time() - t0:.2f} 秒")
 
@@ -323,7 +330,9 @@ def load_shared_stock_data(
         "is_suspended": susp_mat,
         "listed_days": listed_days_mat,
         "industry_code": ind_mat,
-        "bench_ret": bench_ret,
+        "bench_fwd_open_1": bench_fwd_open_1,
+        "bench_fwd_close_1": bench_fwd_close_1,
+        "bench_ret": bench_fwd_close_1,  # 默认 Close-to-Close 远期基准
     }
     date_strs = [d.strftime("%Y%m%d") for d in dates]
     return date_strs, symbols, matrices
@@ -407,19 +416,21 @@ def evaluate_single_factor(
     )
     turnover_res = factorlib_core.calc_turnover(sub_factor, eval_mask, min_names=10)
 
-    # 多头超额 (G10 vs Benchmark)
+    # 多头超额 (G10 vs Benchmark，严格对齐持仓窗口与几何复利年化)
     g10_daily = np.asarray(q_res["group_daily_returns"][9])
     v_days = len(g10_daily)
-    excess_daily = g10_daily - sub_bench_ret[:v_days]
-    excess_mean = float(np.nanmean(excess_daily))
-    excess_std = float(np.nanstd(excess_daily, ddof=1))
-    excess_ann_ret = excess_mean * 250.0
-    excess_ann_vol = excess_std * math.sqrt(250.0) if excess_std > 0 else 0.0
-    excess_sharpe = excess_ann_ret / excess_ann_vol if excess_ann_vol > 0 else 0.0
-
-    cum_excess = np.nancumsum(excess_daily)
-    peak = np.maximum.accumulate(cum_excess)
-    max_dd = float(np.nanmax(peak - cum_excess)) if len(cum_excess) > 0 else 0.0
+    sub_bench_slice = sub_bench_ret[:v_days]
+    excess_res = calc_long_excess_metrics(
+        g10_daily,
+        sub_bench_slice,
+        dates=sub_dates[:v_days],
+        trading_days_per_year=250.0,
+    )
+    excess_ann_ret = excess_res["annual_excess_return"]
+    excess_ann_ret_arith = excess_res["annual_excess_return_arithmetic"]
+    excess_ann_vol = excess_res["annual_excess_volatility"]
+    excess_sharpe = excess_res["excess_sharpe"]
+    max_dd = excess_res["additive_max_drawdown"]
 
     # 分年度指标
     years = sorted({d[:4] for d in sub_dates})
@@ -432,11 +443,16 @@ def evaluate_single_factor(
         y_r1 = sub_ret_1d[y_indices]
         y_m1 = eval_mask[y_indices]
         y_rankic = factorlib_core.calc_ic(y_fac, y_r1, y_m1, rank=True, horizon=1)
+        y_ex = excess_res["annual_breakdown"].get(y, {})
         annual_stats.append(
             {
                 "year": y,
                 "rankic": y_rankic["ic_mean"],
                 "rankic_ir": y_rankic["ic_ir"],
+                "excess_ann_ret": y_ex.get("annual_excess_return", 0.0),
+                "excess_ann_ret_arithmetic": y_ex.get("annual_excess_return_arithmetic", 0.0),
+                "excess_sharpe": y_ex.get("excess_sharpe", 0.0),
+                "max_drawdown": y_ex.get("additive_max_drawdown", 0.0),
             }
         )
 
@@ -465,6 +481,8 @@ def evaluate_single_factor(
         "ls_annual_ret": q_res["ls_annual_ret"],
         "turnover": turnover_res["turnover"],
         "excess_annual_ret": excess_ann_ret,
+        "excess_annual_ret_arithmetic": excess_ann_ret_arith,
+        "excess_annual_vol": excess_ann_vol,
         "excess_sharpe": excess_sharpe,
         "excess_max_dd": max_dd,
         "group_returns": q_res["group_returns"],
@@ -619,7 +637,13 @@ def main():
     # 3. 预先构建远期收益率矩阵
     print("[3/4] 正在预计算远期多周期收益率矩阵 (h in [1, 2, 5, 10])...")
     T, N = len(dates), len(symbols)
-    price_proxy = matrices["vwap_adj"]
+    price_proxy_mode = "vwap_adj"
+    price_proxy = matrices[price_proxy_mode]
+    matrices["bench_ret"] = (
+        matrices["bench_fwd_open_1"]
+        if price_proxy_mode == "open_adj"
+        else matrices["bench_fwd_close_1"]
+    )
     fwd_ret_matrices: dict[int, np.ndarray] = {}
     for h in [1, 2, 5, 10]:
         fwd = np.full((T, N), np.nan, dtype=np.float64)

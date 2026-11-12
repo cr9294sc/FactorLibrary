@@ -13,7 +13,6 @@ Volume_Price_2_H5_2 因子本地股票回测与 FactorLab 线上对账脚本
 from __future__ import annotations
 
 import glob
-import math
 import os
 import sys
 import time
@@ -24,8 +23,9 @@ import factorlib_core
 import numpy as np
 import polars as pl
 
-# 引入本地 FactorLab 客户端
+# 引入本地 FactorLab 客户端与核心评价指标
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")))
+from factorlib.core.evaluate import calc_long_excess_metrics  # noqa: E402
 from factorlib.core.mcp_client import call_mcp_tool  # noqa: E402
 
 
@@ -213,10 +213,17 @@ def load_local_stock_data(
         )
         .sort("trading_date")
     )
-    bench_dict = {row[1]: row[5] for row in df_bench.iter_rows()}  # close
-    bench_close = np.array([bench_dict.get(d, np.nan) for d in dates], dtype=np.float64)
-    bench_ret = np.full(T, np.nan, dtype=np.float64)
-    bench_ret[1:] = (bench_close[1:] / bench_close[:-1]) - 1.0
+    bench_open_dict = {row[1]: row[2] for row in df_bench.iter_rows()}
+    bench_close_dict = {row[1]: row[5] for row in df_bench.iter_rows()}  # close
+    bench_open = np.array([bench_open_dict.get(d, np.nan) for d in dates], dtype=np.float64)
+    bench_close = np.array([bench_close_dict.get(d, np.nan) for d in dates], dtype=np.float64)
+
+    # 严格对齐信号日 t 对应的 [T+1, T+2] 远期持仓窗口 (消灭 2 个交易日跨期错配)
+    bench_fwd_open_1 = np.full(T, np.nan, dtype=np.float64)
+    bench_fwd_open_1[:-2] = (bench_open[2:] / bench_open[1:-1]) - 1.0
+
+    bench_fwd_close_1 = np.full(T, np.nan, dtype=np.float64)
+    bench_fwd_close_1[:-2] = (bench_close[2:] / bench_close[1:-1]) - 1.0
 
     print(f"      数据构建完成，耗时: {time.time() - t0:.2f} 秒")
 
@@ -230,7 +237,9 @@ def load_local_stock_data(
         "is_suspended": susp_mat,
         "listed_days": listed_days_mat,
         "industry_code": ind_mat,
-        "bench_ret": bench_ret,
+        "bench_fwd_open_1": bench_fwd_open_1,
+        "bench_fwd_close_1": bench_fwd_close_1,
+        "bench_ret": bench_fwd_close_1,
     }
     date_strs = [d.strftime("%Y%m%d") for d in dates]
     return date_strs, symbols, matrices
@@ -304,7 +313,13 @@ def run_local_backtest_evaluation(
     # 1. 远期收益率计算: 按照 FactorLab 规则
     # t 日 15:00 信号 -> t+1 日 VwapBegin30 进场 -> t+1+h 日 VwapBegin30 出场
     # 本地使用 vwap_adj (全天均价) 或 open_adj 作为代理价格 P_adj
-    price_proxy = matrices["vwap_adj"]  # 或 open_adj
+    price_proxy_mode = "vwap_adj"
+    price_proxy = matrices[price_proxy_mode]  # 或 open_adj
+    matrices["bench_ret"] = (
+        matrices["bench_fwd_open_1"]
+        if price_proxy_mode == "open_adj"
+        else matrices["bench_fwd_close_1"]
+    )
 
     fwd_ret_1d = np.full((T, N), np.nan, dtype=np.float64)
     fwd_ret_2d = np.full((T, N), np.nan, dtype=np.float64)
@@ -363,23 +378,24 @@ def run_local_backtest_evaluation(
     )
     turnover_res = factorlib_core.calc_turnover(sub_factor, eval_mask, min_names=10)
 
-    # 多头超额 (G10 vs 000985.CSI)
+    # 多头超额 (G10 vs 000985.CSI, 严格对齐持仓窗口与几何复利年化)
     # 取 G10 每日收益
     g10_daily = np.asarray(q_res["group_daily_returns"][9])
     # 相对中证全指超额
     valid_days = len(g10_daily)
-    excess_daily = g10_daily - sub_bench_ret[:valid_days]
-    excess_mean = float(np.nanmean(excess_daily))
-    excess_std = float(np.nanstd(excess_daily, ddof=1))
-    excess_annual_ret = excess_mean * 250.0
-    excess_annual_vol = excess_std * math.sqrt(250.0) if excess_std > 0 else 0.0
-    excess_sharpe = excess_annual_ret / excess_annual_vol if excess_annual_vol > 0 else 0.0
-
-    # 累计超额与最大回撤
-    cum_excess = np.nancumsum(excess_daily)
-    peak = np.maximum.accumulate(cum_excess)
-    drawdowns = peak - cum_excess
-    max_dd = float(np.nanmax(drawdowns)) if len(drawdowns) > 0 else 0.0
+    sub_bench_slice = sub_bench_ret[:valid_days]
+    excess_res = calc_long_excess_metrics(
+        g10_daily,
+        sub_bench_slice,
+        dates=sub_dates[:valid_days],
+        trading_days_per_year=250.0,
+    )
+    excess_annual_ret = excess_res["annual_excess_return"]
+    excess_annual_ret_arith = excess_res["annual_excess_return_arithmetic"]
+    excess_annual_vol = excess_res["annual_excess_volatility"]
+    excess_sharpe = excess_res["excess_sharpe"]
+    max_dd = excess_res["additive_max_drawdown"]
+    avg_dd = excess_res["average_drawdown"]
 
     # 5. 分年度统计 (2016 .. 2024)
     annual_stats = []
@@ -393,7 +409,6 @@ def run_local_backtest_evaluation(
         y_ret_5d = sub_ret_5d[y_indices]
         y_mask_1d = eval_mask[y_indices]
         y_mask_5d = eval_mask_5d[y_indices]
-        y_bench = sub_bench_ret[y_indices]
 
         y_ic = factorlib_core.calc_ic(y_factor, y_ret_1d, y_mask_1d, rank=False, horizon=1)
         y_rankic = factorlib_core.calc_ic(y_factor, y_ret_1d, y_mask_1d, rank=True, horizon=1)
@@ -403,18 +418,12 @@ def run_local_backtest_evaluation(
         )
 
         # 多头超额 (G10 vs Bench)
-        y_g10 = np.asarray(y_q["group_daily_returns"][9])
-        y_v_days = len(y_g10)
-        y_excess = y_g10 - y_bench[:y_v_days]
-        y_ex_mean = float(np.nanmean(y_excess))
-        y_ex_std = float(np.nanstd(y_excess, ddof=1))
-        y_ann_ret = y_ex_mean * 250.0
-        y_ann_vol = y_ex_std * math.sqrt(250.0) if y_ex_std > 0 else 0.0
-        y_sharpe = y_ann_ret / y_ann_vol if y_ann_vol > 0 else 0.0
-
-        y_cum_ex = np.nancumsum(y_excess)
-        y_peak = np.maximum.accumulate(y_cum_ex)
-        y_dd = float(np.nanmax(y_peak - y_cum_ex)) if len(y_cum_ex) > 0 else 0.0
+        y_ex_res = excess_res["annual_breakdown"].get(y, {})
+        y_ann_ret = y_ex_res.get("annual_excess_return", 0.0)
+        y_ann_ret_arith = y_ex_res.get("annual_excess_return_arithmetic", 0.0)
+        y_ann_vol = y_ex_res.get("annual_excess_volatility", 0.0)
+        y_sharpe = y_ex_res.get("excess_sharpe", 0.0)
+        y_dd = y_ex_res.get("additive_max_drawdown", 0.0)
 
         annual_stats.append(
             {
@@ -428,6 +437,8 @@ def run_local_backtest_evaluation(
                 "ic_5d_ir": y_ic_5d["ic_ir"],
                 "ls_daily": y_q["ls_mean"],
                 "excess_ann_ret": y_ann_ret,
+                "excess_ann_ret_arithmetic": y_ann_ret_arith,
+                "excess_ann_vol": y_ann_vol,
                 "excess_sharpe": y_sharpe,
                 "excess_max_dd": y_dd,
             }
@@ -446,9 +457,13 @@ def run_local_backtest_evaluation(
         "turnover": turnover_res,
         "long_excess": {
             "annual_return": excess_annual_ret,
+            "annual_return_arithmetic": excess_annual_ret_arith,
             "annual_vol": excess_annual_vol,
             "sharpe": excess_sharpe,
             "max_dd": max_dd,
+            "average_drawdown": avg_dd,
+            "drawdown_start": excess_res["drawdown_start"],
+            "drawdown_end": excess_res["drawdown_end"],
         },
         "annual_breakdown": annual_stats,
     }

@@ -8,6 +8,7 @@ from factorlib.core.catalog import (
 from factorlib.core.evaluate import (
     DualLayerWorkflowResult,
     FactorEvaluationResult,
+    calc_long_excess_metrics,
     evaluate_factor,
     evaluate_factor_v4_stats,
     get_seed_factors,
@@ -68,6 +69,7 @@ __all__ = [
     "DualLayerWorkflowResult",
     "evaluate_factor",
     "evaluate_factor_v4_stats",
+    "calc_long_excess_metrics",
     "run_factor_workflow",
     "get_seed_factors",
     "register_seed_factors",

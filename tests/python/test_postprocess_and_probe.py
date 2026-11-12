@@ -418,3 +418,45 @@ def test_end_to_end_run_factor_workflow_and_versioning(tmp_path: Path):
     versions = reg.list_factor_versions(wf_res.factor_id)
     assert len(versions) == 1
     assert versions[0].version == 1
+
+
+def test_futures_styles_universe_mask_isolation():
+    """验证 compute_futures_styles 在非在池标的 (mask == False) 处完全隔离极端值，
+    且非在池标的位置严格输出 NaN，在池标的结果不受污染。
+    """
+    from factorlib.core.styles import compute_futures_styles
+
+    panel_clean = _make_synthetic_panel(T=30, N=10, seed=42)
+    panel_polluted = _make_synthetic_panel(T=30, N=10, seed=42)
+
+    # 构造品种池掩码：
+    # 1. 标的 8, 9 为全周期非在池僵尸合约 (如低流动性僵尸品种)
+    # 2. 标的 7 从第 10 天起出池 (如临近交割退池)
+    mask = np.ones((30, 10), dtype=bool, order="F")
+    mask[:, 8:] = False
+    mask[10:, 7] = False
+
+    panel_clean.mask = mask
+    panel_polluted.mask = mask
+
+    # 在 panel_polluted 的 ~mask 区域注入极端污染值 (1e9)
+    for k in panel_polluted.fields:
+        if k not in ("sector", "listed_days", "in_universe_mask", "limit_mask"):
+            panel_polluted.fields[k][~mask] = 1e9
+
+    styles_clean = compute_futures_styles(panel_clean)
+    styles_polluted = compute_futures_styles(panel_polluted)
+
+    for s_name in ("SIZE", "VOLATILITY", "MOMENTUM", "CARRY", "INVENTORY", "POSITIONING"):
+        sc = styles_clean[s_name]
+        sp = styles_polluted[s_name]
+
+        # 1. 非在池标的位置严格输出 NaN
+        assert np.all(np.isnan(sc[~mask])), f"style {s_name} clean at ~mask must be NaN"
+        assert np.all(np.isnan(sp[~mask])), f"style {s_name} polluted at ~mask must be NaN"
+
+        # 2. 全周期在池标的 (0..6) 无论在全周期还是出池期，计算结果与基准保持 0 bit 差异
+        _assert_mat_close(sc[:, :7], sp[:, :7], tol=1e-12, msg=f"style {s_name} active")
+
+        # 3. 标的 7 在前 10 天（仍在池时）计算结果不受后 20 天退池极端值影响
+        _assert_mat_close(sc[:10, 7], sp[:10, 7], tol=1e-12, msg=f"style {s_name} s7 early")

@@ -866,7 +866,7 @@ def ts_resid(x: np.ndarray, y: np.ndarray, d: int) -> np.ndarray:
 
 
 def _rank_1d_normalized(row: np.ndarray) -> np.ndarray:
-    out = np.full_like(row, np.nan)
+    out = np.full_like(row, np.nan, dtype=np.float64)
     m = np.isfinite(row)
     idx = np.where(m)[0]
     k = len(idx)
@@ -875,17 +875,28 @@ def _rank_1d_normalized(row: np.ndarray) -> np.ndarray:
     if k == 1:
         out[idx[0]] = 0.5
         return out
-    vals = row[idx]
-    for pos, col_j in enumerate(idx):
-        v = vals[pos]
-        tol = STD_EPS * max(1.0, abs(float(v)))
-        c_eq = float(np.sum(np.abs(vals - v) <= tol))
-        c_less = float(np.sum(vals < (v - tol)))
-        out[col_j] = (c_less + 0.5 * (c_eq - 1.0)) / (k - 1.0)
+    # 严格对齐 Rust compute_normalized_ranks 的左锚点分段排序算法
+    order = np.argsort(row[idx], kind="stable")
+    sorted_idx = idx[order]
+    sorted_vals = row[sorted_idx]
+    denom = float(k - 1)
+    i = 0
+    while i < k:
+        vi = float(sorted_vals[i])
+        tol = STD_EPS * max(1.0, abs(vi))
+        j = i + 1
+        while j < k and abs(float(sorted_vals[j]) - vi) <= tol:
+            j += 1
+        avg_rank = 0.5 * float(i + j - 1) / denom
+        for p in range(i, j):
+            out[sorted_idx[p]] = avg_rank
+        i = j
     return out
 
 
-def cs_rank(x: np.ndarray) -> np.ndarray:
+def cs_rank(x: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
     xc = _clean(x)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -894,7 +905,9 @@ def cs_rank(x: np.ndarray) -> np.ndarray:
     return out
 
 
-def cs_demean(x: np.ndarray) -> np.ndarray:
+def cs_demean(x: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
     xc = _clean(x)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -908,7 +921,9 @@ def cs_demean(x: np.ndarray) -> np.ndarray:
     return _clean(out)
 
 
-def cs_zscore(x: np.ndarray) -> np.ndarray:
+def cs_zscore(x: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
     xc = _clean(x)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -929,7 +944,9 @@ def cs_zscore(x: np.ndarray) -> np.ndarray:
     return _clean(out)
 
 
-def cs_scale(x: np.ndarray) -> np.ndarray:
+def cs_scale(x: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
     xc = _clean(x)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -943,7 +960,9 @@ def cs_scale(x: np.ndarray) -> np.ndarray:
     return _clean(out)
 
 
-def cs_winsorize(x: np.ndarray) -> np.ndarray:
+def cs_winsorize(x: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
     xc = _clean(x)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -962,7 +981,10 @@ def cs_winsorize(x: np.ndarray) -> np.ndarray:
     return _clean(out)
 
 
-def cs_neutralize(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+def cs_neutralize(y: np.ndarray, x: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        y = np.where(mask, y, np.nan)
+        x = np.where(mask, x, np.nan)
     yc, xc = _clean(y), _clean(x)
     T, N = yc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -986,7 +1008,10 @@ def cs_neutralize(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     return _clean(out)
 
 
-def group_demean(x: np.ndarray, group: np.ndarray) -> np.ndarray:
+def group_demean(x: np.ndarray, group: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
+        group = np.where(mask, group, np.nan)
     xc, gc = _clean(x), _clean(group)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -1004,7 +1029,10 @@ def group_demean(x: np.ndarray, group: np.ndarray) -> np.ndarray:
     return _clean(out)
 
 
-def group_rank(x: np.ndarray, group: np.ndarray) -> np.ndarray:
+def group_rank(x: np.ndarray, group: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
+        group = np.where(mask, group, np.nan)
     xc, gc = _clean(x), _clean(group)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")
@@ -1021,7 +1049,10 @@ def group_rank(x: np.ndarray, group: np.ndarray) -> np.ndarray:
     return out
 
 
-def group_zscore(x: np.ndarray, group: np.ndarray) -> np.ndarray:
+def group_zscore(x: np.ndarray, group: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    if mask is not None:
+        x = np.where(mask, x, np.nan)
+        group = np.where(mask, group, np.nan)
     xc, gc = _clean(x), _clean(group)
     T, N = xc.shape
     out = np.full((T, N), np.nan, dtype=np.float64, order="F")

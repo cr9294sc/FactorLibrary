@@ -91,9 +91,10 @@ STYLE_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
-def _normalize_style_matrix(raw: np.ndarray) -> np.ndarray:
+def _normalize_style_matrix(raw: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
     """对原始风格矩阵逐行执行 MAD(3.0) 缩尾 + zScore(ddof=0) 标准化。"""
-    f_raw = np.asfortranarray(raw, dtype=np.float64)
+    filtered = np.where(mask, raw, np.nan) if mask is not None else raw
+    f_raw = np.asfortranarray(filtered, dtype=np.float64)
     mad_clipped = np.asarray(factorlib_core.apply_postprocess_op("MAD", f_raw, param=3.0))
     z_out = np.asarray(
         factorlib_core.apply_postprocess_op("zScore", np.asfortranarray(mad_clipped))
@@ -151,7 +152,7 @@ def compute_futures_styles(panel: Panel) -> dict[str, np.ndarray]:
 
     with np.errstate(invalid="ignore", divide="ignore"):
         raw_size = np.where(np.isfinite(turn_ma) & (turn_ma > 0.0), np.log(turn_ma), np.nan)
-    styles["SIZE"] = _normalize_style_matrix(raw_size)
+    styles["SIZE"] = _normalize_style_matrix(raw_size, mask=panel.valid_mask)
 
     # 2. VOLATILITY: ts_mean(rv, 20) 或日收益标准差
     if "rv" in fields:
@@ -161,14 +162,14 @@ def compute_futures_styles(panel: Panel) -> dict[str, np.ndarray]:
         raw_vol = ts_std_ref(ret1, min(20, max(2, T)))
     else:
         raw_vol = np.full((T, N), np.nan, dtype=np.float64)
-    styles["VOLATILITY"] = _normalize_style_matrix(raw_vol)
+    styles["VOLATILITY"] = _normalize_style_matrix(raw_vol, mask=panel.valid_mask)
 
     # 3. MOMENTUM: pct_change(close, 20)
     if "close" in fields:
         raw_mom = _causal_pct_change_allow_short(fields["close"], 20)
     else:
         raw_mom = np.full((T, N), np.nan, dtype=np.float64)
-    styles["MOMENTUM"] = _normalize_style_matrix(raw_mom)
+    styles["MOMENTUM"] = _normalize_style_matrix(raw_mom, mask=panel.valid_mask)
 
     # 4. CARRY: ry_ann 或 ry_main_sub
     if "ry_ann" in fields:
@@ -177,7 +178,7 @@ def compute_futures_styles(panel: Panel) -> dict[str, np.ndarray]:
         raw_carry = np.array(fields["ry_main_sub"], dtype=np.float64, copy=True)
     else:
         raw_carry = np.full((T, N), np.nan, dtype=np.float64)
-    styles["CARRY"] = _normalize_style_matrix(raw_carry)
+    styles["CARRY"] = _normalize_style_matrix(raw_carry, mask=panel.valid_mask)
 
     # 5. INVENTORY: -wh_z60 或 -wh_chg5
     if "wh_z60" in fields:
@@ -186,7 +187,7 @@ def compute_futures_styles(panel: Panel) -> dict[str, np.ndarray]:
         raw_inv = -np.array(fields["wh_chg5"], dtype=np.float64, copy=True)
     else:
         raw_inv = np.full((T, N), np.nan, dtype=np.float64)
-    styles["INVENTORY"] = _normalize_style_matrix(raw_inv)
+    styles["INVENTORY"] = _normalize_style_matrix(raw_inv, mask=panel.valid_mask)
 
     # 6. POSITIONING: mr_net_ratio 或 mr_net_ratio_chg5
     if "mr_net_ratio" in fields:
@@ -195,7 +196,7 @@ def compute_futures_styles(panel: Panel) -> dict[str, np.ndarray]:
         raw_pos = np.array(fields["mr_net_ratio_chg5"], dtype=np.float64, copy=True)
     else:
         raw_pos = np.full((T, N), np.nan, dtype=np.float64)
-    styles["POSITIONING"] = _normalize_style_matrix(raw_pos)
+    styles["POSITIONING"] = _normalize_style_matrix(raw_pos, mask=panel.valid_mask)
 
     return styles
 

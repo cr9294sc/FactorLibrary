@@ -7,7 +7,7 @@
 
 use crate::nan::{clean_f64, cmp_f64, compute_normalized_ranks, EPS, STD_EPS, VAR_EPS};
 use crate::panel::alloc_nan_matrix;
-use ndarray::{Array2, ShapeBuilder};
+use ndarray::Array2;
 
 const TILE: usize = 32;
 
@@ -32,7 +32,7 @@ fn transpose_f_to_c(x: &Array2<f64>) -> Vec<f64> {
 
 /// 分块将行连续 `c_buf`（`T x N` C-order）转置回 Fortran `(T, N)` 矩阵。
 fn transpose_c_to_f(c_buf: &[f64], t: usize, n: usize) -> Array2<f64> {
-    let mut out = unsafe { Array2::<f64>::uninit((t, n).f()).assume_init() };
+    let mut out = alloc_nan_matrix(t, n);
     for c0 in (0..n).step_by(TILE) {
         let c_end = (c0 + TILE).min(n);
         for r0 in (0..t).step_by(TILE) {

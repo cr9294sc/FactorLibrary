@@ -17,6 +17,7 @@ use crate::panel::{Panel, PanelError};
 use ahash::AHashMap;
 use ndarray::Array2;
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -51,6 +52,26 @@ fn extract_constant(node: &ASTNode) -> Result<f64, EvalError> {
         ASTNode::Window(w) => Ok(*w as f64),
         other => Err(EvalError::ExpectedConstant(other.to_canon_string())),
     }
+}
+
+/// 按品种池有效性掩码过滤矩阵：若存在非在池标的（mask == false），将其置为 NaN；全在池时短路零拷贝借用。
+#[inline]
+fn mask_to_universe<'a>(mat: &'a Array2<f64>, mask: &Array2<bool>) -> Cow<'a, Array2<f64>> {
+    let (t, n) = mat.dim();
+    debug_assert_eq!((t, n), mask.dim());
+    let has_out_of_universe = mask.iter().any(|&m| !m);
+    if !has_out_of_universe {
+        return Cow::Borrowed(mat);
+    }
+    let mut out = mat.clone();
+    for col in 0..n {
+        for row in 0..t {
+            if !mask[[row, col]] {
+                out[[row, col]] = f64::NAN;
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// 递归求值单个 `ASTNode`，返回共享列优先矩阵指针 `Arc<Array2<f64>>`。
@@ -89,11 +110,21 @@ pub fn eval_ast(
                 UnaryOp::Relu => elem::op_relu(&arg_mat),
                 UnaryOp::Atan => elem::op_atan(&arg_mat),
                 UnaryOp::NotCond => elem::op_not_cond(&arg_mat),
-                UnaryOp::CsRank => cs::op_cs_rank(&arg_mat),
-                UnaryOp::CsZscore => cs::op_cs_zscore(&arg_mat),
-                UnaryOp::CsDemean => cs::op_cs_demean(&arg_mat),
-                UnaryOp::CsScale => cs::op_cs_scale(&arg_mat),
-                UnaryOp::CsWinsorize => cs::op_cs_winsorize(&arg_mat),
+                UnaryOp::CsRank
+                | UnaryOp::CsZscore
+                | UnaryOp::CsDemean
+                | UnaryOp::CsScale
+                | UnaryOp::CsWinsorize => {
+                    let masked = mask_to_universe(&arg_mat, &panel.universe_mask);
+                    match op {
+                        UnaryOp::CsRank => cs::op_cs_rank(&masked),
+                        UnaryOp::CsZscore => cs::op_cs_zscore(&masked),
+                        UnaryOp::CsDemean => cs::op_cs_demean(&masked),
+                        UnaryOp::CsScale => cs::op_cs_scale(&masked),
+                        UnaryOp::CsWinsorize => cs::op_cs_winsorize(&masked),
+                        _ => unreachable!(),
+                    }
+                }
             };
             let arc_out = Arc::new(out);
             if let Some(c) = cache {
@@ -126,16 +157,28 @@ pub fn eval_ast(
                 BinaryOp::AndCond => elem::op_and_cond(&lhs_mat, &*eval_ast(rhs, panel, cache)?),
                 BinaryOp::OrCond => elem::op_or_cond(&lhs_mat, &*eval_ast(rhs, panel, cache)?),
                 BinaryOp::CsNeutralize => {
-                    cs::op_cs_neutralize(&lhs_mat, &*eval_ast(rhs, panel, cache)?)
+                    let rhs_mat = eval_ast(rhs, panel, cache)?;
+                    let m_lhs = mask_to_universe(&lhs_mat, &panel.universe_mask);
+                    let m_rhs = mask_to_universe(&rhs_mat, &panel.universe_mask);
+                    cs::op_cs_neutralize(&m_lhs, &m_rhs)
                 }
                 BinaryOp::GroupDemean => {
-                    group::op_group_demean(&lhs_mat, &*eval_ast(rhs, panel, cache)?)
+                    let rhs_mat = eval_ast(rhs, panel, cache)?;
+                    let m_lhs = mask_to_universe(&lhs_mat, &panel.universe_mask);
+                    let m_rhs = mask_to_universe(&rhs_mat, &panel.universe_mask);
+                    group::op_group_demean(&m_lhs, &m_rhs)
                 }
                 BinaryOp::GroupRank => {
-                    group::op_group_rank(&lhs_mat, &*eval_ast(rhs, panel, cache)?)
+                    let rhs_mat = eval_ast(rhs, panel, cache)?;
+                    let m_lhs = mask_to_universe(&lhs_mat, &panel.universe_mask);
+                    let m_rhs = mask_to_universe(&rhs_mat, &panel.universe_mask);
+                    group::op_group_rank(&m_lhs, &m_rhs)
                 }
                 BinaryOp::GroupZscore => {
-                    group::op_group_zscore(&lhs_mat, &*eval_ast(rhs, panel, cache)?)
+                    let rhs_mat = eval_ast(rhs, panel, cache)?;
+                    let m_lhs = mask_to_universe(&lhs_mat, &panel.universe_mask);
+                    let m_rhs = mask_to_universe(&rhs_mat, &panel.universe_mask);
+                    group::op_group_zscore(&m_lhs, &m_rhs)
                 }
 
                 // (Series, Constant) -> Series / BoolCond

@@ -341,3 +341,89 @@ def test_eval_output_is_immutable_and_prevents_cache_corruption() -> None:
     # 再次求值验证底层缓存未被篡改
     arr_again = eng.eval("close")
     assert arr_again[0, 0] == 1.0
+
+
+def test_cs_and_group_ops_universe_mask_isolation() -> None:
+    """验证 P0-03: 全部 9 个截面与分组算子在 universe_mask==False 处完全隔离极端值，
+    且非在池标的位置严格输出 NaN，在池标的结果与纯净输入绝对等价。
+    """
+    rng = np.random.default_rng(2026)
+    T, N = 30, 10
+
+    # 随机生成原始特征，包含部分自然 NaN
+    x_raw = _make_noisy_matrix(rng, T, N, nan_prob=0.1)
+    y_raw = _make_noisy_matrix(rng, T, N, nan_prob=0.1)
+    grp_raw = rng.integers(1, 4, size=(T, N)).astype(np.float64, order="F")
+
+    # 构造有 ~30% False 的 universe_mask
+    mask = rng.uniform(0.0, 1.0, size=(T, N)) > 0.3
+    # 确保每一行至少有 3 个在池标的
+    for t in range(T):
+        if np.sum(mask[t, :]) < 3:
+            mask[t, :3] = True
+    mask = np.asfortranarray(mask, dtype=bool)
+
+    # 构造受极端干扰值污染的矩阵：在 mask == False 处注入 1e9, -1e9, 999999.0
+    x_polluted = x_raw.copy()
+    y_polluted = y_raw.copy()
+    grp_polluted = grp_raw.copy()
+
+    x_polluted[~mask] = 1e9
+    y_polluted[~mask] = -1e9
+    grp_polluted[~mask] = 999.0
+
+    # 构造纯净基准矩阵：在 mask == False 处显式置为 NaN
+    x_clean = np.where(mask, x_raw, np.nan)
+    y_clean = np.where(mask, y_raw, np.nan)
+    grp_clean = np.where(mask, grp_raw, np.nan)
+
+    eng_polluted = factorlib_core.Engine(
+        {"x": x_polluted, "y": y_polluted, "grp": grp_polluted},
+        mask,
+        cache_mb=16,
+    )
+    eng_clean = factorlib_core.Engine(
+        {"x": x_clean, "y": y_clean, "grp": grp_clean},
+        mask,
+        cache_mb=16,
+    )
+
+    # 1. 5 个一元横截面算子
+    cs_unary_ops = ["cs_rank", "cs_zscore", "cs_demean", "cs_scale", "cs_winsorize"]
+    for op in cs_unary_ops:
+        res_polluted = eng_polluted.eval(f"{op}(x)", use_cache=False)
+        res_clean = eng_clean.eval(f"{op}(x)", use_cache=False)
+        ref_res = ops_ref.OPS_REF_REGISTRY[op](x_polluted, mask=mask)
+
+        # 1. 非在池标的严格全为 NaN
+        assert np.all(np.isnan(res_polluted[~mask])), f"{op} 在 ~mask 处必须全部输出 NaN"
+        assert np.all(np.isnan(res_clean[~mask])), f"{op} 在 ~mask 处必须全部输出 NaN"
+
+        # 2. 在池标的结果与纯净输入绝对等价 (0 bit 差异)
+        _assert_close_with_nan(res_polluted, res_clean, f"mask isolation: {op}")
+
+        # 3. 与 ops_ref(mask=mask) 严格一致 (< 1e-9)
+        _assert_close_with_nan(res_polluted, ref_res, f"ops_ref parity: {op}")
+
+    # 2. 二元截面中性化算子
+    neut_polluted = eng_polluted.eval("cs_neutralize(y, x)", use_cache=False)
+    neut_clean = eng_clean.eval("cs_neutralize(y, x)", use_cache=False)
+    neut_ref = ops_ref.cs_neutralize(y_polluted, x_polluted, mask=mask)
+    assert np.all(np.isnan(neut_polluted[~mask])), "cs_neutralize 在 ~mask 处必须全部输出 NaN"
+    _assert_close_with_nan(neut_polluted, neut_clean, "mask isolation: cs_neutralize")
+    _assert_close_with_nan(neut_polluted, neut_ref, "ops_ref parity: cs_neutralize")
+
+    # 3. 3 个分组算子
+    group_ops = ["group_demean", "group_rank", "group_zscore"]
+    for op in group_ops:
+        res_polluted = eng_polluted.eval(f"{op}(x, grp)", use_cache=False)
+        res_clean = eng_clean.eval(f"{op}(x, grp)", use_cache=False)
+        ref_res = ops_ref.OPS_REF_REGISTRY[op](x_polluted, grp_polluted, mask=mask)
+
+        assert np.all(np.isnan(res_polluted[~mask])), f"{op} 在 ~mask 处必须全部输出 NaN"
+        _assert_close_with_nan(res_polluted, res_clean, f"mask isolation: {op}")
+        _assert_close_with_nan(res_polluted, ref_res, f"ops_ref parity: {op}")
+
+    # 4. 时序滚动嵌套横截面算子：验证时序特征保留连续性，截面层隔离污染
+    nested_polluted = eng_polluted.eval("cs_rank(ts_mean(x, 5))", use_cache=False)
+    assert np.all(np.isnan(nested_polluted[~mask])), "嵌套表达式在 ~mask 处必须为 NaN"

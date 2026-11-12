@@ -33,7 +33,7 @@
 5. **`P0-02` [已修复 / FIXED] 换月日旧合约平仓价回退至新合约价格引发跨合约跳空与未来结算价泄漏**：[`build.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/build.py#L174-L218) 在旧主力早盘无成交时用主表 `settle_raw`（实为**新主力合约** `T` 日 15:00 盘后结算价）填充 `exec_vwap_old`；[`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L243-L252) 在 `exec_price_old` 缺失时进一步回退至新合约 `exec_price` 并直接减去旧合约 `prev_settle`，产生虚假换月跳空暴利或巨亏。现已通过 ETL 层同合约三级级联回退（早盘 VWAP -> 日线 open -> 昨结 prev_settle / shift(1)）与 Warning 审计打点，以及 Rust 撮合内核严格回退同合约昨结彻底修复。
 6. **`P0-03` [已修复 / FIXED] 全套横截面/分组算子与风格暴露完全忽略 `universe_mask`**：[`eval.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/eval.rs#L92-L97) 调用 `cs_rank`、`cs_zscore`、`cs_demean`、`cs_neutralize`、`group_*` 时未传入 `panel.universe_mask`；非在池僵尸合约或 A 股 ST/次新股的极端价格直接污染活跃标的池的截面均值、标准差、OLS 回归系数与多空资金中性平衡。现已在 `eval.rs` 调度层按 `universe_mask` 严格隔离非在池标的并置 `NaN`，并在 `styles.py` 与 `ops_ref.py` 同步掩码与左锚点并列秩算法彻底修复。
 7. **`P0-04` [已修复 / FIXED] AST 规范化化简规则越界递归穿透子树篡改表达式数学语义**：[`canon.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/canon.rs#L98) 将仅在 AST 根节点保序成立的 `compress_outer_rank = true` 递归传入所有子节点，导致 `sub(cube(cs_rank(close)), cs_rank(open))` 等非线性复合因子被静默篡改为线性差 `sub(cs_rank(close), cs_rank(open))`；同时 `inv(inv(x)) => x` 抹除了 `x == 0` 处的 `NaN` 奇点掩码。现已限制外层单调压缩仅在根单调链或 CsRank 内部递归传递，二元与三元子树强制置 false，并移除 inv(inv(x)) 规则，通过双层跨语言求值等价性验证。
-8. **`P0-06` & `P0-07` 期货逐日盯市回测穿仓符号反转、`NaN` 传染与实盘手续费账务失真**：[`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L281) 在账户净值 `prev_e <= 0` 后继续按 `w * prev_e` 与负 `margin_scale` 反向放大仓位，并在期末触发负底数幂运算 `(1.0 + total_ret).powf(...)` 输出 `NaN`；同时反手调仓手续费误算、`close_today` 平今高费率被丢弃、涨跌停锁仓在换月与保证金缩减阶段被穿透。
+8. **`P0-06` & `P0-07` [已修复 / FIXED] 期货逐日盯市回测穿仓符号反转、`NaN` 传染与实盘手续费账务失真**：[`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L281) 在账户净值 `prev_e <= 0` 后继续按 `w * prev_e` 与负 `margin_scale` 反向放大仓位，并在期末触发负底数幂运算 `(1.0 + total_ret).powf(...)` 输出 `NaN`；同时反手调仓手续费误算、`close_today` 平今高费率被丢弃、涨跌停锁仓在换月与保证金缩减阶段被穿透。已通过强平熔断归零、年化收益率封底 -1.0、多空反手平开手数独立计费、`close_today_fee` 全链路透传至 `SymbolSpec`、换月新开仓归集 `daily_roll_cost` 以及停牌/涨跌停去杠杆严格阻断彻底修复。
 
 ---
 
@@ -485,7 +485,7 @@
 
 ---
 
-### P0-06 `[P0-量化逻辑]` 期货回测穿仓后目标仓位与保证金缩放双重符号翻转、无强平熔断，且负净值触发 `powf` 输出 `NaN`
+### P0-06 `[P0-量化逻辑]` [已修复 / FIXED] 期货回测穿仓后目标仓位与保证金缩放双重符号翻转、无强平熔断，且负净值触发 `powf` 输出 `NaN`
 
 - **定位信息**：
   - [`rust/factorlib_core/src/backtest/futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L276-L365) 及 [`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L481-L486)
@@ -563,7 +563,7 @@
 
 ---
 
-### P0-07 `[P0-量化逻辑]` 期货撮合账务四大失真：多空反手误算手续费、`close_today` 丢弃、换月单边计费、涨跌停/停牌强平穿透
+### P0-07 `[P0-量化逻辑]` [已修复 / FIXED] 期货撮合账务四大失真：多空反手误算手续费、`close_today` 丢弃、换月单边计费、涨跌停/停牌强平穿透
 
 - **定位信息**：
   - [`rust/factorlib_core/src/backtest/futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L42-L52) 及 [`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L240-L270)、[`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs#L345-L400)

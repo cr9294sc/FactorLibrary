@@ -1479,6 +1479,10 @@ pub fn run_futures_backtest<'py>(
             .get_item("close_fee")?
             .map(|v| v.extract())
             .unwrap_or(Ok(0.00005))?;
+        let close_today_fee: f64 = d
+            .get_item("close_today_fee")?
+            .map(|v| v.extract())
+            .unwrap_or(Ok(close_fee))?;
         let tick_size: f64 = d
             .get_item("tick_size")?
             .map(|v| v.extract())
@@ -1495,6 +1499,7 @@ pub fn run_futures_backtest<'py>(
             fee_type: FeeType::parse(&fee_type_str),
             open_fee,
             close_fee,
+            close_today_fee,
             tick_size,
             slip_ticks,
         });

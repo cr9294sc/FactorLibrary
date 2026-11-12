@@ -47,6 +47,7 @@ pub struct SymbolSpec {
     pub fee_type: FeeType,
     pub open_fee: f64,
     pub close_fee: f64,
+    pub close_today_fee: f64,
     pub tick_size: f64,
     pub slip_ticks: f64,
 }
@@ -236,9 +237,11 @@ pub fn run_futures_backtest(
         // -------------------------------------------------------------
         // Step 1: 换月展期处理 (平掉旧合约全部持仓)
         // -------------------------------------------------------------
+        let mut rolled_prev_lots = vec![0_i64; n];
         for i in 0..n {
-            if is_roll[[d, i]] && current_lots[i] != 0 {
+            if is_roll[[d, i]] && current_lots[i] != 0 && !is_unilateral[[d, i]] {
                 let old_l = current_lots[i];
+                rolled_prev_lots[i] = old_l;
                 let p_old_raw = exec_price_old[[d, i]];
                 // P0-02: 严禁跨合约价格混算。若旧合约平仓执行价缺失，仅能回退至同合约昨日结算价 prev_settle[i]
                 let p_old = if p_old_raw.is_finite() && p_old_raw > 0.0 {
@@ -273,25 +276,31 @@ pub fn run_futures_backtest(
         // Step 2: 目标手数离散化计算 (基于 d-1 日收盘目标权重 W 与 prev_e)
         // -------------------------------------------------------------
         let mut target_lots = current_lots.clone();
-        for i in 0..n {
-            let w = target_weights[[d - 1, i]];
-            let p_exec = exec_price[[d, i]];
-            if w.is_finite() && p_exec.is_finite() && p_exec > 0.0 && specs[i].multiplier > 0.0 {
-                let target_val = w * prev_e;
-                let one_lot_val = p_exec * specs[i].multiplier;
-                let raw_l = target_val / one_lot_val;
-                target_lots[i] = match cfg.lot_rounding {
-                    RoundingMode::Round => raw_l.round() as i64,
-                    RoundingMode::Floor => {
-                        if raw_l >= 0.0 {
-                            raw_l.floor() as i64
-                        } else {
-                            raw_l.ceil() as i64
+        if prev_e <= 0.0 {
+            // P0-06: 账户已穿仓破产：触发强制清盘，禁止开新仓，所有品种目标手数归零
+            target_lots.fill(0);
+        } else {
+            for i in 0..n {
+                let w = target_weights[[d - 1, i]];
+                let p_exec = exec_price[[d, i]];
+                if w.is_finite() && p_exec.is_finite() && p_exec > 0.0 && specs[i].multiplier > 0.0
+                {
+                    let target_val = w * prev_e;
+                    let one_lot_val = p_exec * specs[i].multiplier;
+                    let raw_l = target_val / one_lot_val;
+                    target_lots[i] = match cfg.lot_rounding {
+                        RoundingMode::Round => raw_l.round() as i64,
+                        RoundingMode::Floor => {
+                            if raw_l >= 0.0 {
+                                raw_l.floor() as i64
+                            } else {
+                                raw_l.ceil() as i64
+                            }
                         }
-                    }
-                };
-            } else {
-                target_lots[i] = current_lots[i];
+                    };
+                } else {
+                    target_lots[i] = current_lots[i];
+                }
             }
         }
 
@@ -306,10 +315,10 @@ pub fn run_futures_backtest(
             let p_up = limit_up[[d, i]];
             let p_down = limit_down[[d, i]];
 
-            if p_up.is_finite() && p_exec >= p_up - 1e-6 {
+            if p_up.is_finite() && p_exec.is_finite() && p_exec >= p_up - 1e-6 {
                 limit_up_locked[i] = true;
             }
-            if p_down.is_finite() && p_exec <= p_down + 1e-6 {
+            if p_down.is_finite() && p_exec.is_finite() && p_exec <= p_down + 1e-6 {
                 limit_down_locked[i] = true;
             }
 
@@ -318,7 +327,9 @@ pub fn run_futures_backtest(
                 continue;
             }
 
+            // P0-07: 涨跌停、单边市或停牌无成交阻断调仓，严格保持现有持仓
             if is_unilateral[[d, i]]
+                || !(p_exec.is_finite() && p_exec > 0.0)
                 || (delta > 0 && limit_up_locked[i])
                 || (delta < 0 && limit_down_locked[i])
             {
@@ -340,7 +351,8 @@ pub fn run_futures_backtest(
             est_margin += (target_lots[i].abs() as f64) * p * specs[i].multiplier * eff_rate;
         }
 
-        let max_allowed_margin = cfg.max_margin_ratio * prev_e;
+        // P0-06: 净值小于等于 0 时允许保证金上限截断为 0，防止负净值产生负比例缩放与符号再次翻转
+        let max_allowed_margin = (cfg.max_margin_ratio * prev_e).max(0.0);
         if est_margin > max_allowed_margin && est_margin > 1e-6 {
             let margin_scale = max_allowed_margin / est_margin;
             for i in 0..n {
@@ -351,7 +363,9 @@ pub fn run_futures_backtest(
                     raw_s.ceil() as i64
                 };
                 let delta = scaled_l - current_lots[i];
+                // P0-07: 去杠杆减仓同样受单边市、停牌无成交以及跌停/涨停锁仓阻断
                 if is_unilateral[[d, i]]
+                    || !(exec_price[[d, i]].is_finite() && exec_price[[d, i]] > 0.0)
                     || (delta > 0 && limit_up_locked[i])
                     || (delta < 0 && limit_down_locked[i])
                 {
@@ -377,20 +391,41 @@ pub fn run_futures_backtest(
                 prev_settle[i]
             };
             let n_trade = delta.abs() as f64;
-            let is_close = (current_lots[i] > 0 && delta < 0) || (current_lots[i] < 0 && delta > 0);
-            let f_rate = if is_close {
-                specs[i].close_fee
-            } else {
-                specs[i].open_fee
-            };
+
+            // P0-07: 多空反手 (Position Flip) 拆分为平昨手数 closed_lots 与新开手数 opened_lots 独立计费
+            let prev_l = current_lots[i];
+            let (closed_lots, opened_lots) =
+                if (prev_l > 0 && delta < 0) || (prev_l < 0 && delta > 0) {
+                    let c = (prev_l.abs().min(delta.abs())) as f64;
+                    let o = (delta.abs() - prev_l.abs()).max(0) as f64;
+                    (c, o)
+                } else {
+                    (0.0, n_trade)
+                };
 
             let trade_fee = match specs[i].fee_type {
-                FeeType::Fixed => n_trade * f_rate,
-                FeeType::Rate => n_trade * p_exec * specs[i].multiplier * f_rate,
+                FeeType::Fixed => {
+                    closed_lots * specs[i].close_fee + opened_lots * specs[i].open_fee
+                }
+                FeeType::Rate => {
+                    p_exec
+                        * specs[i].multiplier
+                        * (closed_lots * specs[i].close_fee + opened_lots * specs[i].open_fee)
+                }
             };
             let trade_slip =
                 n_trade * (specs[i].slip_ticks * specs[i].tick_size) * specs[i].multiplier;
             let notional = n_trade * p_exec * specs[i].multiplier;
+
+            // P0-07: 换月日新主力同向建立的对应手数开仓费用与滑点累加至 daily_roll_cost 归集
+            if rolled_prev_lots[i] != 0
+                && target_lots[i].signum() == rolled_prev_lots[i].signum()
+                && n_trade > 0.0
+            {
+                let roll_reopen =
+                    (rolled_prev_lots[i].abs().min(target_lots[i].abs()) as f64) / n_trade;
+                daily_roll_cost += (trade_fee + trade_slip) * roll_reopen;
+            }
 
             daily_fee += trade_fee;
             daily_slippage += trade_slip;
@@ -479,7 +514,12 @@ pub fn run_futures_backtest(
 
     let n_days = t - 1;
     let annual_ret = if n_days > 0 {
-        (1.0 + total_ret).powf(252.0 / n_days as f64) - 1.0
+        // P0-06: 净值穿仓 1.0 + total_ret <= 0 时封底截断为 -1.0，防止负底数幂运算触发 IEEE-754 NaN
+        if 1.0 + total_ret <= 0.0 {
+            -1.0
+        } else {
+            (1.0 + total_ret).powf(252.0 / n_days as f64) - 1.0
+        }
     } else {
         0.0
     };
@@ -679,6 +719,7 @@ mod tests {
                 fee_type: FeeType::Rate,
                 open_fee: 0.0001,
                 close_fee: 0.0001,
+                close_today_fee: 0.0001,
                 tick_size: 1.0,
                 slip_ticks: 0.0, // 先设 0 滑点以便精确对账
             },
@@ -689,6 +730,7 @@ mod tests {
                 fee_type: FeeType::Rate,
                 open_fee: 0.0001,
                 close_fee: 0.0001,
+                close_today_fee: 0.0001,
                 tick_size: 1.0,
                 slip_ticks: 0.0,
             },
@@ -758,6 +800,7 @@ mod tests {
             fee_type: FeeType::Rate,
             open_fee: 0.0001,
             close_fee: 0.0001,
+            close_today_fee: 0.0001,
             tick_size: 1.0,
             slip_ticks: 0.0,
         }];
@@ -824,6 +867,7 @@ mod tests {
             fee_type: FeeType::Rate,
             open_fee: 0.0001,
             close_fee: 0.0001,
+            close_today_fee: 0.0001,
             tick_size: 1.0,
             slip_ticks: 0.0,
         }];
@@ -873,5 +917,301 @@ mod tests {
             expected_new_contract_pnl,
             res.gross_pnl[2]
         );
+    }
+
+    #[test]
+    fn test_bankruptcy_forced_liquidation_and_no_nan() {
+        // P0-06 回归测试: 极端暴跌导致穿仓 (prev_e <= 0) 时，
+        // 1. 触发强平状态 (target_lots.fill(0))，不再反向放大开仓；
+        // 2. 年化收益率保底 -1.0，杜绝 IEEE-754 负底数实数幂输出 NaN；
+        // 3. 净值如实保留负值以度量穿仓深度。
+        let t = 4;
+        let n = 1;
+        let mut target_weights = Array2::<f64>::zeros((t, n));
+        target_weights[[0, 0]] = 5.0; // Day 0 计划 5 倍杠杆开多
+        target_weights[[1, 0]] = 5.0; // Day 1 打算继续持有
+        target_weights[[2, 0]] = 5.0;
+
+        let mut exec_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let exec_price_old = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut settle_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let limit_up = Array2::<f64>::from_elem((t, n), f64::INFINITY);
+        let limit_down = Array2::<f64>::from_elem((t, n), 0.0);
+        let is_unilateral = Array2::<bool>::from_elem((t, n), false);
+        let is_roll = Array2::<bool>::from_elem((t, n), false);
+
+        // Day 1: 开仓价 100.0，但收盘结算暴跌至 10.0 (跌 90%)
+        // 杠杆放大下必然穿仓 (净值跌破 0)
+        exec_price[[1, 0]] = 100.0;
+        settle_price[[1, 0]] = 10.0;
+
+        // Day 2: 价格维持 10.0
+        exec_price[[2, 0]] = 10.0;
+        settle_price[[2, 0]] = 10.0;
+
+        // Day 3: 维持 10.0
+        exec_price[[3, 0]] = 10.0;
+        settle_price[[3, 0]] = 10.0;
+
+        let specs = vec![SymbolSpec {
+            symbol: "RB".to_string(),
+            multiplier: 10.0,
+            margin_rate: 0.10,
+            fee_type: FeeType::Rate,
+            open_fee: 0.0001,
+            close_fee: 0.0001,
+            close_today_fee: 0.0001,
+            tick_size: 1.0,
+            slip_ticks: 0.0,
+        }];
+
+        let cfg = FuturesBacktestConfig {
+            init_cash: 100_000.0,
+            max_margin_ratio: 1.0,
+            margin_safety_multiplier: 1.0,
+            lot_rounding: RoundingMode::Round,
+        };
+
+        let res = run_futures_backtest(
+            &target_weights,
+            &exec_price,
+            &exec_price_old,
+            &settle_price,
+            &limit_up,
+            &limit_down,
+            &is_unilateral,
+            &is_roll,
+            &specs,
+            &cfg,
+        );
+
+        // Day 1 收盘后穿仓：净值应小于 0
+        assert!(
+            res.equity[1] < 0.0,
+            "Day 1 应该已经穿仓为负: {}",
+            res.equity[1]
+        );
+        // Day 2 触发强平归零：持仓被清空
+        assert_eq!(
+            res.positions[[2, 0]],
+            0,
+            "穿仓后 Day 2 头寸应被强制清平为 0"
+        );
+        assert_eq!(res.positions[[3, 0]], 0, "Day 3 应严禁开新仓");
+
+        // 指标验证：total_return < -1.0，annual_return 严格为 -1.0，绝非 NaN
+        assert!(res.metrics.total_return < -1.0);
+        assert_eq!(res.metrics.annual_return, -1.0);
+        assert!(!res.metrics.annual_return.is_nan());
+        assert!(!res.metrics.calmar.is_nan());
+    }
+
+    #[test]
+    fn test_position_flip_fee_split() {
+        // P0-07 回归测试: 多空反手 (例如 +10手 -> -10手) 必须严格拆分为
+        // 10手平昨 (close_fee) + 10手新开 (open_fee)，不可将全部 20 手按单一费率收取。
+        let t = 3;
+        let n = 1;
+        let mut target_weights = Array2::<f64>::zeros((t, n));
+        target_weights[[0, 0]] = 0.10; // Day 0 信号: Day 1 买入
+        target_weights[[1, 0]] = -0.10; // Day 1 信号: Day 2 反手做空
+
+        let mut exec_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let exec_price_old = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut settle_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let limit_up = Array2::<f64>::from_elem((t, n), f64::INFINITY);
+        let limit_down = Array2::<f64>::from_elem((t, n), 0.0);
+        let is_unilateral = Array2::<bool>::from_elem((t, n), false);
+        let is_roll = Array2::<bool>::from_elem((t, n), false);
+
+        exec_price[[1, 0]] = 100.0;
+        settle_price[[1, 0]] = 100.0;
+        exec_price[[2, 0]] = 100.0;
+        settle_price[[2, 0]] = 100.0;
+
+        let specs = vec![SymbolSpec {
+            symbol: "RB".to_string(),
+            multiplier: 10.0,
+            margin_rate: 0.10,
+            fee_type: FeeType::Rate,
+            open_fee: 0.0001,  // 开仓费率 1 bps
+            close_fee: 0.0005, // 平仓费率 5 bps (费率不同)
+            close_today_fee: 0.0005,
+            tick_size: 1.0,
+            slip_ticks: 0.0,
+        }];
+
+        let cfg = FuturesBacktestConfig {
+            init_cash: 1_000_000.0,
+            max_margin_ratio: 0.50,
+            margin_safety_multiplier: 1.0,
+            lot_rounding: RoundingMode::Round,
+        };
+
+        let res = run_futures_backtest(
+            &target_weights,
+            &exec_price,
+            &exec_price_old,
+            &settle_price,
+            &limit_up,
+            &limit_down,
+            &is_unilateral,
+            &is_roll,
+            &specs,
+            &cfg,
+        );
+
+        let lots_d1 = res.positions[[1, 0]];
+        let lots_d2 = res.positions[[2, 0]];
+        assert!(lots_d1 > 0);
+        assert_eq!(lots_d2, -lots_d1);
+
+        // Day 2 反手：平昨 lots_d1 手 + 开新 lots_d1 手
+        let expected_fee_d2 =
+            100.0 * 10.0 * (lots_d1 as f64) * 0.0005 + 100.0 * 10.0 * (lots_d1 as f64) * 0.0001;
+        assert!(
+            (res.fee[2] - expected_fee_d2).abs() < 1e-6,
+            "Day 2 反手手续费期望 {}, 实际 {}",
+            expected_fee_d2,
+            res.fee[2]
+        );
+    }
+
+    #[test]
+    fn test_roll_bidirectional_cost() {
+        // P0-07 回归测试: 换月展期摩擦成本 daily_roll_cost 必须包含
+        // 旧主力平仓费滑点 + 新主力同向恢复仓位的开仓费滑点。
+        let t = 3;
+        let n = 1;
+        let mut target_weights = Array2::<f64>::zeros((t, n));
+        target_weights[[0, 0]] = 0.20; // Day 0 信号: Day 1 买入
+        target_weights[[1, 0]] = 0.20; // Day 1 信号: Day 2 换月维持同等权重
+
+        let mut exec_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut exec_price_old = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut settle_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let limit_up = Array2::<f64>::from_elem((t, n), f64::INFINITY);
+        let limit_down = Array2::<f64>::from_elem((t, n), 0.0);
+        let is_unilateral = Array2::<bool>::from_elem((t, n), false);
+        let mut is_roll = Array2::<bool>::from_elem((t, n), false);
+
+        exec_price[[1, 0]] = 100.0;
+        settle_price[[1, 0]] = 100.0;
+
+        // Day 2 换月
+        is_roll[[2, 0]] = true;
+        exec_price_old[[2, 0]] = 100.0;
+        exec_price[[2, 0]] = 100.0;
+        settle_price[[2, 0]] = 100.0;
+
+        let specs = vec![SymbolSpec {
+            symbol: "RB".to_string(),
+            multiplier: 10.0,
+            margin_rate: 0.10,
+            fee_type: FeeType::Rate,
+            open_fee: 0.0001,
+            close_fee: 0.0002,
+            close_today_fee: 0.0002,
+            tick_size: 1.0,
+            slip_ticks: 1.0, // 滑点 1 tick
+        }];
+
+        let cfg = FuturesBacktestConfig {
+            init_cash: 1_000_000.0,
+            max_margin_ratio: 0.50,
+            margin_safety_multiplier: 1.0,
+            lot_rounding: RoundingMode::Round,
+        };
+
+        let res = run_futures_backtest(
+            &target_weights,
+            &exec_price,
+            &exec_price_old,
+            &settle_price,
+            &limit_up,
+            &limit_down,
+            &is_unilateral,
+            &is_roll,
+            &specs,
+            &cfg,
+        );
+
+        let lots = res.positions[[1, 0]] as f64;
+        let p = 100.0;
+        let m = 10.0;
+        let slip_cost_per_side = lots * 1.0 * m; // 1 tick * multiplier
+        let fee_old = lots * p * m * 0.0002;
+        let fee_new = lots * p * m * 0.0001;
+        let expected_roll_cost = (fee_old + slip_cost_per_side) + (fee_new + slip_cost_per_side);
+
+        assert!(
+            (res.roll_cost[2] - expected_roll_cost).abs() < 1e-6,
+            "Day 2 双边换月成本期望 {}, 实际 {}",
+            expected_roll_cost,
+            res.roll_cost[2]
+        );
+        assert_eq!(res.metrics.total_roll_cost, res.roll_cost[2]);
+    }
+
+    #[test]
+    fn test_suspension_and_limit_lock_preservation() {
+        // P0-07 回归测试: 停牌无成交 (exec_price 为 NaN) 且模型给出减仓/平仓信号时，
+        // 严格阻断减仓，持仓保持不变，禁止按照昨日结算价虚假平仓成交。
+        let t = 3;
+        let n = 1;
+        let mut target_weights = Array2::<f64>::zeros((t, n));
+        target_weights[[0, 0]] = 0.20; // Day 0 信号: Day 1 买入
+        target_weights[[1, 0]] = 0.0; // Day 1 信号: Day 2 计划平仓
+
+        let mut exec_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let exec_price_old = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut settle_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let limit_up = Array2::<f64>::from_elem((t, n), f64::INFINITY);
+        let limit_down = Array2::<f64>::from_elem((t, n), 0.0);
+        let is_unilateral = Array2::<bool>::from_elem((t, n), false);
+        let is_roll = Array2::<bool>::from_elem((t, n), false);
+
+        exec_price[[1, 0]] = 100.0;
+        settle_price[[1, 0]] = 100.0;
+
+        // Day 2: 停牌！exec_price 为 NaN
+        exec_price[[2, 0]] = f64::NAN;
+        settle_price[[2, 0]] = 100.0;
+
+        let specs = vec![SymbolSpec {
+            symbol: "RB".to_string(),
+            multiplier: 10.0,
+            margin_rate: 0.10,
+            fee_type: FeeType::Rate,
+            open_fee: 0.0001,
+            close_fee: 0.0001,
+            close_today_fee: 0.0001,
+            tick_size: 1.0,
+            slip_ticks: 0.0,
+        }];
+
+        let cfg = FuturesBacktestConfig::default();
+
+        let res = run_futures_backtest(
+            &target_weights,
+            &exec_price,
+            &exec_price_old,
+            &settle_price,
+            &limit_up,
+            &limit_down,
+            &is_unilateral,
+            &is_roll,
+            &specs,
+            &cfg,
+        );
+
+        // Day 1 买入的持仓在 Day 2 因停牌无法平仓，必须保持持有！
+        assert!(res.positions[[1, 0]] > 0);
+        assert_eq!(
+            res.positions[[2, 0]],
+            res.positions[[1, 0]],
+            "停牌日头寸应被锁定保留，不可被虚假平仓"
+        );
+        assert_eq!(res.fee[2], 0.0, "停牌日不应产生任何平仓交易费用");
     }
 }

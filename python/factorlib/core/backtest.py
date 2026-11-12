@@ -217,6 +217,7 @@ def run_backtest(
                 "fee_type": str(cost.fee_type),
                 "open_fee": float(cost.open_fee),
                 "close_fee": float(cost.close_fee),
+                "close_today_fee": float(cost.close_today_fee),
                 "tick_size": float(spec.tick_size),
                 "slip_ticks": float(cost.slippage_ticks),
             }

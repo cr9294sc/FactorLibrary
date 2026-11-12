@@ -90,6 +90,16 @@ pub fn run_fast_backtest(
 
     for d in 1..t {
         let prev_e = equity[d - 1];
+        if prev_e <= 0.0 {
+            // P0-06: 净值跌破零，触发穿仓熔断，冻结资产并清空后续交易与换手
+            equity.push(0.0);
+            daily_returns.push(0.0);
+            turnover.push(0.0);
+            fees.push(0.0);
+            slippage.push(0.0);
+            continue;
+        }
+
         // d 日执行的仓位是 d-1 日收盘后确定的权重
         let w_curr = weights.row(d - 1);
         let w_prev = if d >= 2 {
@@ -123,7 +133,7 @@ pub fn run_fast_backtest(
         }
 
         let net_ret = gross_ret - (d_fee + d_slip);
-        let curr_e = prev_e * (1.0 + net_ret);
+        let curr_e = (prev_e * (1.0 + net_ret)).max(0.0);
 
         equity.push(curr_e);
         daily_returns.push(net_ret);
@@ -141,7 +151,12 @@ pub fn run_fast_backtest(
 
     let n_days = t - 1;
     let annual_ret = if n_days > 0 {
-        (1.0 + total_ret).powf(252.0 / n_days as f64) - 1.0
+        // P0-06: 净值穿仓 1.0 + total_ret <= 0 时封底截断为 -1.0，防止负底数幂运算触发 IEEE-754 NaN
+        if 1.0 + total_ret <= 0.0 {
+            -1.0
+        } else {
+            (1.0 + total_ret).powf(252.0 / n_days as f64) - 1.0
+        }
     } else {
         0.0
     };
@@ -239,5 +254,46 @@ pub fn run_fast_backtest(
         win_rate,
         daily_turnover_mean: mean_turnover,
         annual_turnover: mean_turnover * 252.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::Array2;
+
+    #[test]
+    fn test_fast_backtest_bankruptcy_no_nan() {
+        let t = 4;
+        let n = 1;
+        let mut weights = Array2::<f64>::zeros((t, n));
+        weights[[0, 0]] = 1.0;
+        weights[[1, 0]] = 1.0;
+        weights[[2, 0]] = 1.0;
+
+        let mut returns = Array2::<f64>::zeros((t, n));
+        // Day 1 亏损 120% (穿仓)
+        returns[[1, 0]] = -1.20;
+        returns[[2, 0]] = 0.10;
+        returns[[3, 0]] = 0.10;
+
+        let cfg = FastBacktestConfig {
+            fee_rate: 0.0001,
+            slippage_bps: 1.0,
+            init_cash: 100_000.0,
+        };
+
+        let res = run_fast_backtest(&weights, &returns, &cfg);
+
+        // Day 1 穿仓后净值应为 0 (熔断冻结)
+        assert_eq!(res.equity[1], 0.0);
+        assert_eq!(res.equity[2], 0.0);
+        assert_eq!(res.equity[3], 0.0);
+
+        // 验证指标无 NaN 且年化收益保底 -1.0
+        assert_eq!(res.total_return, -1.0);
+        assert_eq!(res.annual_return, -1.0);
+        assert!(!res.annual_return.is_nan());
+        assert!(!res.calmar.is_nan());
     }
 }

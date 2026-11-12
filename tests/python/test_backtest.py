@@ -223,3 +223,153 @@ def test_run_futures_backtest_margin_scale_down():
     res = run_backtest(panel, weights, config=cfg)
     # 实际保证金占用不得超过最大上限 50%
     assert res.margin_used[1] <= 50_000.0 + 1e-4
+
+
+def test_run_futures_backtest_bankruptcy_safe_no_nan():
+    """P0-06 端到端测试: 账户穿仓破产时触发强平熔断，年化收益率保底 -1.0，杜绝 NaN。"""
+    dates = np.array(["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"])
+    symbols = ["RB"]
+    T = len(dates)
+    N = len(symbols)
+
+    exec_vwap = np.full((T, N), 100.0, dtype=np.float64, order="F")
+    settle_raw = np.full((T, N), 100.0, dtype=np.float64, order="F")
+
+    # Day 1: 开仓价 100，收盘结算价暴跌至 10 (杠杆放大致穿仓)
+    exec_vwap[1, 0] = 100.0
+    settle_raw[1, 0] = 10.0
+    exec_vwap[2, 0] = 10.0
+    settle_raw[2, 0] = 10.0
+    exec_vwap[3, 0] = 10.0
+    settle_raw[3, 0] = 10.0
+
+    panel = Panel(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "exec_vwap": exec_vwap,
+            "exec_vwap_old": exec_vwap,
+            "settle_raw": settle_raw,
+            "close": settle_raw,
+        },
+        mask=np.ones((T, N), dtype=bool),
+    )
+
+    weights = np.zeros((T, N), dtype=np.float64, order="F")
+    weights[0, 0] = 5.0  # 5 倍杠杆
+    weights[1, 0] = 5.0
+    weights[2, 0] = 5.0
+
+    cfg = BacktestConfig(
+        capital=CapitalConfig(init_cash=100_000.0),
+        execution=ExecutionConfig(max_margin_ratio=1.0, margin_safety_multiplier=1.0),
+    )
+
+    res = run_backtest(panel, weights, config=cfg)
+
+    # Day 1 穿仓：净值跌为负数
+    assert res.equity[1] < 0.0
+    # Day 2 强平清零：仓位归零
+    assert res.positions[2, 0] == 0
+    assert res.positions[3, 0] == 0
+
+    # 验证指标：total_return < -1.0, annual_return 严格为 -1.0 且非 NaN
+    assert res.metrics["total_return"] < -1.0
+    assert res.metrics["annual_return"] == -1.0
+    assert not np.isnan(res.metrics["annual_return"])
+    assert not np.isnan(res.metrics["calmar"])
+
+
+def test_run_futures_backtest_position_flip_and_close_today_spec():
+    """P0-07 端到端测试: 多空反手手续费拆分与 close_today_fee 全链路透传。"""
+    dates = np.array(["2024-01-01", "2024-01-02", "2024-01-03"])
+    symbols = ["RB"]
+    T = len(dates)
+    N = len(symbols)
+
+    exec_vwap = np.full((T, N), 100.0, dtype=np.float64, order="F")
+    settle_raw = np.full((T, N), 100.0, dtype=np.float64, order="F")
+
+    panel = Panel(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "exec_vwap": exec_vwap,
+            "exec_vwap_old": exec_vwap,
+            "settle_raw": settle_raw,
+            "close": settle_raw,
+        },
+        mask=np.ones((T, N), dtype=bool),
+    )
+
+    weights = np.zeros((T, N), dtype=np.float64, order="F")
+    weights[0, 0] = 0.10  # Day 1 买入
+    weights[1, 0] = -0.10  # Day 2 反手做空
+
+    cfg = BacktestConfig(
+        capital=CapitalConfig(init_cash=1_000_000.0),
+        execution=ExecutionConfig(max_margin_ratio=0.50, margin_safety_multiplier=1.0),
+    )
+
+    res = run_backtest(panel, weights, config=cfg)
+    lots_d1 = res.positions[1, 0]
+    lots_d2 = res.positions[2, 0]
+    assert lots_d1 > 0
+    assert lots_d2 == -lots_d1
+
+    # RB: open_fee=0.0001, close_fee=0.0001, close_today_fee=0.0001, mult=10
+    # Day 2 反手交易 2 * lots_d1 手 (平昨 lots_d1 + 开新 lots_d1)
+    expected_fee_d2 = 100.0 * 10.0 * (lots_d1 * 2) * 0.0001
+    assert abs(res.fee[2] - expected_fee_d2) < 1e-4
+
+
+def test_run_futures_backtest_roll_bidirectional_cost():
+    """P0-07 端到端测试: 换月展期摩擦成本必须包含平旧与开新双边开平仓费用及滑点。"""
+    dates = np.array(["2024-01-01", "2024-01-02", "2024-01-03"])
+    symbols = ["RB"]
+    T = len(dates)
+    N = len(symbols)
+
+    exec_vwap = np.full((T, N), 100.0, dtype=np.float64, order="F")
+    exec_vwap_old = np.full((T, N), 100.0, dtype=np.float64, order="F")
+    settle_raw = np.full((T, N), 100.0, dtype=np.float64, order="F")
+    is_roll = np.zeros((T, N), dtype=np.float64, order="F")
+
+    # Day 2 换月
+    is_roll[1, 0] = 0.0
+    is_roll[2, 0] = 1.0
+
+    panel = Panel(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "exec_vwap": exec_vwap,
+            "exec_vwap_old": exec_vwap_old,
+            "settle_raw": settle_raw,
+            "is_roll": is_roll,
+            "close": settle_raw,
+        },
+        mask=np.ones((T, N), dtype=bool),
+    )
+
+    weights = np.zeros((T, N), dtype=np.float64, order="F")
+    weights[0, 0] = 0.20  # Day 1 买入
+    weights[1, 0] = 0.20  # Day 2 换月同等维持
+
+    cfg = BacktestConfig(
+        capital=CapitalConfig(init_cash=1_000_000.0),
+        execution=ExecutionConfig(max_margin_ratio=0.50, margin_safety_multiplier=1.0),
+    )
+
+    res = run_backtest(panel, weights, config=cfg)
+
+    # 换月日 Day 2 展期成本包含平旧和开新双边成本
+    lots = res.positions[1, 0]
+    mult = 10.0
+    slip_ticks = 1.0
+    tick_size = 1.0
+    slip_per_side = lots * slip_ticks * tick_size * mult
+    fee_per_side = lots * 100.0 * mult * 0.0001
+    expected_roll_cost = 2 * (fee_per_side + slip_per_side)
+
+    assert abs(res.roll_cost[2] - expected_roll_cost) < 1e-4

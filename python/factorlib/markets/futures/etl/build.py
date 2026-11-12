@@ -170,11 +170,61 @@ def build_panel(
         pl.col("exec_vwap").alias("_old_exec_vwap"),
     )
     daily = daily.join(rolls_exec, on=["prev_contract", "trading_date"], how="left")
+
+    # P0-02 修复: 换月日旧合约执行价严格同合约 3 级回退 (严禁跨合约回退至新合约价格)
+    # 提取旧合约当日日线数据 (open 与 prev_settlement)
+    old_bars = bars.select(
+        pl.col("contract").alias("prev_contract"),
+        "trading_date",
+        pl.when(pl.col("open") > 0).then(pl.col("open")).otherwise(None).alias("_old_bar_open"),
+        pl.when(pl.col("prev_settlement") > 0)
+        .then(pl.col("prev_settlement"))
+        .otherwise(None)
+        .alias("_old_bar_prev_settle"),
+    )
+    daily = daily.join(old_bars, on=["prev_contract", "trading_date"], how="left")
+
+    # 预先按 symbol, trading_date 排序以确保 shift(1) 准确取到旧合约昨结
+    daily = daily.sort(["symbol", "trading_date"])
+
+    # 审计打点: 统计并记录第 2 级 (日线开盘价) 与第 3 级 (昨日结算价) 回退事件
+    fallback_l2 = daily.filter(
+        pl.col("is_roll")
+        & pl.col("_old_exec_vwap").is_null()
+        & pl.col("_old_bar_open").is_not_null()
+    )
+    for row in fallback_l2.iter_rows(named=True):
+        logger.warning(
+            "换月日旧主力早盘 30m VWAP 缺失，触发第 2 级回退 (日线开盘价): "
+            "symbol=%s, date=%s, prev_contract=%s, price=%.4f",
+            row["symbol"],
+            row["trading_date"],
+            row["prev_contract"],
+            row["_old_bar_open"],
+        )
+
+    fallback_l3 = daily.filter(
+        pl.col("is_roll") & pl.col("_old_exec_vwap").is_null() & pl.col("_old_bar_open").is_null()
+    )
+    for row in fallback_l3.iter_rows(named=True):
+        logger.warning(
+            "换月日旧主力早盘及全天无成交，触发第 3 级回退 (昨日结算价): "
+            "symbol=%s, date=%s, prev_contract=%s",
+            row["symbol"],
+            row["trading_date"],
+            row["prev_contract"],
+        )
+
     daily = daily.with_columns(
         exec_vwap_old=pl.when(pl.col("is_roll"))
-        .then(pl.col("_old_exec_vwap").fill_null(pl.col("settle_raw")))
+        .then(
+            pl.col("_old_exec_vwap")
+            .fill_null(pl.col("_old_bar_open"))
+            .fill_null(pl.col("_old_bar_prev_settle"))
+            .fill_null(pl.col("settle_raw").shift(1).over("symbol"))
+        )
         .otherwise(pl.col("exec_vwap"))
-    ).drop("_old_exec_vwap")
+    ).drop(["_old_exec_vwap", "_old_bar_open", "_old_bar_prev_settle"])
 
     # 7. 衍生特征清洗 (展期收益率、仓单库存、会员排名)
     max_date = daily["trading_date"].max()

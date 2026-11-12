@@ -240,10 +240,9 @@ pub fn run_futures_backtest(
             if is_roll[[d, i]] && current_lots[i] != 0 {
                 let old_l = current_lots[i];
                 let p_old_raw = exec_price_old[[d, i]];
+                // P0-02: 严禁跨合约价格混算。若旧合约平仓执行价缺失，仅能回退至同合约昨日结算价 prev_settle[i]
                 let p_old = if p_old_raw.is_finite() && p_old_raw > 0.0 {
                     p_old_raw
-                } else if exec_price[[d, i]].is_finite() && exec_price[[d, i]] > 0.0 {
-                    exec_price[[d, i]]
                 } else {
                     prev_settle[i]
                 };
@@ -780,5 +779,99 @@ mod tests {
 
         // 涨停受阻，无法建仓，持仓保持 0
         assert_eq!(res.positions[[1, 0]], 0);
+    }
+
+    #[test]
+    fn test_futures_backtest_roll_missing_exec_price_old_no_jump() {
+        // P0-02 回归测试: 验证当换月日 exec_price_old 缺失 (NaN) 时，
+        // 严格回退至旧合约昨日结算价 prev_settle[i]，平仓收益为 0，绝对不发生跨合约价格跳空。
+        let t = 4;
+        let n = 1;
+
+        let mut target_weights = Array2::<f64>::zeros((t, n));
+        target_weights[[0, 0]] = 0.20; // Day 0 信号: Day 1 买入
+        target_weights[[1, 0]] = 0.20; // Day 1 信号: Day 2 换月维持
+        target_weights[[2, 0]] = 0.0; // Day 2 信号: Day 3 平仓
+
+        let mut exec_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut exec_price_old = Array2::<f64>::from_elem((t, n), 100.0);
+        let mut settle_price = Array2::<f64>::from_elem((t, n), 100.0);
+        let limit_up = Array2::<f64>::from_elem((t, n), f64::INFINITY);
+        let limit_down = Array2::<f64>::from_elem((t, n), 0.0);
+        let is_unilateral = Array2::<bool>::from_elem((t, n), false);
+        let mut is_roll = Array2::<bool>::from_elem((t, n), false);
+
+        // Day 1: 开仓价 100.0，结算价 102.0
+        exec_price[[1, 0]] = 100.0;
+        settle_price[[1, 0]] = 102.0;
+
+        // Day 2: 换月日！
+        // 新合约开盘价 200.0，收盘结算价 205.0。
+        // 但旧合约平仓执行价缺失 (NaN)！
+        is_roll[[2, 0]] = true;
+        exec_price_old[[2, 0]] = f64::NAN;
+        exec_price[[2, 0]] = 200.0;
+        settle_price[[2, 0]] = 205.0;
+
+        // Day 3: 新合约结算 205.0
+        exec_price[[3, 0]] = 205.0;
+        settle_price[[3, 0]] = 205.0;
+
+        let specs = vec![SymbolSpec {
+            symbol: "RB".to_string(),
+            multiplier: 10.0,
+            margin_rate: 0.10,
+            fee_type: FeeType::Rate,
+            open_fee: 0.0001,
+            close_fee: 0.0001,
+            tick_size: 1.0,
+            slip_ticks: 0.0,
+        }];
+
+        let cfg = FuturesBacktestConfig {
+            init_cash: 1_000_000.0,
+            max_margin_ratio: 0.50,
+            margin_safety_multiplier: 1.0,
+            lot_rounding: RoundingMode::Round,
+        };
+
+        let res = run_futures_backtest(
+            &target_weights,
+            &exec_price,
+            &exec_price_old,
+            &settle_price,
+            &limit_up,
+            &limit_down,
+            &is_unilateral,
+            &is_roll,
+            &specs,
+            &cfg,
+        );
+
+        // 验证资金守恒
+        for d in 1..t {
+            let prev_e = res.equity[d - 1];
+            let delta_e = res.net_pnl[d];
+            assert!(
+                (res.equity[d] - (prev_e + delta_e)).abs() < 1e-7,
+                "Day {} 恒等式失衡",
+                d
+            );
+        }
+
+        // 关键断言:
+        // 在 Day 2，旧合约以昨结 102.0 平仓，平仓 PnL = 0.0！
+        // 新合约以 200.0 开仓，收盘结算 205.0，盈亏为 (205 - 200) * new_lots * 10
+        // 若错误回退至新合约价格 200.0，旧合约平仓 PnL 会变为 (200 - 102) = 98.0，产生超大虚假收益！
+        // 验证毛利润仅来源于新合约日内波动 (205 - 200) = 5.0，绝对不能包含 98.0 的跨合约跳空！
+        let new_lots = res.positions[[2, 0]] as f64;
+        assert!(new_lots > 0.0);
+        let expected_new_contract_pnl = new_lots * (205.0 - 200.0) * 10.0;
+        assert!(
+            (res.gross_pnl[2] - expected_new_contract_pnl).abs() < 1e-6,
+            "Day 2 毛盈亏期望 {}, 实际 {} (存在跨合约跳空污染)",
+            expected_new_contract_pnl,
+            res.gross_pnl[2]
+        );
     }
 }

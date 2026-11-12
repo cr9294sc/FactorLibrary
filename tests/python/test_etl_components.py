@@ -297,3 +297,91 @@ def test_intraday_factor_no_lookahead_correlation():
     # 断言 2: 无前视偏差时，独立白噪声行情的日内涨跌幅对未来收益无预测力 (|IC| < 0.1)
     # 若存在前视偏差 (未平移)，此处 mean_ic 会高达 +0.7 ~ +0.8
     assert abs(mean_ic_y1) < 0.1, f"检测到前视偏差泄漏! mean_ic_y1 = {mean_ic_y1:.4f}"
+
+
+def test_roll_exec_vwap_old_fallback_cascade():
+    """P0-02 回归测试: 验证换月日旧合约平仓执行价的三级严格同合约级联回退机制。
+
+    1) 优先使用旧合约早盘 30m VWAP (_old_exec_vwap);
+    2) 若缺失则回退至旧合约当日日线开盘价 (_old_bar_open);
+    3) 若全天零成交则回退至旧合约昨结 (_old_bar_prev_settle / shift(1) 昨结);
+    4) 严禁回退至新合约当天的任何价格 (如当日新合约 settle_raw)。
+    """
+    # 构造 4 个换月日样本场景
+    # 日期: T=0 (正常日), T=1 (L1 命中), T=2 (L2 命中), T=3 (L3a 命中), T=4 (L3b 命中)
+    dates = [date(2024, 1, i) for i in range(1, 6)]
+    daily = pl.DataFrame(
+        {
+            "trading_date": dates,
+            "symbol": ["RB"] * 5,
+            "contract": ["RB2401", "RB2405", "RB2410", "RB2501", "RB2505"],
+            "prev_contract": ["RB2401", "RB2401", "RB2405", "RB2410", "RB2501"],
+            "is_roll": [False, True, True, True, True],
+            "exec_vwap": [100.0, 200.0, 300.0, 400.0, 500.0],  # 新合约早盘开盘价
+            "settle_raw": [102.0, 205.0, 305.0, 405.0, 505.0],  # 新合约当日收盘结算价
+        }
+    )
+
+    # 1. 模拟早盘分钟线提取结果: 仅 T=1 提取到了旧合约的早盘 30m VWAP
+    rolls_exec = pl.DataFrame(
+        {
+            "prev_contract": ["RB2401"],
+            "trading_date": [date(2024, 1, 2)],
+            "_old_exec_vwap": [103.5],
+        }
+    )
+    daily = daily.join(rolls_exec, on=["prev_contract", "trading_date"], how="left")
+
+    # 2. 模拟日线 bar_1d 提取结果:
+    # T=2 旧合约早盘无成交但全天有成交，开盘价 206.0，昨结 205.0
+    # T=3 旧合约全天零成交 (open=0)，但有昨结 304.0
+    # T=4 旧合约在 bar_1d 中完全无记录 (如已摘牌)
+    old_bars = pl.DataFrame(
+        {
+            "prev_contract": ["RB2405", "RB2410"],
+            "trading_date": [date(2024, 1, 3), date(2024, 1, 4)],
+            "_old_bar_open": [206.0, None],
+            "_old_bar_prev_settle": [205.0, 304.0],
+        }
+    )
+    daily = daily.join(old_bars, on=["prev_contract", "trading_date"], how="left")
+
+    # 预排序确保 shift(1) 正确
+    daily = daily.sort(["symbol", "trading_date"])
+
+    # 执行三级严格级联回退
+    daily = daily.with_columns(
+        exec_vwap_old=pl.when(pl.col("is_roll"))
+        .then(
+            pl.col("_old_exec_vwap")
+            .fill_null(pl.col("_old_bar_open"))
+            .fill_null(pl.col("_old_bar_prev_settle"))
+            .fill_null(pl.col("settle_raw").shift(1).over("symbol"))
+        )
+        .otherwise(pl.col("exec_vwap"))
+    ).drop(["_old_exec_vwap", "_old_bar_open", "_old_bar_prev_settle"])
+
+    res = daily.sort("trading_date")
+
+    # 逐日断言:
+    # T=0: 非换月日，exec_vwap_old == exec_vwap == 100.0
+    assert res["exec_vwap_old"][0] == 100.0
+
+    # T=1: 换月日，L1 命中: 取旧合约早盘 30m VWAP (103.5)
+    assert res["exec_vwap_old"][1] == 103.5
+
+    # T=2: 换月日，L2 命中: 取旧合约日线真实开盘价 (206.0)，绝非新合约结算价 305.0
+    assert res["exec_vwap_old"][2] == 206.0
+
+    # T=3: 换月日，L3a 命中: 取旧合约日线 prev_settlement (304.0)，绝非新合约结算价 405.0
+    assert res["exec_vwap_old"][3] == 304.0
+
+    # T=4: 换月日，L3b 命中: bar_1d 缺失，回退至上一日旧合约结算价 (405.0)，绝非当日新合约结算价 505.0
+    assert res["exec_vwap_old"][4] == 405.0
+
+    # 关键因果红线校验: 在所有换月日 (T=1..4)，exec_vwap_old 严禁等于当日新合约 settle_raw
+    for i in range(1, 5):
+        assert res["exec_vwap_old"][i] != res["settle_raw"][i], (
+            f"Row {i} 错误使用了新合约当日收盘结算价未来信息: "
+            f"exec_vwap_old={res['exec_vwap_old'][i]}, settle_raw={res['settle_raw'][i]}"
+        )

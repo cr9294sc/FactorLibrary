@@ -41,9 +41,53 @@ pub struct QuantileMetrics {
     pub monotonicity: f64,
     /// 满足分组条件的有效交易日数
     pub valid_days: usize,
+    /// 多头 Top 分位日度单边持仓权重换手率时序 (长度 T, 首日与无效跃迁日填充 NaN)
+    pub top_turnover_series: Vec<f64>,
+    /// 多头 Top 分位单边换手率均值 (基于有效跃迁日样本的 nanmean)
+    pub mean_top_turnover: f64,
+    /// 存在有效持仓跃迁的换手率计算日数
+    pub top_turnover_valid_days: usize,
 }
 
-/// 计算单个交易日截面上的分位数分组收益与多空利差。
+/// 计算两组有序标的集合之间的等权单边持仓权重换手率: 0.5 * sum |w_curr - w_prev|
+#[inline]
+pub fn calc_one_way_weight_turnover(prev: &[usize], curr: &[usize]) -> f64 {
+    if prev.is_empty() || curr.is_empty() {
+        return f64::NAN;
+    }
+    let mut i = 0;
+    let mut j = 0;
+    let mut overlap = 0;
+    while i < prev.len() && j < curr.len() {
+        match prev[i].cmp(&curr[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                overlap += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    let k_p = prev.len() as f64;
+    let k_c = curr.len() as f64;
+    let o = overlap as f64;
+    let sum_diff = o * (1.0 / k_c - 1.0 / k_p).abs() + (1.0 - o / k_c) + (1.0 - o / k_p);
+    (0.5 * sum_diff).clamp(0.0, 1.0)
+}
+
+/// 多头 Top 分位组合单边换手率指标。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopQuantileTurnoverMetrics {
+    /// 日度平均单边换手率 (nanmean)
+    pub turnover: f64,
+    /// 每日单边换手率时序 (长度 T, 首日与无效跃迁日填充 NaN)
+    pub daily_turnover: Vec<f64>,
+    /// 有效跃迁计算日数
+    pub valid_days: usize,
+}
+
+/// 计算单个交易日截面上的分位数分组收益与多空利差，并返回多头 Top 组标的下标列表。
 pub fn calc_daily_quantile_returns(
     factor_row: &[f64],
     ret_row: &[f64],
@@ -51,7 +95,7 @@ pub fn calc_daily_quantile_returns(
     n_quantiles: usize,
     min_names: usize,
     sign: i32,
-) -> (Vec<f64>, f64) {
+) -> (Vec<f64>, f64, Vec<usize>) {
     let n = factor_row.len();
     let mut pairs: Vec<(usize, f64, f64)> = Vec::with_capacity(n);
 
@@ -67,7 +111,7 @@ pub fn calc_daily_quantile_returns(
 
     let k_names = pairs.len();
     if k_names < min_names || k_names < n_quantiles || n_quantiles < 2 {
-        return (vec![f64::NAN; n_quantiles], f64::NAN);
+        return (vec![f64::NAN; n_quantiles], f64::NAN, Vec::new());
     }
 
     // 稳定排序：因子值升序，相同按标的下标排序
@@ -81,9 +125,10 @@ pub fn calc_daily_quantile_returns(
     let nq_float = n_quantiles as f64;
 
     for (q, ret_val) in g_rets.iter_mut().enumerate() {
-        let i_start = ((q as f64) * k_float / nq_float).floor() as usize;
-        let i_end = (((q + 1) as f64) * k_float / nq_float).floor() as usize;
-        let count = i_end - i_start;
+        let i_start = ((q as f64) * k_float / nq_float).round() as usize;
+        let i_end = (((q + 1) as f64) * k_float / nq_float).round() as usize;
+        let i_end = i_end.min(k_names);
+        let count = i_end.saturating_sub(i_start);
         if count == 0 {
             *ret_val = f64::NAN;
             continue;
@@ -108,7 +153,22 @@ pub fn calc_daily_quantile_returns(
         f64::NAN
     };
 
-    (g_rets, ls)
+    // 提取多头 Top 分位标的索引集合 (升序排列)
+    let top_q = if sign >= 0 { n_quantiles - 1 } else { 0 };
+    let top_start = ((top_q as f64) * k_float / nq_float).round() as usize;
+    let top_end = ((((top_q + 1) as f64) * k_float / nq_float).round() as usize).min(k_names);
+    let top_indices: Vec<usize> = if top_end > top_start {
+        let mut idxs: Vec<usize> = pairs[top_start..top_end]
+            .iter()
+            .map(|item| item.0)
+            .collect();
+        idxs.sort_unstable();
+        idxs
+    } else {
+        Vec::new()
+    };
+
+    (g_rets, ls, top_indices)
 }
 
 /// 全量面板多日分位数与多空收益计算。
@@ -129,8 +189,8 @@ pub fn calc_quantile_metrics(
     assert_eq!(mask.dim(), (t, n), "factor 与 mask 矩阵形状必须一致");
     assert!(n_quantiles >= 2, "n_quantiles 必须 >= 2");
 
-    // 并行计算每日的分组收益与多空收益
-    let daily_results: Vec<(Vec<f64>, f64)> = (0..t)
+    // 并行计算每日的分组收益、多空收益与 Top 分位标的索引
+    let daily_results: Vec<(Vec<f64>, f64, Vec<usize>)> = (0..t)
         .into_par_iter()
         .map(|row| {
             let mut f_row = Vec::with_capacity(n);
@@ -147,14 +207,32 @@ pub fn calc_quantile_metrics(
 
     let mut group_daily_returns: Vec<Vec<f64>> = vec![vec![f64::NAN; t]; n_quantiles];
     let mut ls_daily_returns = vec![f64::NAN; t];
+    let mut top_turnover_series = vec![f64::NAN; t];
 
     for row in 0..t {
-        let (ref grets, ls) = daily_results[row];
+        let (ref grets, ls, _) = daily_results[row];
         for q in 0..n_quantiles {
             group_daily_returns[q][row] = grets[q];
         }
         ls_daily_returns[row] = ls;
+        if row > 0 {
+            let prev_top = &daily_results[row - 1].2;
+            let curr_top = &daily_results[row].2;
+            top_turnover_series[row] = calc_one_way_weight_turnover(prev_top, curr_top);
+        }
     }
+
+    let valid_to_vals: Vec<f64> = top_turnover_series
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
+    let top_turnover_valid_days = valid_to_vals.len();
+    let mean_top_turnover = if top_turnover_valid_days > 0 {
+        valid_to_vals.iter().sum::<f64>() / (top_turnover_valid_days as f64)
+    } else {
+        0.0
+    };
 
     // 统计有效日
     let valid_indices: Vec<usize> = (0..t)
@@ -176,6 +254,9 @@ pub fn calc_quantile_metrics(
             ls_max_dd: 0.0,
             monotonicity: 0.0,
             valid_days: 0,
+            top_turnover_series,
+            mean_top_turnover,
+            top_turnover_valid_days,
         };
     }
 
@@ -266,6 +347,111 @@ pub fn calc_quantile_metrics(
         ls_sharpe,
         ls_max_dd: max_dd,
         monotonicity,
+        valid_days: m,
+        top_turnover_series,
+        mean_top_turnover,
+        top_turnover_valid_days,
+    }
+}
+
+/// 提取单日因子截面上的多头 Top 分位有效标的下标列表（升序排列）。
+pub fn extract_daily_top_indices(
+    factor_row: &[f64],
+    mask_row: &[bool],
+    n_quantiles: usize,
+    min_names: usize,
+    sign: i32,
+) -> Vec<usize> {
+    let n = factor_row.len();
+    let mut pairs: Vec<(usize, f64)> = Vec::with_capacity(n);
+    for i in 0..n {
+        if mask_row[i] {
+            let f = factor_row[i];
+            if f.is_finite() {
+                pairs.push((i, f));
+            }
+        }
+    }
+    let k_names = pairs.len();
+    if k_names < min_names || k_names < n_quantiles || n_quantiles < 2 {
+        return Vec::new();
+    }
+    pairs.sort_unstable_by(|a, b| match cmp_f64(a.1, b.1) {
+        std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+        other => other,
+    });
+    let k_float = k_names as f64;
+    let nq_float = n_quantiles as f64;
+    let top_q = if sign >= 0 { n_quantiles - 1 } else { 0 };
+    let top_start = ((top_q as f64) * k_float / nq_float).round() as usize;
+    let top_end = ((((top_q + 1) as f64) * k_float / nq_float).round() as usize).min(k_names);
+    if top_end > top_start {
+        let mut idxs: Vec<usize> = pairs[top_start..top_end]
+            .iter()
+            .map(|item| item.0)
+            .collect();
+        idxs.sort_unstable();
+        idxs
+    } else {
+        Vec::new()
+    }
+}
+
+/// 全量面板多日 Top 分位组合单边换手率计算。
+pub fn calc_top_quantile_turnover(
+    factor: &Array2<f64>,
+    mask: &Array2<bool>,
+    n_quantiles: usize,
+    min_names: usize,
+    sign: i32,
+) -> TopQuantileTurnoverMetrics {
+    let (t, n) = factor.dim();
+    assert_eq!(mask.dim(), (t, n), "factor 与 mask 矩阵形状必须一致");
+    assert!(n_quantiles >= 2, "n_quantiles 必须 >= 2");
+
+    if t < 2 {
+        return TopQuantileTurnoverMetrics {
+            turnover: 0.0,
+            daily_turnover: vec![f64::NAN; t],
+            valid_days: 0,
+        };
+    }
+
+    let daily_tops: Vec<Vec<usize>> = (0..t)
+        .into_par_iter()
+        .map(|row| {
+            let mut f_row = Vec::with_capacity(n);
+            let mut m_row = Vec::with_capacity(n);
+            for col in 0..n {
+                f_row.push(factor[[row, col]]);
+                m_row.push(mask[[row, col]]);
+            }
+            extract_daily_top_indices(&f_row, &m_row, n_quantiles, min_names, sign)
+        })
+        .collect();
+
+    let mut daily_turnover = vec![f64::NAN; t];
+    for row in 1..t {
+        let prev = &daily_tops[row - 1];
+        let curr = &daily_tops[row];
+        daily_turnover[row] = calc_one_way_weight_turnover(prev, curr);
+    }
+
+    let valid_vals: Vec<f64> = daily_turnover
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
+    let m = valid_vals.len();
+    let turnover = if m > 0 {
+        valid_vals.iter().sum::<f64>() / (m as f64)
+    } else {
+        0.0
+    };
+
+    TopQuantileTurnoverMetrics {
+        turnover,
+        daily_turnover,
         valid_days: m,
     }
 }

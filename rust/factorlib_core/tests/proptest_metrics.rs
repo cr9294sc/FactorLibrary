@@ -10,7 +10,7 @@ use factorlib_core::metrics::corr::{cross_correlation_matrix, cross_correlation_
 use factorlib_core::metrics::ic::{
     calc_ic_metrics, calc_ic_series, compute_fractional_ranks, pearson_correlation,
 };
-use factorlib_core::metrics::quantile::calc_quantile_metrics;
+use factorlib_core::metrics::quantile::{calc_quantile_metrics, calc_top_quantile_turnover};
 use factorlib_core::metrics::turnover::calc_turnover_metrics;
 use ndarray::{Array2, ShapeBuilder};
 use proptest::prelude::*;
@@ -141,6 +141,7 @@ fn test_turnover_metrics() {
     assert_eq!(to_const.valid_days, 4);
     assert!((to_const.rank_autocorr - 1.0).abs() < 1e-12);
     assert!(to_const.turnover.abs() < 1e-12);
+    assert!((to_const.rank_autocorr_turnover - to_const.turnover).abs() < 1e-12);
 
     // 因子每隔一天完全反转：rank autocorr 为 -1.0，换手率为 2.0
     let mut factor_invert = Array2::<f64>::zeros((t, n).f());
@@ -153,6 +154,60 @@ fn test_turnover_metrics() {
     let to_inv = calc_turnover_metrics(&factor_invert, &mask, 4);
     assert!((to_inv.rank_autocorr - (-1.0)).abs() < 1e-12);
     assert!((to_inv.turnover - 2.0).abs() < 1e-12);
+    assert!((to_inv.rank_autocorr_turnover - 2.0).abs() < 1e-12);
+}
+
+#[test]
+fn test_top_quantile_turnover_and_rotation() {
+    // 构造 10 只标的，3 个交易日，5 分位分组 (每组 2 只标的)
+    let t = 3;
+    let n = 10;
+    let mut factor = Array2::<f64>::zeros((t, n).f());
+    let mut fwd_ret = Array2::<f64>::zeros((t, n).f());
+    let mask = Array2::<bool>::from_elem((t, n).f(), true);
+
+    // Day 0: 因子值为 0..9，Top 组为标的 [8, 9]
+    for c in 0..n {
+        factor[[0, c]] = c as f64;
+        fwd_ret[[0, c]] = 0.01;
+    }
+
+    // Day 1: 标的 9 因子值降至 -1.0，其他不变。Top 组变为 [7, 8]，重叠为 {8} (1/2 轮换，单边换手 50%)
+    for c in 0..n {
+        factor[[1, c]] = c as f64;
+        fwd_ret[[1, c]] = 0.01;
+    }
+    factor[[1, 9]] = -1.0;
+
+    // Day 2: 标的 7 和 8 降至 -2.0，Top 组变为 [5, 6]，重叠为 0 (完全轮换，单边换手 100%)
+    for c in 0..n {
+        factor[[2, c]] = c as f64;
+        fwd_ret[[2, c]] = 0.01;
+    }
+    factor[[2, 9]] = -1.0;
+    factor[[2, 8]] = -2.0;
+    factor[[2, 7]] = -2.0;
+
+    let qm = calc_quantile_metrics(&factor, &fwd_ret, &mask, 5, 5, 1);
+    assert_eq!(qm.top_turnover_series.len(), 3);
+    assert!(qm.top_turnover_series[0].is_nan());
+    assert!((qm.top_turnover_series[1] - 0.50).abs() < 1e-12);
+    assert!((qm.top_turnover_series[2] - 1.00).abs() < 1e-12);
+    assert_eq!(qm.top_turnover_valid_days, 2);
+    assert!((qm.mean_top_turnover - 0.75).abs() < 1e-12);
+
+    // 独立算子 calc_top_quantile_turnover 必须输出完全一致的结果
+    let top_to = calc_top_quantile_turnover(&factor, &mask, 5, 5, 1);
+    assert_eq!(top_to.valid_days, 2);
+    assert!((top_to.turnover - 0.75).abs() < 1e-12);
+    assert!(top_to.daily_turnover[0].is_nan());
+    assert!((top_to.daily_turnover[1] - 0.50).abs() < 1e-12);
+    assert!((top_to.daily_turnover[2] - 1.00).abs() < 1e-12);
+
+    // 反向因子 sign = -1：多头为最低分位
+    let top_to_rev = calc_top_quantile_turnover(&factor, &mask, 5, 5, -1);
+    assert_eq!(top_to_rev.valid_days, 2);
+    assert!(top_to_rev.turnover > 0.0);
 }
 
 #[test]

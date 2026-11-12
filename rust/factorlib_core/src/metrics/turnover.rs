@@ -13,10 +13,12 @@ use rayon::prelude::*;
 /// 因子换手率与自相关评价指标。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnoverMetrics {
-    /// 日度平均换手率代理指标 (1.0 - rank_autocorr)
+    /// 日度平均换手率代理指标 (1.0 - rank_autocorr，保留向后兼容)
     pub turnover: f64,
     /// 因子截面排名一阶自相关系数均值
     pub rank_autocorr: f64,
+    /// 因子截面排名一阶自相关衰减度 (1.0 - rank_autocorr，显式语义)
+    pub rank_autocorr_turnover: f64,
     /// 相邻交易日截面排名自相关时序 (长度 T-1, 无效对填充 NaN)
     pub daily_autocorr: Vec<f64>,
     /// 有效相邻交易日对数
@@ -73,6 +75,7 @@ pub fn calc_turnover_metrics(
         return TurnoverMetrics {
             turnover: 0.0,
             rank_autocorr: 1.0,
+            rank_autocorr_turnover: 0.0,
             daily_autocorr: Vec::new(),
             valid_days: 0,
         };
@@ -106,6 +109,7 @@ pub fn calc_turnover_metrics(
         return TurnoverMetrics {
             turnover: 1.0,
             rank_autocorr: 0.0,
+            rank_autocorr_turnover: 1.0,
             daily_autocorr,
             valid_days: 0,
         };
@@ -118,6 +122,7 @@ pub fn calc_turnover_metrics(
     TurnoverMetrics {
         turnover,
         rank_autocorr: mean_autocorr,
+        rank_autocorr_turnover: turnover,
         daily_autocorr,
         valid_days: m,
     }

@@ -13,5 +13,7 @@ pub mod turnover;
 
 pub use corr::{cross_correlation_matrix, cross_correlation_pairwise};
 pub use ic::{calc_ic_metrics, calc_ic_series, IcMetrics};
-pub use quantile::{calc_quantile_metrics, QuantileMetrics};
+pub use quantile::{
+    calc_quantile_metrics, calc_top_quantile_turnover, QuantileMetrics, TopQuantileTurnoverMetrics,
+};
 pub use turnover::{calc_turnover_metrics, TurnoverMetrics};

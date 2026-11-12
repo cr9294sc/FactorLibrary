@@ -1253,6 +1253,19 @@ def ref_rank_ic(
     }
 
 
+def ref_one_way_weight_turnover(prev_indices: list[int], curr_indices: list[int]) -> float:
+    """计算两组标的集合之间的单边等权持仓权重换手率: 0.5 * sum |w_curr - w_prev|"""
+    if len(prev_indices) == 0 or len(curr_indices) == 0:
+        return float(np.nan)
+    s_prev = set(prev_indices)
+    s_curr = set(curr_indices)
+    kp = float(len(s_prev))
+    kc = float(len(s_curr))
+    o = float(len(s_prev & s_curr))
+    sum_diff = o * abs(1.0 / kc - 1.0 / kp) + (1.0 - o / kc) + (1.0 - o / kp)
+    return float(np.clip(0.5 * sum_diff, 0.0, 1.0))
+
+
 def ref_quantile_returns(
     factor: np.ndarray,
     forward_ret: np.ndarray,
@@ -1265,6 +1278,8 @@ def ref_quantile_returns(
     T, N = factor.shape
     group_daily_returns = [np.full(T, np.nan, dtype=np.float64) for _ in range(n_quantiles)]
     ls_daily_returns = np.full(T, np.nan, dtype=np.float64)
+    daily_top_list: list[list[int]] = []
+    top_q = (n_quantiles - 1) if sign >= 0 else 0
 
     for t in range(T):
         m_row = mask[t]
@@ -1274,6 +1289,7 @@ def ref_quantile_returns(
         valid_idx = np.where(m_row & np.isfinite(f_row) & np.isfinite(r_row))[0]
         k_names = len(valid_idx)
         if k_names < min_names or k_names < n_quantiles or n_quantiles < 2:
+            daily_top_list.append([])
             continue
 
         # 稳定排序: 因子值升序，相同时按标的下标排序
@@ -1282,20 +1298,35 @@ def ref_quantile_returns(
         sorted_idx = valid_idx[sorted_pos]
 
         g_rets = []
+        top_indices = []
         for q in range(n_quantiles):
-            i_start = int(np.floor(q * k_names / n_quantiles))
-            i_end = int(np.floor((q + 1) * k_names / n_quantiles))
+            i_start = int(np.round(q * k_names / n_quantiles))
+            i_end = int(np.round((q + 1) * k_names / n_quantiles))
+            i_end = min(i_end, k_names)
             q_idx = sorted_idx[i_start:i_end]
             if len(q_idx) == 0:
                 g_rets.append(np.nan)
             else:
                 g_rets.append(float(np.mean(r_row[q_idx])))
             group_daily_returns[q][t] = g_rets[-1]
+            if q == top_q:
+                top_indices = sorted(q_idx.tolist())
+        daily_top_list.append(top_indices)
 
         r_bottom = g_rets[0]
         r_top = g_rets[-1]
         if np.isfinite(r_bottom) and np.isfinite(r_top):
             ls_daily_returns[t] = (r_top - r_bottom) if sign >= 0 else (r_bottom - r_top)
+
+    top_turnover_series = np.full(T, np.nan, dtype=np.float64)
+    for t in range(1, T):
+        prev_top = daily_top_list[t - 1]
+        curr_top = daily_top_list[t]
+        if len(prev_top) > 0 and len(curr_top) > 0:
+            top_turnover_series[t] = ref_one_way_weight_turnover(prev_top, curr_top)
+
+    valid_to = top_turnover_series[np.isfinite(top_turnover_series)]
+    mean_top_turnover = float(np.mean(valid_to)) if len(valid_to) > 0 else 0.0
 
     valid_mask = np.isfinite(ls_daily_returns)
     m = int(np.sum(valid_mask))
@@ -1314,6 +1345,10 @@ def ref_quantile_returns(
             "monotonicity": 0.0,
             "valid_days": 0,
             "group_daily_returns": group_daily_returns,
+            "top_turnover": mean_top_turnover,
+            "mean_top_turnover": mean_top_turnover,
+            "top_turnover_series": top_turnover_series,
+            "top_turnover_valid_days": int(len(valid_to)),
         }
 
     group_returns = [float(np.mean(g[valid_mask])) for g in group_daily_returns]
@@ -1359,6 +1394,10 @@ def ref_quantile_returns(
         "monotonicity": monotonicity,
         "valid_days": m,
         "group_daily_returns": group_daily_returns,
+        "top_turnover": mean_top_turnover,
+        "mean_top_turnover": mean_top_turnover,
+        "top_turnover_series": top_turnover_series,
+        "top_turnover_valid_days": int(len(valid_to)),
     }
 
 
@@ -1410,7 +1449,65 @@ def ref_turnover(
     return {
         "turnover": turnover,
         "rank_autocorr": mean_autocorr,
+        "rank_autocorr_turnover": turnover,
         "daily_autocorr": daily_autocorr,
+        "valid_days": m,
+    }
+
+
+def ref_top_quantile_turnover(
+    factor: np.ndarray,
+    mask: np.ndarray,
+    n_quantiles: int = 5,
+    min_names: int = 5,
+    sign: int = 1,
+) -> dict[str, Any]:
+    """多头 Top 分位日度单边持仓权重换手率纯 NumPy 参考实现。"""
+    T, N = factor.shape
+    if T < 2:
+        return {
+            "turnover": 0.0,
+            "mean_top_turnover": 0.0,
+            "daily_turnover": np.full(T, np.nan, dtype=np.float64),
+            "valid_days": 0,
+        }
+
+    daily_top_list: list[list[int]] = []
+    top_q = (n_quantiles - 1) if sign >= 0 else 0
+
+    for t in range(T):
+        m_row = mask[t]
+        f_row = factor[t]
+        valid_idx = np.where(m_row & np.isfinite(f_row))[0]
+        k_names = len(valid_idx)
+        if k_names < min_names or k_names < n_quantiles or n_quantiles < 2:
+            daily_top_list.append([])
+            continue
+
+        sub_f = f_row[valid_idx]
+        sorted_pos = np.argsort(sub_f, kind="mergesort")
+        sorted_idx = valid_idx[sorted_pos]
+
+        top_start = int(np.round(top_q * k_names / n_quantiles))
+        top_end = min(int(np.round((top_q + 1) * k_names / n_quantiles)), k_names)
+        top_idx = sorted(sorted_idx[top_start:top_end].tolist())
+        daily_top_list.append(top_idx)
+
+    daily_turnover = np.full(T, np.nan, dtype=np.float64)
+    for t in range(1, T):
+        prev_top = daily_top_list[t - 1]
+        curr_top = daily_top_list[t]
+        if len(prev_top) > 0 and len(curr_top) > 0:
+            daily_turnover[t] = ref_one_way_weight_turnover(prev_top, curr_top)
+
+    valid_vals = daily_turnover[np.isfinite(daily_turnover)]
+    m = len(valid_vals)
+    turnover = float(np.mean(valid_vals)) if m > 0 else 0.0
+
+    return {
+        "turnover": turnover,
+        "mean_top_turnover": turnover,
+        "daily_turnover": daily_turnover,
         "valid_days": m,
     }
 

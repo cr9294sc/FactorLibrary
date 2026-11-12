@@ -47,11 +47,17 @@ class FactorMetricsRecord:
     ls_sharpe: float = 0.0
     ls_annual_ret: float = 0.0
     ls_max_dd: float = 0.0
+    top_turnover: float = 0.0
+    rank_autocorr_turnover: float = 0.0
     computed_at: str | None = None
 
     def __post_init__(self) -> None:
         if self.split not in VALID_SPLITS:
             raise ValueError(f"无效的切片类型: {self.split!r}, 必须在 {VALID_SPLITS} 中")
+        if self.top_turnover == 0.0 and self.turnover != 0.0:
+            self.top_turnover = self.turnover
+        if self.turnover == 0.0 and self.top_turnover != 0.0:
+            self.turnover = self.top_turnover
         if self.computed_at is None:
             self.computed_at = dt.datetime.now(dt.UTC).isoformat()
 

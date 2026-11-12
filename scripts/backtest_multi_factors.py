@@ -479,7 +479,9 @@ def evaluate_single_factor(
         "ls_mean": q_res["ls_mean"],
         "ls_sharpe": q_res["ls_sharpe"],
         "ls_annual_ret": q_res["ls_annual_ret"],
-        "turnover": turnover_res["turnover"],
+        "turnover": q_res["mean_top_turnover"],
+        "top_turnover": q_res["mean_top_turnover"],
+        "rank_autocorr_turnover": turnover_res["turnover"],
         "excess_annual_ret": excess_ann_ret,
         "excess_annual_ret_arithmetic": excess_ann_ret_arith,
         "excess_annual_vol": excess_ann_vol,
@@ -495,17 +497,18 @@ def print_comprehensive_matrix_report(
     local_results: list[dict[str, Any]],
 ):
     """打印 5 大因子的线上 vs 本地完整矩阵对账总览表。"""
-    print("\n" + "=" * 115)
+    print("\n" + "=" * 130)
     print(" 📊 多因子全面对账评测矩阵 (FactorLab Online vs 本地 Rust 计算内核)")
     print(" 评测周期: 2016-01-04 ~ 2024-12-31 (2187 个交易日, 全市场 5323 只股票)")
-    print("=" * 115)
+    print("=" * 130)
 
     header = (
         f"{'因子名称':<22} | {'回测平台':<10} | {'RankIC':<8} | {'RankIC IR':<10} | "
-        f"{'胜率':<8} | {'5日 IC':<8} | {'多空日收益':<10} | {'多头年化超额':<12} | {'单边换手':<8}"
+        f"{'胜率':<8} | {'5日 IC':<8} | {'多空日收益':<10} | {'多头年化超额':<12} | "
+        f"{'Top换手':<8} | {'秩自相关(1-ρ)':<12}"
     )
     print(header)
-    print("-" * 115)
+    print("-" * 130)
 
     for loc in local_results:
         name = loc["name"]
@@ -540,18 +543,19 @@ def print_comprehensive_matrix_report(
         loc_ls_str = f"{loc['ls_mean'] * 100:.2f}%"
         loc_excess_ret_str = f"{loc['excess_annual_ret'] * 100:+.2f}%"
         loc_turnover_str = f"{loc['turnover'] * 100:.2f}%"
+        loc_autocorr_str = f"{loc['rank_autocorr_turnover'] * 100:.2f}%"
 
         # 打印线上行
         print(
             f"{name:<22} | {'线上平台':<10} | {on_ric_str:<8} | {on_ric_ir_str:<10} | {on_wr_str:<8} | "
-            f"{on_5dic_str:<8} | {on_ls_str:<10} | {on_excess_ret_str:<12} | {on_turnover_str:<8}"
+            f"{on_5dic_str:<8} | {on_ls_str:<10} | {on_excess_ret_str:<12} | {on_turnover_str:<8} | {'  --  ':<12}"
         )
         # 打印本地行
         print(
             f"{' └─ 本地 Rust 对账':<22} | {'本地内核':<10} | {loc_ric_str:<8} | {loc_ric_ir_str:<10} | {loc_wr_str:<8} | "
-            f"{loc_5dic_str:<8} | {loc_ls_str:<10} | {loc_excess_ret_str:<12} | {loc_turnover_str:<8}"
+            f"{loc_5dic_str:<8} | {loc_ls_str:<10} | {loc_excess_ret_str:<12} | {loc_turnover_str:<8} | {loc_autocorr_str:<12}"
         )
-        print("-" * 115)
+        print("-" * 130)
 
 
 def print_ablation_insights(local_results: list[dict[str, Any]]):

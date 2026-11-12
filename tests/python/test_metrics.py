@@ -97,6 +97,12 @@ def test_quantile_returns_parity_against_ops_ref():
         assert abs(rust_qm["ls_max_dd"] - py_qm["ls_max_dd"]) < 1e-9
         assert abs(rust_qm["monotonicity"] - py_qm["monotonicity"]) < 1e-9
         assert rust_qm["valid_days"] == py_qm["valid_days"]
+        assert abs(rust_qm["top_turnover"] - py_qm["top_turnover"]) < 1e-9
+        np.testing.assert_allclose(
+            np.where(np.isnan(rust_qm["top_turnover_series"]), 0.0, rust_qm["top_turnover_series"]),
+            np.where(np.isnan(py_qm["top_turnover_series"]), 0.0, py_qm["top_turnover_series"]),
+            atol=1e-9,
+        )
 
         for q in range(5):
             assert abs(rust_qm["group_returns"][q] - py_qm["group_returns"][q]) < 1e-9
@@ -109,6 +115,7 @@ def test_quantile_returns_parity_against_ops_ref():
         py_qm_rev = ops_ref.ref_quantile_returns(f, lbl, mask, n_quantiles=5, min_names=5, sign=-1)
         assert abs(rust_qm_rev["ls_mean"] - py_qm_rev["ls_mean"]) < 1e-9
         assert abs(rust_qm_rev["monotonicity"] - py_qm_rev["monotonicity"]) < 1e-9
+        assert abs(rust_qm_rev["top_turnover"] - py_qm_rev["top_turnover"]) < 1e-9
 
 
 def test_turnover_parity_against_ops_ref():
@@ -121,6 +128,8 @@ def test_turnover_parity_against_ops_ref():
 
         assert abs(rust_to["turnover"] - py_to["turnover"]) < 1e-9
         assert abs(rust_to["rank_autocorr"] - py_to["rank_autocorr"]) < 1e-9
+        assert abs(rust_to["rank_autocorr_turnover"] - py_to["rank_autocorr_turnover"]) < 1e-9
+        assert rust_to["rank_autocorr_turnover"] == rust_to["turnover"]
         assert rust_to["valid_days"] == py_to["valid_days"]
 
         r_auto = rust_to["daily_autocorr"]
@@ -131,6 +140,50 @@ def test_turnover_parity_against_ops_ref():
             atol=1e-9,
             rtol=1e-9,
         )
+
+
+def test_top_quantile_turnover_parity_and_known_rotation():
+    """测试 calc_top_quantile_turnover 与 ops_ref 对齐，并测试已知 10 选 1 轮换换手率严格等于 0.10。"""
+    # 1. 随机矩阵双轨对账
+    for seed in [101, 202, 303]:
+        f, _, mask = _make_noisy_test_matrices(seed)
+        rust_to = factorlib_core.calc_top_quantile_turnover(
+            f, mask, n_quantiles=5, min_names=5, sign=1
+        )
+        py_to = ops_ref.ref_top_quantile_turnover(f, mask, n_quantiles=5, min_names=5, sign=1)
+
+        assert abs(rust_to["turnover"] - py_to["turnover"]) < 1e-9
+        assert abs(rust_to["mean_top_turnover"] - py_to["mean_top_turnover"]) < 1e-9
+        assert rust_to["valid_days"] == py_to["valid_days"]
+        np.testing.assert_allclose(
+            np.where(np.isnan(rust_to["daily_turnover"]), 0.0, rust_to["daily_turnover"]),
+            np.where(np.isnan(py_to["daily_turnover"]), 0.0, py_to["daily_turnover"]),
+            atol=1e-9,
+            rtol=1e-9,
+        )
+
+    # 2. 构造 100 只股票、10 分位 (每组 10 只股票)、2 个交易日的面板
+    # Day 0: 股票 0..99 因子值 0..99，G10 组为标的 90..99
+    # Day 1: 标的 99 因子值降至 -1.0，其他不变。G10 组变为 89..98 (9 只重叠，1 只出圈，严格换手 10.0%)
+    T, N = 2, 100
+    f_known = np.zeros((T, N), dtype=np.float64, order="F")
+    f_known[0, :] = np.arange(N, dtype=np.float64)
+    f_known[1, :] = np.arange(N, dtype=np.float64)
+    f_known[1, 99] = -1.0
+    mask_known = np.ones((T, N), dtype=bool, order="F")
+
+    known_res = factorlib_core.calc_top_quantile_turnover(
+        f_known, mask_known, n_quantiles=10, min_names=10, sign=1
+    )
+    assert known_res["valid_days"] == 1
+    assert np.isnan(known_res["daily_turnover"][0])
+    assert abs(known_res["daily_turnover"][1] - 0.10) < 1e-12
+    assert abs(known_res["turnover"] - 0.10) < 1e-12
+
+    # 对比截面秩自相关距离 1 - rho: 单只标的秩次移动导致 1 - rho 约 0.059
+    rank_to = factorlib_core.calc_turnover(f_known, mask_known, min_names=10)
+    assert rank_to["turnover"] < known_res["turnover"]
+    assert abs(rank_to["turnover"] - 0.05940594059405946) < 1e-6
 
 
 def test_correlation_matrix_parity_against_ops_ref():

@@ -264,10 +264,12 @@ def _evaluate_factor_matrix_core(
                 ic_t=float(met["ic_t"]),
                 ic_win_rate=float(met["ic_win_rate"]),
                 coverage=float(met["coverage"]),
-                turnover=float(met["turnover_val"]),
+                turnover=float(met.get("top_turnover", met["turnover_val"])),
                 ls_sharpe=float(met["ls_sharpe"]),
                 ls_annual_ret=float(met["ls_annual_ret"]),
                 ls_max_dd=float(met["ls_max_dd"]),
+                top_turnover=float(met.get("top_turnover", met["turnover_val"])),
+                rank_autocorr_turnover=float(met.get("rank_autocorr_turnover", 0.0)),
             )
 
             metrics_by_split[split_name][h] = rec
@@ -587,9 +589,11 @@ def evaluate_factor_v4_stats(
                 if q == n_quantiles - 1:
                     curr_top_set = set(idx_1d[g_pos].tolist())
                     if prev_top_set and curr_top_set:
-                        overlap = len(prev_top_set & curr_top_set)
-                        denom = max(len(curr_top_set), 1)
-                        top_turnover[t] = 1.0 - (overlap / denom)
+                        kp = float(len(prev_top_set))
+                        kc = float(len(curr_top_set))
+                        o = float(len(prev_top_set & curr_top_set))
+                        sum_diff = o * abs(1.0 / kc - 1.0 / kp) + (1.0 - o / kc) + (1.0 - o / kp)
+                        top_turnover[t] = float(np.clip(0.5 * sum_diff, 0.0, 1.0))
                     prev_top_set = curr_top_set
 
         valid_5d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r5_row)

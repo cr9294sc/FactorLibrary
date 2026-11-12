@@ -514,7 +514,16 @@ def print_comparison_tables(online: dict[str, Any], local: dict[str, Any]):
             f"{m_on.get('long_shortIR', 0):.4f}",
             f"{local['quantile']['ls_sharpe']:.4f}",
         ),
-        ("单边换手率", "12.11%", f"{local['turnover']['turnover'] * 100:.2f}%"),
+        (
+            "单边换手率 (Top G10)",
+            "12.11%",
+            f"{local['quantile']['mean_top_turnover'] * 100:.2f}%",
+        ),
+        (
+            "截面秩自相关距离 (1-ρ)",
+            "  --  ",
+            f"{local['turnover']['turnover'] * 100:.2f}%",
+        ),
         ("多头年化超额 (vs全指)", "1.26%", f"{local['long_excess']['annual_return'] * 100:.2f}%"),
         ("多头超额夏普", "0.1642", f"{local['long_excess']['sharpe']:.4f}"),
         ("有效回测天数", "2185 天", f"{local['valid_days']} 天"),

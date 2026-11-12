@@ -20,7 +20,10 @@ use crate::metrics::corr::{cross_correlation_matrix, cross_correlation_pairwise}
 use crate::metrics::ic::{
     calc_daily_cross_sectional_ic, calc_ic_metrics, calc_ic_series, IcMetrics,
 };
-use crate::metrics::quantile::{calc_quantile_metrics, QuantileMetrics};
+use crate::metrics::quantile::{
+    calc_quantile_metrics, calc_top_quantile_turnover as rust_calc_top_quantile_turnover,
+    QuantileMetrics, TopQuantileTurnoverMetrics,
+};
 use crate::metrics::turnover::{calc_turnover_metrics, TurnoverMetrics};
 use crate::ops::list_all_operators;
 use crate::ops::postprocess::{
@@ -135,6 +138,13 @@ fn quantile_metrics_to_pydict<'py>(
         g_daily_list.append(PyArray1::from_slice_bound(py, g))?;
     }
     d.set_item("group_daily_returns", g_daily_list)?;
+    d.set_item("top_turnover", m.mean_top_turnover)?;
+    d.set_item("mean_top_turnover", m.mean_top_turnover)?;
+    d.set_item("top_turnover_valid_days", m.top_turnover_valid_days)?;
+    d.set_item(
+        "top_turnover_series",
+        PyArray1::from_slice_bound(py, &m.top_turnover_series),
+    )?;
     Ok(d)
 }
 
@@ -145,10 +155,26 @@ fn turnover_metrics_to_pydict<'py>(
     let d = PyDict::new_bound(py);
     d.set_item("turnover", m.turnover)?;
     d.set_item("rank_autocorr", m.rank_autocorr)?;
+    d.set_item("rank_autocorr_turnover", m.rank_autocorr_turnover)?;
     d.set_item("valid_days", m.valid_days)?;
     d.set_item(
         "daily_autocorr",
         PyArray1::from_slice_bound(py, &m.daily_autocorr),
+    )?;
+    Ok(d)
+}
+
+fn top_quantile_turnover_to_pydict<'py>(
+    py: Python<'py>,
+    m: &TopQuantileTurnoverMetrics,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("turnover", m.turnover)?;
+    d.set_item("mean_top_turnover", m.turnover)?;
+    d.set_item("valid_days", m.valid_days)?;
+    d.set_item(
+        "daily_turnover",
+        PyArray1::from_slice_bound(py, &m.daily_turnover),
     )?;
     Ok(d)
 }
@@ -605,6 +631,34 @@ impl PyEngine {
         turnover_metrics_to_pydict(py, &metrics)
     }
 
+    /// 评估因子多头 Top 分位日度单边持仓权重换手率。
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (factor, n_quantiles=5, min_names=5, sign=1, start_row=None, end_row=None))]
+    pub fn top_quantile_turnover<'py>(
+        &self,
+        py: Python<'py>,
+        factor: &Bound<'_, PyAny>,
+        n_quantiles: usize,
+        min_names: usize,
+        sign: i32,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let f_raw = self.resolve_factor_mat(py, factor)?;
+        let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
+        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+
+        if n_quantiles < 2 {
+            return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
+        }
+
+        let metrics = py.allow_threads(move || {
+            rust_calc_top_quantile_turnover(&f_mat, &mask_sub, n_quantiles, min_names, sign)
+        });
+
+        top_quantile_turnover_to_pydict(py, &metrics)
+    }
+
     /// 因子多维度综合评估（单次调用同时计算 IC、分位数多空、换手率，全程释放 GIL）。
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (factor, label_name="y_5", ret_name=None, horizon=5, n_quantiles=5, min_names=5, sign=1, start_row=None, end_row=None))]
@@ -675,7 +729,9 @@ impl PyEngine {
         d.set_item("ic_t", ic_m.ic_t)?;
         d.set_item("ic_win_rate", ic_m.ic_win_rate)?;
         d.set_item("coverage", ic_m.coverage)?;
-        d.set_item("turnover_val", to_m.turnover)?;
+        d.set_item("turnover_val", q_m.mean_top_turnover)?;
+        d.set_item("top_turnover", q_m.mean_top_turnover)?;
+        d.set_item("rank_autocorr_turnover", to_m.turnover)?;
         d.set_item("ls_sharpe", q_m.ls_sharpe)?;
         d.set_item("ls_annual_ret", q_m.ls_annual_ret)?;
         d.set_item("ls_max_dd", q_m.ls_max_dd)?;
@@ -1159,12 +1215,44 @@ pub fn calc_quantile_returns<'py>(
             "factor, forward_ret 与 mask 矩阵维度必须完全一致",
         ));
     }
+    if n_quantiles < 2 {
+        return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
+    }
 
     let metrics = py.allow_threads(move || {
         calc_quantile_metrics(&f_mat, &r_mat, &m_mat, n_quantiles, min_names, sign)
     });
 
     quantile_metrics_to_pydict(py, &metrics)
+}
+
+/// 计算因子多头 Top 分位日度单边持仓权重换手率。
+#[pyfunction]
+#[pyo3(signature = (factor, mask, n_quantiles=5, min_names=5, sign=1))]
+pub fn calc_top_quantile_turnover<'py>(
+    py: Python<'py>,
+    factor: PyReadonlyArray2<'_, f64>,
+    mask: PyReadonlyArray2<'_, bool>,
+    n_quantiles: usize,
+    min_names: usize,
+    sign: i32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let f_mat = view_to_fortran_f64(factor.as_array());
+    let m_mat = view_to_fortran_bool(mask.as_array());
+
+    let (t, n) = f_mat.dim();
+    if m_mat.dim() != (t, n) {
+        return Err(PyValueError::new_err("factor 与 mask 矩阵维度必须完全一致"));
+    }
+    if n_quantiles < 2 {
+        return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
+    }
+
+    let metrics = py.allow_threads(move || {
+        rust_calc_top_quantile_turnover(&f_mat, &m_mat, n_quantiles, min_names, sign)
+    });
+
+    top_quantile_turnover_to_pydict(py, &metrics)
 }
 
 /// 计算因子横截面排名自相关与日度换手率代理指标。

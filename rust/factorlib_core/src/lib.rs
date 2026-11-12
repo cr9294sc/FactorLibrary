@@ -27,6 +27,7 @@ fn factorlib_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py::list_operators, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_ic, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_quantile_returns, m)?)?;
+    m.add_function(wrap_pyfunction!(py::calc_top_quantile_turnover, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_turnover, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_pairwise_correlation, m)?)?;
     m.add_function(wrap_pyfunction!(py::calc_correlation_matrix, m)?)?;

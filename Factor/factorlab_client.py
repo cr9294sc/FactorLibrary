@@ -1,11 +1,24 @@
 """FactorLab MCP Python Helper Client."""
 
-import os
 import json
+import os
 import urllib.request
 
+# Load .env if present
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 FACTORLAB_URL = os.environ.get("FACTORLAB_MCP_URL", "https://factorlab.aresquant.cn/mcp")
-FACTORLAB_TOKEN = os.environ.get("FACTORLAB_MCP_TOKEN", "flpat_TTyS3h4J1n8mwM-pm_79ix6S3tHSST40DLzcqVWvYek")
+FACTORLAB_TOKEN = os.environ.get(
+    "FACTORLAB_MCP_TOKEN", "flpat_9K1qstqRTdtl2Eo023YyPV2_h9SCGLN8FKk-nMG0nbY"
+)
+
 
 def call_mcp_tool(tool_name: str, arguments: dict = None) -> dict:
     """Call an MCP tool on FactorLab."""
@@ -36,6 +49,7 @@ def call_mcp_tool(tool_name: str, arguments: dict = None) -> dict:
         if "result" in res and "structuredContent" in res["result"]:
             return res["result"]["structuredContent"]
         return res
+
 
 if __name__ == "__main__":
     context = call_mcp_tool("get_context")

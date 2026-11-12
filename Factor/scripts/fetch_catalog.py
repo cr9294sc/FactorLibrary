@@ -1,14 +1,28 @@
 """Fetch all catalog entries (variables, functions, postprocess-operators) from FactorLab MCP."""
 
-import os
 import json
-import urllib.request
+import os
 import time
+import urllib.request
+
+# Load .env if present
+_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 
 MCP_URL = os.environ.get("FACTORLAB_MCP_URL", "https://factorlab.aresquant.cn/mcp")
-MCP_TOKEN = os.environ.get("FACTORLAB_MCP_TOKEN", "flpat_TTyS3h4J1n8mwM-pm_79ix6S3tHSST40DLzcqVWvYek")
+MCP_TOKEN = os.environ.get(
+    "FACTORLAB_MCP_TOKEN", "flpat_9K1qstqRTdtl2Eo023YyPV2_h9SCGLN8FKk-nMG0nbY"
+)
 
-OUTPUT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog_full.json")
+OUTPUT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog_full.json"
+)
 
 
 def fetch_catalog_items(catalog_name: str) -> list:

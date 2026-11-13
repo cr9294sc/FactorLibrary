@@ -13,7 +13,6 @@ CLAUDE.md
 
 # --- Rust ---
 /target/
-rust/engine_rust/rustup-init.exe
 
 # --- Python ---
 **/__pycache__/

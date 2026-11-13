@@ -869,29 +869,25 @@
 
 ---
 
-### P1-02 `[P1-架构隐患]` 双 Rust Crate 版本分裂且 `engine_rust` 硬编码 `extension-module` 阻断原生测试与统一构建
+### P1-02 `[P1-架构隐患]` [已修复 / FIXED] 双 Rust Crate 版本分裂且 `engine_rust` 硬编码 `extension-module` 阻断原生测试与统一构建
 
 - **定位信息**：
+  - [`Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/Cargo.toml)（根目录 Cargo Workspace 配置）与 [`Cargo.lock`](file:///home/cr9294/repos/FactorLibrary/Cargo.lock)
   - [`rust/factorlib_core/Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/Cargo.toml#L15-L29)
-  - [`rust/engine_rust/Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/rust/engine_rust/Cargo.toml#L9-L16)
-  - [`rust/engine_rust/pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/rust/engine_rust/pyproject.toml#L1-L12)
+  - 原 `rust/engine_rust/Cargo.toml` 与 `rust/engine_rust/pyproject.toml`（已于 commit `dcdfede` 移除）
 
 - **问题根因分析**：
-  仓库内并存两套独立 Cargo 项目且根目录无 Cargo Workspace：
-  1. **依赖与 ABI 冲突**：[`factorlib_core/Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/Cargo.toml#L16-L18) 使用 `pyo3 = "0.22"`（`abi3-py310`）与 `maturin>=1.7`，而 [`engine_rust/Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/rust/engine_rust/Cargo.toml#L14-L16) 使用 `pyo3 = "0.21"`（`abi3-py38`）并开启了 `duckdb = { version = "1.0", features = ["bundled"] }`（全量源码编译 C++ DuckDB 耗时数分钟且产物体积庞大）。
-  2. **链接器符号缺失 Bug**：[`engine_rust/Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/rust/engine_rust/Cargo.toml#L10-L14) 仅声明 `crate-type = ["cdylib"]` 且在 `[dependencies]` 中硬编码开启 `pyo3/extension-module`（而非像 `factorlib_core` 那样放入可选 `[features]`），导致在 Linux 下直接运行 `cargo test` 会因无法链接 `libpython` 符号而编译失败。
-  3. **架构评估结论**：[`engine_rust`](file:///home/cr9294/repos/FactorLibrary/rust/engine_rust) 的单标的/多标的回测与 DuckDB 查库能力已被 `Polars ETL + factorlib_core` 全面取代，**不应合并进同一 Cargo Workspace 拖慢编译**，而应整体归档至 `legacy/`（并在归档前修复其 `extension-module` feature 声明以备历史对照）。
+  仓库内曾并存两套独立 Cargo 项目且根目录无 Cargo Workspace：
+  1. **依赖与 ABI 冲突**：[`factorlib_core/Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/Cargo.toml#L12-L13) 使用 `pyo3 = "0.22"`（`abi3-py310`）与 `maturin>=1.7`，而原 `engine_rust/Cargo.toml` 使用 `pyo3 = "0.21"`（`abi3-py38`）并开启了 `duckdb = { version = "1.0", features = ["bundled"] }`（全量源码编译 C++ DuckDB 耗时数分钟且产物体积庞大）。
+  2. **链接器符号缺失 Bug**：原 `engine_rust/Cargo.toml` 仅声明 `crate-type = ["cdylib"]` 且在 `[dependencies]` 中硬编码开启 `pyo3/extension-module`，导致在 Linux 下直接运行 `cargo test` 会因无法链接 `libpython` 符号而编译失败。
+  3. **Workspace 发现缺失**：移除 `engine_rust` 后仓库根目录仍缺乏统一 `Cargo.toml` Workspace 声明，在根目录直接执行 `cargo test` / `cargo check` 或由 IDE 启动 `rust-analyzer` 时无法自动索引 `rust/factorlib_core`。
 
 - **具体修复方案**：
-  根目录建立仅托管主力内核 `rust/factorlib_core`（显式 `exclude = ["legacy"]`）的顶层 `Cargo.toml`，同时修正归档前 `engine_rust/Cargo.toml` 的 `features` 定义。
-  ```diff
-  --- /dev/null
-  +++ b/Cargo.toml
-  @@ -0,0 +1,5 @@
-  +[workspace]
-  +resolver = "2"
-  +members = ["rust/factorlib_core"]
-  +exclude = ["legacy", "rust/engine_rust"]
+  已在 commit `dcdfede` 彻底移除冗余 Crate `rust/engine_rust/`，并在根目录建立仅托管主力内核 `rust/factorlib_core` 的 [`Cargo.toml`](file:///home/cr9294/repos/FactorLibrary/Cargo.toml) Workspace 与统一 [`Cargo.lock`](file:///home/cr9294/repos/FactorLibrary/Cargo.lock)；同时保留 `rust/factorlib_core` 的 `default = ["extension-module"]`（实测本机无系统 `libpython3.12-dev` 时，移除该默认特性会导致 `cargo test` 链接失败），并清理 `.gitignore` 中失效的 `rust/engine_rust/` 规则及纳入 `verify.sh` TOML 校验。
+  ```toml
+  [workspace]
+  resolver = "2"
+  members = ["rust/factorlib_core"]
   ```
 
 ---

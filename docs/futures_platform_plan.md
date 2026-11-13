@@ -158,6 +158,8 @@ flowchart TB
 
 ```text
 FactorLibrary/
+├── Cargo.toml                             # 根目录 Cargo Workspace 配置 (members = ["rust/factorlib_core"])
+├── Cargo.lock                             # Rust 依赖锁定文件
 ├── pyproject.toml                         # uv 配置，包含 maturin 构建脚本与依赖
 ├── uv.lock                                # 依赖锁定文件
 ├── configs/

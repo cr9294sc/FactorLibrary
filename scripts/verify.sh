@@ -115,7 +115,11 @@ for yf in yaml_files:
         yaml.safe_load(f)
 
 # 2. 检验关键 TOML 文件语法
-toml_files = [Path("pyproject.toml"), Path("rust/factorlib_core/Cargo.toml")]
+toml_files = [
+    Path("pyproject.toml"),
+    Path("Cargo.toml"),
+    Path("rust/factorlib_core/Cargo.toml"),
+]
 for tf in toml_files:
     if tf.exists():
         with open(tf, "rb") as f:

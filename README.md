@@ -39,7 +39,9 @@
   - [2. 强类型遗传规划独立挖掘 (`run_gp.py`)](#2-强类型遗传规划独立挖掘-run_gppy)
   - [3. Purged Walk-Forward 机器学习独立合成 (`run_ml.py`)](#3-purged-walk-forward-机器学习独立合成-run_mlpy)
   - [4. 期货实盘向量化回测 (`run_backtest.py`)](#4-期货实盘向量化回测-run_backtestpy)
-  - [5. 全资产代码质量认证门禁 (`verify.sh`)](#5-全资产代码质量认证门禁-verifysh)
+  - [5. 现代化 6 阶段量化因子研发 Web 工作台 (`run_web.py`)](#5-现代化-6-阶段量化因子研发-web-工作台-run_webpy)
+  - [6. 全资产代码质量认证门禁 (`verify.sh`)](#6-全资产代码质量认证门禁-verifysh)
+  - [7. A 股股票因子回测与跨平台对账脚本](#7-a-股股票因子回测与跨平台对账脚本)
 - [Python SDK 核心编程范式](#python-sdk-核心编程范式)
   - [1. 面板容器操作 (`factorlib.core.panel`)](#1-面板容器操作-factorlibcorepanel)
   - [2. DSL 表达式构建与静态检查 (`factorlib.core.dsl`)](#2-dsl-表达式构建与静态检查-factorlibcoredsl)
@@ -51,7 +53,7 @@
 - [严密防未来函数与交易语义规范](#严密防未来函数与交易语义规范)
 - [配置文件索引与规范](#配置文件索引与规范)
 - [代码库目录导航](#代码库目录导航)
-- [后续 A 股股票市场扩展指引 (Phase 2)](#后续-a-股股票市场扩展指引-phase-2)
+- [A 股股票市场适配与全市场回测对账 (Phase 2 已可用)](#a-股股票市场适配与全市场回测对账-phase-2-已可用)
 
 ---
 
@@ -142,9 +144,9 @@ flowchart TD
    - 涨跌停锁死阻断、换月平旧开新双边手续费与滑点、动态保证金超限强平阻断；
    - 严格满足每日盯市记账恒等式：$\text{Cash}_d + \sum (\text{lots}_{i,d} \times \text{settle}_{i,d} \times \text{Multiplier}_i) == \text{Equity}_d$。
 7. **全资产交付与质量认证门禁体系**：
-   - 内置 `bash scripts/verify.sh --all`，涵盖数据安全审计、YAML/TOML 配置校验、Rust 零警告 Clippy 静态分析、Python Ruff/Pytest、Proptest 极限性质对账与因果摄动防未来函数审计。
-8. **A 股股票市场无缝扩展接口固化**：
-   - `StockMarketAdapter` 完整规范了 1手=100股、乘数 1.0、零杠杆、非对称单向印花税、板块涨跌停识别与 T+1 交易机制，为二期对接 A 股提供标准契约。
+   - 内置 `bash scripts/verify.sh --all`，涵盖暂存区数据安全审计、`uv lock --check`、YAML/TOML 配置校验、Rust `rust-analyzer` / 零警告 Clippy / `cargo test`（31 项）、Python Ruff / Pytest（139 项）、与因果摄动防未来函数审计（2 项）及 12 项 CLI 入口体检。
+8. **A 股股票市场适配与统一无渗漏后处理回测**：
+   - 已实现 [`StockMarketAdapter`](python/factorlib/markets/stocks/adapter.py) 与 [`StockPanelLoader`](python/factorlib/markets/stocks/panel_loader.py)，支持申万行业/流通市值中性化、[`apply_postprocess_pipeline`](python/factorlib/core/probe.py) 末步掩码强制重施，以及方向性涨跌停撮合模拟（`can_buy_mask` 拦截涨停买入、`can_sell_mask` 遇跌停/停牌自动顺延平仓）。
 
 ---
 
@@ -183,7 +185,7 @@ maturin develop --release --manifest-path rust/factorlib_core/Cargo.toml
 # 快速静态校验 (格式、Lint 与配置检查)
 bash scripts/verify.sh --fast
 
-# 全量门禁认证 (含 73 项 Python 单元测试、Rust 内核测试、Proptest 性质测试与因果摄动审计)
+# 全量门禁认证 (含 uv lock、31 项 Rust 测试、139 项 Python 单元测试、2 项因果摄动审计与 CLI 体检)
 bash scripts/verify.sh --all
 ```
 
@@ -387,6 +389,24 @@ bash scripts/verify.sh --fast       # 快速日常静态校验 (格式、类型�
 bash scripts/verify.sh --rust       # 仅运行 Rust 内核 Clippy, Fmt 与单元测试
 bash scripts/verify.sh --python     # 仅运行 Python Ruff, Pytest 与因果摄动审计
 bash scripts/verify.sh --git-only   # 仅检查 Git 暂存区数据安全防泄漏
+```
+
+### 7. A 股股票因子回测与跨平台对账脚本
+
+基于 `data/raw/stocks/`（全市场 5,323 只 A 股，`2015-11-02 ~ 2024-12-31`），平台提供统一走 `apply_postprocess_pipeline` 无渗漏后处理的股票评测与 FactorLab 对账脚本：
+
+```bash
+# 下载/同步米筐 A 股日线与元数据至 data/raw/stocks/
+python scripts/download_rq_stocks.py --help
+
+# 单因子 Volume_Price_2_H5_2 全周期回测与 FactorLab 对账 (open_adj / vwap_adj 双口径)
+python scripts/backtest_volume_price_factor.py
+
+# 开启方向性涨跌停撮合模拟 (T+1 涨停不可买、T+1+h 跌停/停牌自动顺延卖出)
+python scripts/backtest_volume_price_factor.py --execution-simulation
+
+# 5 大经典因子多维度本地回测对比 (支持 --tech-trend-high-low adj|raw 与 --execution-simulation)
+python scripts/backtest_multi_factors.py --execution-simulation
 ```
 
 ---
@@ -614,17 +634,18 @@ FactorLibrary/
 │   ├── ml/                                # Purged Walk-Forward 机器学习多因子合成 (预处理、切分、LGBM、Ridge)
 │   └── markets/                           # 市场适配层
 │       ├── futures/                       # 中国商品与股指期货市场适配器、品种池与 ETL 清洗流
-│       └── stocks/                        # A 股股票市场适配器规范固化 (Phase 2 插槽)
+│       └── stocks/                        # A 股股票市场适配器与面板加载器 (StockMarketAdapter, StockPanelLoader)
 ├── rust/factorlib_core/                   # Rust 极速计算内核
 │   ├── src/ops/                           # 68 项向量化、逐元素、时序增量 Welford 与单调队列算子
 │   ├── src/expr/                          # AST 语法树、词法语法分析、静态类型检查、代数规范化、LRU 缓存
 │   ├── src/metrics/                       # RankIC、分位数收益、换手率、相关性矩阵计算
 │   └── src/backtest/                      # 期货实盘状态机 (离散手数、涨跌停、换月成本、逐日盯市)
 ├── configs/futures/                       # 生产级 YAML 配置文件 (数据、品种池、费率、GP、ML、回测)
-├── scripts/                               # 生产维护与执行脚本 (verify.sh, audit, build_panel, init, gp, ml, backtest, pipeline)
-├── tests/python/                          # Python 自动化单元与集成测试套件 (含端到端、因果摄动测试)
+├── scripts/                               # 生产维护与执行脚本 (verify.sh, audit, build_panel, gp, ml, backtest, 股票对账)
+├── tests/python/                          # Python 自动化单元与集成测试套件 (139 项测试 + 2 项因果摄动测试)
 ├── docs/                                  # 技术文档中心
-│   ├── futures_platform_plan.md           # 期货平台改造与工程实施技术白皮书 (技术基石与理论依据)
+│   ├── futures_platform_plan.md           # 期货与 A 股量化平台技术白皮书 (技术基石与理论依据)
+│   ├── code_audit_and_refactor_plan.md    # 架构与代码级深度审查报告与闭环验收记录
 │   └── api_reference.md                   # 平台全模块 API 参考手册
 ├── exports/                               # 只读米筐原始 Parquet 数据资产 (已 gitignore)
 ├── data/                                  # 派生研究面板与本地 SQLite 因子库 (已 gitignore)
@@ -635,14 +656,15 @@ FactorLibrary/
 
 ---
 
-## 后续 A 股股票市场扩展指引 (Phase 2)
+## A 股股票市场适配与全市场回测对账 (Phase 2 已可用)
 
-针对后续接入 A 股股票市场，系统已在架构层固化了标准化适配契约（见 `factorlib.markets.stocks.adapter.StockMarketAdapter`）：
-1. **交易规则适配**：1 手 = 100 股，乘数恒为 1.0，最小变动价位 0.01 元，无保证金杠杆（保证金率 1.0）；
-2. **税费机制适配**：支持非对称印花税（买入仅收佣金与过户费，卖出单向征收证券交易印花税）；
-3. **涨跌停与板块约束**：主板 $\pm 10\%$、科创板/创业板 $\pm 20\%$、北交所 $\pm 30\%$、ST $\pm 5\%$；
-4. **交易机制**：T+1 交收机制限制卖出可用数量，默认单向做多约束（禁止裸融券卖空）；
-5. **算子中性化无缝兼容**：计算内核原生支持 `group_rank` 与 `group_demean`，可直接挂载申万 31 个一级行业与市值对数进行截面行业/市值中性化。
+针对 A 股股票市场研究与 FactorLab 跨平台对账，系统已完整实现规范适配、全市场面板加载与零渗漏统一后处理评测链路：
+1. **市场适配器 (`factorlib.markets.stocks.adapter.StockMarketAdapter`)**：1 手 = 100 股，乘数恒为 1.0，最小变动价位 0.01 元，无杠杆（保证金率 1.0），非对称印花税（仅卖出征收）及板块涨跌停识别（主板 $\pm 10\%$、科创板/创业板 $\pm 20\%$、北交所 $\pm 30\%$、ST $\pm 5\%$）；
+2. **股票全市场面板加载器 (`factorlib.markets.stocks.panel_loader.StockPanelLoader`)**：
+   - 将 `data/raw/stocks/`（5,323 只全市场股票）重塑为 Fortran 列优先 `StockPanelData`，并通过 `to_panel()` 无缝暴露 `listed_days` / `sector` 零拷贝别名以复用 `apply_postprocess_pipeline`；
+   - 预计算方向性撮合约束 `can_buy_mask`（仅拦截开仓日停牌/涨停）与 `can_sell_mask`（仅拦截平仓日停牌/跌停）；
+3. **方向性涨跌停撮合与递延平仓**：调用 `compute_forward_returns(execution_simulation=True)` 时，对 $t+1$ 不可买入信号执行遮罩，并在 $t+1+h$ 遇跌停/停牌时通过向量化后向扫描自动顺延至下一可卖出日成交，不再误杀涨停持仓赢家；
+4. **跨平台对账验证**：`scripts/backtest_volume_price_factor.py` 与 `scripts/backtest_multi_factors.py` 支持 `open_adj` / `vwap_adj` 双口径与 `--execution-simulation` 切换，已完成与 FactorLab `Volume_Price_2_H5_2` (`bt_bb3a04da6b20456ab444dcb7e5450949`) 全周期（`2016-01-04 ~ 2024-12-31`）对账验证。
 
 ---
 

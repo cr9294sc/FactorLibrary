@@ -45,7 +45,7 @@
 - [68 High-Performance Operators Cheat Sheet](#68-high-performance-operators-cheat-sheet)
 - [Strict Anti-Lookahead Guarantee & Trading Semantics](#strict-anti-lookahead-guarantee--trading-semantics)
 - [Repository Structure](#repository-structure)
-- [Phase 2 Stock Market Expansion Roadmap](#phase-2-stock-market-expansion-roadmap)
+- [Phase 2 Stock Market Adapter & Cross-Platform Backtesting](#phase-2-stock-market-adapter--cross-platform-backtesting)
 
 ---
 
@@ -136,7 +136,9 @@ flowchart TD
    - Contract multiplier and lot integer rounding; price limit locks and rollover bilateral fees;
    - Strict Mark-to-Market accounting conservation: $\text{Cash}_d + \sum (\text{lots}_{i,d} \times \text{settle}_{i,d} \times \text{Multiplier}_i) == \text{Equity}_d$.
 7. **Comprehensive Pre-Commit Verification Gates**:
-   - `bash scripts/verify.sh --all` checks data leakage, YAML/TOML syntaxes, Rust Clippy (zero warnings), Python Ruff/Pytest (73 tests), proptests, and anti-lookahead perturbation audits.
+   - `bash scripts/verify.sh --all` checks staging data leakage, `uv lock --check`, YAML/TOML syntaxes, Rust `rust-analyzer` / Clippy (zero warnings) / `cargo test` (31 unit & proptests), Python Ruff / Pytest (139 tests), anti-lookahead perturbation audits (2 tests), and 12 CLI `--help` entrypoints.
+8. **A-Share Stock Adapter & Unified Zero-Leak Postprocessing**:
+   - `StockMarketAdapter` and `StockPanelLoader` reshape `data/raw/stocks/` (5,323 A-shares) into Fortran-order matrices with unified `apply_postprocess_pipeline` enforcement and directional limit-up/limit-down execution simulation (`can_buy_mask` / `can_sell_mask` with forward exit deferral).
 
 ---
 
@@ -274,6 +276,10 @@ Artifacts are automatically stored in `runs/pipeline_YYYYMMDD_HHMMSS/`:
 | `scripts/run_ml.py` | Purged Walk-Forward ML synthesis: `python scripts/run_ml.py --start-year 2018 --end-year 2026` |
 | `scripts/run_backtest.py` | Realistic futures backtesting: `python scripts/run_backtest.py --factor "ts_zscore(close, 20)"` |
 | `scripts/run_pipeline.py` | Unified end-to-end research pipeline: `python scripts/run_pipeline.py` |
+| `scripts/run_web.py` | 6-stage interactive quantitative research SPA studio: `python scripts/run_web.py --port 8080` |
+| `scripts/download_rq_stocks.py` | Downloads Ricequant A-share daily bars and metadata into `data/raw/stocks/` |
+| `scripts/backtest_volume_price_factor.py` | Single-factor (`Volume_Price_2_H5_2`) A-share backtest & FactorLab reconciliation (`--execution-simulation` optional) |
+| `scripts/backtest_multi_factors.py` | Multi-factor A-share reconciliation across 5 canonical factors (`--execution-simulation`, `--tech-trend-high-low`) |
 
 ---
 
@@ -387,29 +393,28 @@ FactorLibrary/
 │   ├── core/                     # Panel, DSL, evaluation, portfolio, backtesting, registry
 │   ├── gp/                       # Strongly-Typed Genetic Programming (STGP) engine
 │   ├── ml/                       # Purged Walk-Forward machine learning synthesis
-│   └── markets/                  # Market adapters (futures, stocks)
+│   └── markets/                  # Market adapters (futures ETL, stocks adapter & StockPanelLoader)
 ├── rust/factorlib_core/          # Native Rust calculation engine
 │   ├── src/ops/                  # 68 vectorized and incremental operators
 │   ├── src/expr/                 # AST parser, static typecheck, canonicalization, LRU cache
 │   ├── src/metrics/              # Fast metrics (RankIC, quantile returns, turnover, correlation)
 │   └── src/backtest/             # Futures realistic discrete execution state machine
 ├── configs/futures/              # Production YAML configurations
-├── scripts/                      # Maintenance and execution scripts (verify.sh, audit, pipeline...)
-├── tests/python/                 # Automated pytest unit & integration test suites
-├── docs/                         # Technical documentation & whitepaper
+├── scripts/                      # Maintenance and execution scripts (verify.sh, audit, pipeline, stock backtests...)
+├── tests/python/                 # Automated pytest suite (139 tests + 2 perturbation tests)
+├── docs/                         # Technical documentation, code audit report & API reference
 └── pyproject.toml                # Project metadata and dependencies
 ```
 
 ---
 
-## Phase 2 Stock Market Expansion Roadmap
+## Phase 2 Stock Market Adapter & Cross-Platform Backtesting
 
-The system has finalized the contract specifications for Chinese A-share stock market expansion in `factorlib.markets.stocks.adapter.StockMarketAdapter`:
-- 1 lot = 100 shares, multiplier 1.0, zero leverage (margin rate 1.0);
-- Asymmetric transaction tax (buyer pays fee; seller pays fee + stamp duty);
-- Price limit constraints ($\pm 10\%$ Main, $\pm 20\%$ ChiNext/STAR, $\pm 30\%$ BSE, $\pm 5\%$ ST);
-- T+1 delivery rule and long-only constraint (naked short-selling prohibited);
-- Native integration with `group_rank` and `group_demean` for Shenwan industry and market-cap neutralization.
+Chinese A-share stock evaluation and cross-platform FactorLab reconciliation are now implemented alongside `factorlib.markets.stocks.adapter.StockMarketAdapter`:
+- **Market Contract**: 1 lot = 100 shares, multiplier 1.0, zero leverage (margin rate 1.0), asymmetric stamp duty on sells, T+1 settlement, and board-aware price limits ($\pm 10\%$ Main, $\pm 20\%$ ChiNext/STAR, $\pm 30\%$ BSE, $\pm 5\%$ ST);
+- **Panel & Zero-Leak Aliases (`factorlib.markets.stocks.panel_loader.StockPanelLoader`)**: Reshapes full-market stock parquet data (5,323 A-shares) into Fortran-order `StockPanelData`, exposing zero-copy `listed_days` and `sector` aliases via `to_panel()` so `apply_postprocess_pipeline` enforces trailing `baseUniMask` / `trdMask` re-masking after `decay(5)`;
+- **Directional Execution Simulation (`compute_forward_returns(..., execution_simulation=True)`)**: Uses separate `can_buy_mask` (blocking open limit-up / suspension entries at $t+1$) and `can_sell_mask` with vectorized backward-scan forward exit deferral past limit-down/suspension at $t+1+h$ (preserving limit-up holders rather than censoring them);
+- **Verified Benchmark**: `scripts/backtest_volume_price_factor.py` and `scripts/backtest_multi_factors.py` reconcile `Volume_Price_2_H5_2` (`2016-01-04 ~ 2024-12-31`) across `open_adj` and `vwap_adj` modes with optional `--execution-simulation`.
 
 ---
 

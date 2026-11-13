@@ -67,7 +67,7 @@ flowchart TD
       meta: dict[str, Any]       # 构建元数据
   ```
 - **核心方法**：
-  - `load(cls, panel_dir: Path | str) -> Panel`：从派生目录秒级加载 Parquet 长表并重塑为宽矩阵。
+  - `load(cls, panel_dir: Path | str, fields_subset: Sequence[str] | None = None) -> Panel`：从派生目录秒级加载 Parquet 长表并重塑为宽矩阵；当 `fields_subset` 请求 `"limit_mask"` 而未包含 `"volume"` 时，辅助量列写入 `limit_extra_fields` 以校验零成交量，而不污染 `Panel.fields`。
   - `get_field(self, name: str) -> np.ndarray`：获取指定的特征矩阵。
   - `get_label(self, name: str) -> np.ndarray`：获取指定的预测目标矩阵。
   - `to_rust_engine(self) -> factorlib_core.Engine`：将全部特征与掩码直通转换为 Rust 极速计算引擎实例。
@@ -173,11 +173,15 @@ flowchart TD
 - **`FuturesMarketAdapter`**：中国商品与股指期货市场适配器。
   - 基于 `configs/futures/fees.yaml` 解析各大期货交易所非对称费率；
   - 基于 `bar_1m` 流式计算开盘 30 分钟真实成交价 $\text{VWAP} = \sum(\text{close} \times \text{volume}) / \sum \text{volume}$。
-- **`StockMarketAdapter`**：A 股股票市场规范适配器（二期无缝对接）。
+- **`StockMarketAdapter` (`factorlib.markets.stocks.adapter`)**：A 股股票市场规范适配器。
   - 合约规则：1 手 = 100 股，乘数恒为 1.0，报价最小变动价位 0.01 元，现货保证金率恒为 1.0（无杠杆）；
   - 非对称税费：买入佣金 + 过户费；卖出佣金 + 过户费 + 单向征收证券交易印花税；
   - 板块识别与涨跌停：主板 10%、创业板/科创板 20%、北交所 30%、ST 标的 5%；
   - 交易机制：T+1 交收机制，单向做多约束（默认禁止融券裸做空）。
+- **`StockPanelData` & `StockPanelLoader` (`factorlib.markets.stocks.panel_loader`)**：全市场 A 股面板构建与方向性撮合引擎。
+  - `StockPanelLoader.load(start_date=date(2015, 11, 1), end_date=date(2024, 12, 31), benchmark_id="000985.XSHG", exec_price_mode="open_adj") -> StockPanelData`：加载 5,323 只全市场标的并构造 Fortran 列优先矩阵、市场基准回报及方向性撮合掩码 `can_buy_mask`（阻断 $t+1$ 停牌/一字涨停/封板）与 `can_sell_mask`（阻断平仓日停牌/一字跌停/封板）。
+  - `StockPanelData.to_panel(horizon=1, exec_price_mode="open_adj") -> Panel`：零拷贝封装为标准 `Panel`，同时暴露 `"listed_days"`（共享 `stock_listed_days`）与 `"sector"`（共享 `industry_code`）字段别名以直接衔接统一后处理管道。
+  - `StockPanelData.compute_forward_returns(horizons=(1, 2, 5, 10), exec_price_mode="open_adj", execution_simulation=False) -> dict[int, np.ndarray]`：支持 `execution_simulation=True` 方向性约束——仅拦截 $t+1$ 不可买入开仓，并在 $t+1+h$ 遇不可卖出时通过向量化后向扫描顺延至下一可卖出日平仓（若细分掩码缺省则兼容回退到 `limit_mask`）。
 
 ---
 
@@ -221,8 +225,8 @@ flowchart TD
 
 - `calc_rank_ic(pred, target, mask)`：截面 Spearman Rank IC 与时序均值、标准差、ICIR、t 统计量。
 - `calc_quantile_returns(factor, forward_ret, mask, n_quantiles=5)`：多头 Top 组、空头 Bottom 组收益率与多空利差（Long-Short Spread）。
-- `calc_turnover(factor, mask)`：因子截面百分比排名的自相关衰减度与单边名义调仓换手率。
-- `calc_corr_matrix(matrices, mask)`：多因子截面相关系数矩阵，用于因子去相关初筛。
+- `calc_turnover(factor, mask)` / `calc_top_quantile_turnover(factor, mask, n_quantiles=10)`：因子截面百分比排名的自相关衰减度（秩自相关距离 $1 - \rho$）与 Top 分位单边调仓换手率。
+- `calc_correlation_matrix(matrices, mask)` / `calc_pairwise_correlation(a, b, mask)`：多因子截面相关系数矩阵与双因子相关系数计算。
 
 ---
 
@@ -230,7 +234,7 @@ flowchart TD
 
 | 脚本工具 | 核心功能与生产用法 |
 |---|---|
-| `scripts/verify.sh` | **提交前质量认证门禁**：一键执行 6 大门禁（数据泄漏、配置合规、Rust Clippy/Fmt/Test、Python Lint/Fmt/Pytest、因果摄动审计、CLI 健全性）。用法：`bash scripts/verify.sh --all` |
+| `scripts/verify.sh` | **提交前质量认证门禁**：一键执行 6 大门禁（数据泄漏、配置合规 + `uv lock --check`、Rust Clippy/Fmt/Test、Python Lint/Fmt/Pytest、因果摄动审计、CLI 健全性）。用法：`bash scripts/verify.sh --all` |
 | `scripts/audit_data.py` | **原始数据全量自检**：遍历 12.7GB Parquet 资产，检验字段类型、缺失率与异常极值，输出审计报告。 |
 | `scripts/build_panel.py` | **标准化研究面板构建**：流式解析米筐原始行情，生成带元数据指纹的标准长表与宽表 Parquet。 |
 | `scripts/init_seed_factors.py` | **经典文献种子因子入库**：评估动量、展期收益率、仓单变动与龙虎榜会员净多变动 4 大经典因子并登记入库。 |
@@ -238,6 +242,10 @@ flowchart TD
 | `scripts/run_ml.py` | **Walk-Forward 机器学习多因子合成**：Purged 扩展窗口训练 LightGBM、Ridge 或等权模型，输出样本外预测评分。 |
 | `scripts/run_backtest.py` | **期货实盘口径向量化回测**：基于离散手标准撮合状态机回测，产出交互式 HTML 诊断报告与财务账单。 |
 | `scripts/run_pipeline.py` | **端到端全流程一键流水线 (P7 验收工具)**：串通面板检验、种子因子入库、GP 挖掘、ML 合成、风险平价优化与实盘回测。用法：`python scripts/run_pipeline.py` |
+| `scripts/run_web.py` | **Web 因子研发工作台启动器**：托管 6 阶段单页研发工作台（支持 `--synthetic` 演示模式）。 |
+| `scripts/download_rq_stocks.py` | **A 股米筐数据同步工具**：下载或更新 `data/raw/stocks/` 日线、财务、行业及基准指数资产。 |
+| `scripts/backtest_volume_price_factor.py` | **A 股单因子对账评测脚本**：对 `Volume_Price_2_H5_2` 执行统一无渗漏后处理与双口径（`open_adj` / `vwap_adj`）全周期对账（可选 `--execution-simulation`）。 |
+| `scripts/backtest_multi_factors.py` | **A 股多因子综合评测脚本**：对 5 大对齐因子统一接入 `apply_postprocess_pipeline` 执行对比验证（支持 `--execution-simulation`、`--tech-trend-high-low {adj,raw}`）。 |
 
 ---
 
@@ -263,22 +271,23 @@ flowchart TD
 
 ---
 
-## 9. FactorLab 6 阶段工作流与声明式后处理接口 (`catalog` / `probe` / `styles` / `evaluate`)
+## 7. FactorLab 6 阶段工作流与声明式后处理接口 (`catalog` / `probe` / `styles` / `evaluate`)
 
 - **`FactorCatalog` (`factorlib.core.catalog`)**：
   - `get_context() -> dict`：返回平台环境概览、算子分类统计与推荐后处理预设（`standard` / `minimal` / `style_neutral`）。
   - `stats(catalog="all") -> dict`、`search(query="", catalog="all", category="") -> list`、`get_entry(name) -> dict | None`。
 - **`FactorDefinition` & `probe_factor` (`factorlib.core.probe`)**：
   - `probe_factor(definition, panel=None) -> dict`：执行毫秒级静态探针检查，输出显式依赖、后处理隐式依赖（含平滑窗口放大）与 4 级预热窗口要求。
-  - `evaluate_factor_definition(definition, panel) -> tuple[np.ndarray, dict]`：执行 DSL 或 Python `def compute(context):` 因果求值并串联 Rust `apply_postprocess_op` 12 算子后处理管线。
+  - `apply_postprocess_pipeline(raw_factor, steps, panel) -> np.ndarray`：执行 `baseUniMask` / `trdMask` / `dropNewStock` / `MAD` / `zScore` / `indNeut` / `decay` / `rank` 等 12 算子组合，并在 `decay` / `smooth` 等时序算子后强制重施生效掩码以阻断非可交易样本渗漏。
+  - `evaluate_factor_definition(definition, panel) -> tuple[np.ndarray, dict]`：执行 DSL 或 Python `def compute(context):` 因果求值并串联上述零渗漏后处理管线。
 - **期货 6 大风格因子与双层回测 (`factorlib.core.styles` & `factorlib.core.evaluate`)**：
   - `compute_futures_styles(panel) -> dict[str, np.ndarray]`：因果计算 `SIZE`、`VOLATILITY`、`MOMENTUM`、`CARRY`、`INVENTORY`、`POSITIONING` 6 大标准风格矩阵。
-  - `evaluate_factor_v4_stats(factor_matrix, panel) -> dict`：生成 FactorLab Schema v4 标准统计归因字典（`ic_analysis`、`group_analysis`、`long_analysis`、`style_exposure`）。
+  - `evaluate_factor_v4_stats(factor_matrix, panel, n_quantiles=5, sign=1, min_names=5, benchmark_rets=None, trading_days_per_year=250.0) -> dict`：生成 FactorLab Schema v4 标准统计归因字典（`ic_analysis`、`group_analysis`、`long_analysis`、`style_exposure`）；在计算 `group_summary` 波动率与年化收益时自动剔除首次有效之后的无效日（`m < min_names`），同时保持 `nav` 序列连续。
   - `run_factor_workflow(panel, definition, ...) -> DualLayerWorkflowResult`：一键执行探针、物化、版本锁定、Layer 1 统计分布归因与 Layer 2 期货实盘逐日盯市回测。
 
 ---
 
-## 10. 统一研发工作台与 Web 服务接口 (`workbench` & `workbench_server`)
+## 8. 统一研发工作台与 Web 服务接口 (`workbench` & `workbench_server`)
 
 - **`FactorWorkbenchService` (`factorlib.core.workbench`)**：
   - `get_context() -> dict`：获取平台状态、面板规格（支持真实/合成双模式）、模板集与默认组合参数；

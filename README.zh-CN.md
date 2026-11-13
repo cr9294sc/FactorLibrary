@@ -34,7 +34,7 @@
 - [严密防未来函数与交易语义规范](#严密防未来函数与交易语义规范)
 - [配置文件索引与规范](#配置文件索引与规范)
 - [代码库目录导航](#代码库目录导航)
-- [后续 A 股股票市场扩展指引 (Phase 2)](#后续-a-股股票市场扩展指引-phase-2)
+- [A 股股票市场适配与全市场回测对账 (Phase 2 已可用)](#a-股股票市场适配与全市场回测对账-phase-2-已可用)
 
 ---
 
@@ -125,9 +125,9 @@ flowchart TD
    - 涨跌停锁死阻断、换月平旧开新双边手续费与滑点、动态保证金超限强平阻断；
    - 严格满足每日盯市记账恒等式：$\text{Cash}_d + \sum (\text{lots}_{i,d} \times \text{settle}_{i,d} \times \text{Multiplier}_i) == \text{Equity}_d$。
 7. **全资产交付与质量认证门禁体系**：
-   - 内置 `bash scripts/verify.sh --all`，涵盖数据安全审计、YAML/TOML 配置校验、Rust 零警告 Clippy 静态分析、Python Ruff/Pytest、Proptest 极限性质对账与因果摄动防未来函数审计。
-8. **A 股股票市场无缝扩展接口固化**：
-   - `StockMarketAdapter` 完整规范了 1手=100股、乘数 1.0、零杠杆、非对称单向印花税、板块涨跌停识别与 T+1 交易机制，为二期对接 A 股提供标准契约。
+   - 内置 `bash scripts/verify.sh --all`，涵盖暂存区数据安全审计、`uv lock --check`、YAML/TOML 配置校验、Rust 零警告 Clippy / `cargo test`（31 项）、Python Ruff / Pytest（139 项）与因果摄动防未来函数审计（2 项）。
+8. **A 股股票市场适配与统一无渗漏后处理回测**：
+   - 已实现 `StockMarketAdapter` 与 `StockPanelLoader`，接入 `apply_postprocess_pipeline` 强制末步掩码重施与方向性涨跌停撮合模拟（`can_buy_mask` / `can_sell_mask` 递延卖出）。
 
 ---
 
@@ -166,7 +166,7 @@ maturin develop --release --manifest-path rust/factorlib_core/Cargo.toml
 # 快速静态校验 (格式、Lint 与配置检查)
 bash scripts/verify.sh --fast
 
-# 全量门禁认证 (含 73 项 Python 单元测试、Rust 内核测试、Proptest 性质测试与因果摄动审计)
+# 全量门禁认证 (含 uv lock、31 项 Rust 测试、139 项 Python 单元测试、2 项因果摄动审计与 CLI 体检)
 bash scripts/verify.sh --all
 ```
 
@@ -268,6 +268,10 @@ python scripts/run_web.py --port 8080
 
 # 6. 代码质量认证门禁
 bash scripts/verify.sh --all
+
+# 7. A 股股票市场数据同步、单/多因子统一无渗漏回测与 FactorLab 对账
+python scripts/backtest_volume_price_factor.py --execution-simulation
+python scripts/backtest_multi_factors.py --execution-simulation
 ```
 
 ---
@@ -312,5 +316,6 @@ generate_html_report(result, output_path="runs/my_report.html", title="量化因
 - [主手册 (README.md)](README.md)
 - [English Documentation (README.en.md)](README.en.md)
 - [期货量化平台技术白皮书 (docs/futures_platform_plan.md)](docs/futures_platform_plan.md)
+- [架构与代码深度审查报告与重构计划 (docs/code_audit_and_refactor_plan.md)](docs/code_audit_and_refactor_plan.md)
 - [平台全模块 API 参考手册 (docs/api_reference.md)](docs/api_reference.md)
 - [米筐数据资产字典与规范 (DATA_DOCUMENTATION.md)](DATA_DOCUMENTATION.md)

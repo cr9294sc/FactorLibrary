@@ -15,7 +15,7 @@
 
 | 审查维度 | 健康度评级 | 核心诊断结论 |
 | :--- | :---: | :--- |
-| **1. 多代系统架构与构建体系** | 🟢 已修复 | 三代冗余原型（`pyrust_bt`、`engine_rust`、`Factor/`）已彻底移除，`server_main.py` 已收编为 [`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)；[`markets/stocks/panel_loader.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/panel_loader.py) 已完成标准化封装。 |
+| **1. 多代系统架构与构建体系** | 🟢 已修复 | 三代冗余原型（`pyrust_bt`、`engine_rust`、`Factor/`）已彻底移除，`server_main.py` 已收编为 [`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)，`frontend/` 已迁入 [`python/factorlib/frontend/`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/frontend) 并纳入 Wheel 打包与 `factorlib-web` CLI 入口；[`markets/stocks/panel_loader.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/panel_loader.py) 已完成标准化封装。 |
 | **2. 期货 ETL 与前视偏差防护** | 🟢 已修复 | `P0-01`（`r_exec_next` 严格滞后对齐 `y_1` 并同步重建本地 `labels.parquet`）与 `P0-02`（换月日旧合约三级同合约回退）已全部闭环修复并通过因果摄动测试。 |
 | **3. Rust/Python 双轨与数值安全** | 🟢 已修复 | `P0-03`（全部 `cs_*`/`group_*` 与风格暴露强制施加 `universe_mask`）、`P0-04`（AST `compress_outer_rank` 子树隔离与移除 `inv(inv(x))`）已全部修复并通过双轨对账。 |
 | **4. STGP 演化与 ML 防过拟合** | 🟢 已修复 | `P0-05` 已将 `ml_default.yaml` 的 `start_predict_year` 推后至 `2022`（消除与 GP `2019–2021` 验证期 4 年重叠），并在 `GPEngine._resolve_splits` 与 `WalkForwardPipeline.run` 强制执行 `horizon` Purge 隔离带与短样本互斥三段切分。 |
@@ -652,7 +652,7 @@
   1. **FFI 释放 GIL 后触发 `assert!` Panic**：[`quantile.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/metrics/quantile.rs#L130) 第 `130` 行硬编码 `assert!(n_quantiles >= 2, "n_quantiles 必须 >= 2");`，而 [`py.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/py.rs#L554) 的 `quantile_returns`、`factor_metrics`、`calc_quantile_returns` 以及 Web API [`workbench.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/workbench.py#L583)（`n_quantiles = int(payload.get("n_quantiles", 5))`）均未做前置边界检查。一旦前端或调用方传入 `n_quantiles=0` 或 `1`，在 `py.allow_threads` 内直接触发 Rust 线程 Panic（违反 `AGENTS.md` 第 4 节「算子内部严禁触发 panic」）。
   2. **Python 自定义因子沙箱越权读取未来数据与任意文件访问**：
      - [`PythonFactorContext.__init__`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/probe.py#L508) 将完整 `(T, N)` 矩阵字典挂载于实例属性 `self._fields = fields`；自定义代码只需写 `context._fields["close"][context.t + 5]` 即可绕过 `context.history()` 直接读取未来全样本价格！
-     - [`_extract_python_code_dependencies`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/probe.py#L248-L253) 仅拦截了 `Import`/`ImportFrom` 语句，未拦截双下划线魔术属性（`__class__`、`__subclasses__`、`__globals__`）及私有属性访问（`_fields`），且向沙箱注入了完整 `numpy` 模块（包含 `np.load(..., allow_pickle=True)`、`np.save`、`np.fromfile`、`np.ctypeslib`），在开放 CORS `*` 的 [`server_main.py`](file:///home/cr9294/repos/FactorLibrary/python/server_main.py#L54) 下构成远程代码执行风险。
+     - [`_extract_python_code_dependencies`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/probe.py#L248-L253) 仅拦截了 `Import`/`ImportFrom` 语句，未拦截双下划线魔术属性（`__class__`、`__subclasses__`、`__globals__`）及私有属性访问（`_fields`），且向沙箱注入了完整 `numpy` 模块（包含 `np.load(..., allow_pickle=True)`、`np.save`、`np.fromfile`、`np.ctypeslib`），在开放 CORS `*` 的 [`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)（原 `server_main.py`）下构成远程代码执行风险。
 
 - **具体修复方案**：
   在 PyO3 入口将 `n_quantiles < 2` 转换为 `PyValueError`；在 Python AST 探针中拦截所有以 `_` 开头的属性访问（含 `_fields`、`__subclasses__`）及 `numpy` 文件/FFI I/O 属性，并用闭包隐藏底层面板引用。
@@ -830,20 +830,20 @@
 
 ---
 
-### P1-01 `[P1-架构隐患]` 体系 A 反向依赖顶层散落脚本 `server_main.py`，且 Wheel 打包遗漏、Ruff Lint 失明
+### P1-01 `[P1-架构隐患]` [已修复 / FIXED] 体系 A 反向依赖顶层散落脚本 `server_main.py`，且 Wheel 打包遗漏、Ruff Lint 失明
 
 - **定位信息**：
-  - [`scripts/run_web.py`](file:///home/cr9294/repos/FactorLibrary/scripts/run_web.py#L26)（第 `26` 行：`from server_main import run_std_server`）
-  - [`tests/python/test_workbench.py`](file:///home/cr9294/repos/FactorLibrary/tests/python/test_workbench.py#L21)（第 `21` 行：`from server_main import WorkbenchHTTPHandler`）
-  - [`python/server_main.py`](file:///home/cr9294/repos/FactorLibrary/python/server_main.py#L24-L26)
-  - [`pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/pyproject.toml#L29-L35) 及 [`pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/pyproject.toml#L46-L57)
+  - [`scripts/run_web.py`](file:///home/cr9294/repos/FactorLibrary/scripts/run_web.py)（已统一委托 [`factorlib.workbench_server`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)）
+  - [`tests/python/test_workbench.py`](file:///home/cr9294/repos/FactorLibrary/tests/python/test_workbench.py#L20-L21)
+  - [`python/factorlib/workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)（原 `python/server_main.py`）与 [`python/factorlib/frontend/`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/frontend)
+  - [`pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/pyproject.toml)
 
 - **问题根因分析**：
-  体系 A 对体系 C（`Factor/`）零引用，对 `pyrust_bt` 包本体零引用，但存在对历史遗留顶层模块 [`python/server_main.py`](file:///home/cr9294/repos/FactorLibrary/python/server_main.py) 的**双向耦合**：`server_main.py` 导入 `factorlib.core.workbench`，而 `scripts/run_web.py` 与 `tests/python/test_workbench.py` 又反向导入 `server_main`。
-  更严重的是，根目录 [`pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/pyproject.toml#L32) 第 `32` 行声明 `python-packages = ["factorlib", "factorlib_core"]`，未将散落在 `python/` 顶层的 `server_main.py` 纳入构建产物，任何通过 `pip install .` / `maturin build` 安装的发行包运行 Web 服务均会直接抛出 `ModuleNotFoundError: No module named 'server_main'`；同时第 `53` 行在 `[tool.ruff] exclude` 中排除了 `"python/server_main.py"`，使生产级 HTTP 服务长期游离在静态 Lint 门禁之外。
+  体系 A 对体系 C（`Factor/`）零引用，对 `pyrust_bt` 包本体零引用，但曾存在对历史遗留顶层模块 `python/server_main.py` 的**双向耦合**：`server_main.py` 导入 `factorlib.core.workbench`，而 `scripts/run_web.py` 与 `tests/python/test_workbench.py` 又反向导入 `server_main`。
+  更严重的是，根目录 [`pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/pyproject.toml#L32) 第 `32` 行声明 `python-packages = ["factorlib", "factorlib_core"]`，未将散落在 `python/` 顶层的 `server_main.py` 及根目录 `frontend/` 静态资产纳入构建产物，任何通过 `pip install .` / `maturin build` 安装的发行包运行 Web 服务均会触发 `ModuleNotFoundError: No module named 'server_main'` 或前端静态资源 `404`；同时 `[tool.ruff] exclude` 曾排除了 `"python/server_main.py"`，使生产级 HTTP 服务长期游离在静态 Lint 门禁之外。
 
 - **具体修复方案**：
-  将 [`python/server_main.py`](file:///home/cr9294/repos/FactorLibrary/python/server_main.py) 正式收编迁入体系 A 子包 `python/factorlib/workbench_server.py`（或 `python/factorlib/app/server.py`），解除 Ruff 排除列表并更新导入路径。
+  已将 `python/server_main.py` 正式收编迁入 [`python/factorlib/workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)（commit `dcdfede`），并将前端资产迁入 [`python/factorlib/frontend/`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/frontend)，在 [`pyproject.toml`](file:///home/cr9294/repos/FactorLibrary/pyproject.toml) 中配置 `[tool.maturin] include = ["factorlib/frontend/**/*"]` 与 `[project.scripts] factorlib-web = "factorlib.workbench_server:main"`，解除 Ruff 排除列表、统一 CLI 入口并加固非法 JSON 请求体 `400 Bad Request` 校验。
   ```diff
   --- a/scripts/run_web.py
   +++ b/scripts/run_web.py
@@ -1202,7 +1202,7 @@
 ### 3.3 类型注解、异常处理与解析器健壮性（P3）
 
 - **递归下降解析器栈溢出防护**：[`rust/factorlib_core/src/expr/parser.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/parser.rs#L33-L71) 的 `Parser` 未维护递归深度计数器，恶意输入如 `"(" * 20000 + "close" + ")" * 20000` 会跨 PyO3 FFI 直接栈溢出杀死宿主进程，应增加 `depth <= 128` 硬上限并返回 `ParseError::Syntax`。
-- **静默吞异常清理**：[`workbench.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/workbench.py#L307-L308)（`except Exception: pass` 静默回退至合成演示面板而不记录损坏原因）与 [`server_main.py`](file:///home/cr9294/repos/FactorLibrary/python/server_main.py#L109-L110)（非法 JSON 请求体静默变为空字典 `{}` 而非返回 HTTP `400 Bad Request`）应补充 `logger.warning(..., exc_info=True)` 与显式错误码。
+- **静默吞异常清理**：[`workbench.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/workbench.py#L307-L308)（`except Exception: pass` 静默回退至合成演示面板而不记录损坏原因）应补充 `logger.warning(..., exc_info=True)`；[`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py)（原 `server_main.py`）的非法 JSON 请求体已修复为记录 `logging.warning` 并返回 HTTP `400 Bad Request`。
 - **类型注解收紧**：[`evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py#L114) 及第 `584`、`594-596` 行多处使用宽泛 `Any`（如 `backtest_result: Any`、`portfolio_config: Any`），应替换为 `TYPE_CHECKING` 下的精确类型 `BacktestResult`、`PortfolioConfig | None`、`PostprocessSpec`。
 
 ### 3.4 单元测试盲区全景对比（对比 `tests/` 现有覆盖率）
@@ -1231,7 +1231,7 @@
 | **回测引擎（4 套）** | [`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs) + [`fast.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/fast.rs) + [`backtest.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/backtest.py) | `rust/engine_rust/` + `python/pyrust_bt/` | `Factor/factorlab_local_engine.py` + `Factor/scripts/futures_engine.py` | 唯一保留体系 A；彻底删除（`git rm -rf`）`pyrust_bt`、`engine_rust` 与 `Factor/` |
 | **算子与求值内核（3 套）** | [`rust/factorlib_core/src/{ops,expr}/`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/ops/mod.rs) + [`ops_ref.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/ops_ref.py) | `engine_rust/src/{factor,indicators}.rs` | `AresRuntimeEngine`（1,755 行纯 Python 双重列表） | 保留体系 A；将 12 算子 3×3 C++ 真值向量提取至 [`tests/python/fixtures/postprocess_vectors.json`](file:///home/cr9294/repos/FactorLibrary/tests/python/fixtures/postprocess_vectors.json)，彻底删除 `Factor/` |
 | **因子目录与 MCP 客户端** | [`python/factorlib/core/catalog.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/catalog.py) + [`mcp_client.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/mcp_client.py) | 无 | `Factor/factorlab_catalog.py` + `Factor/factorlab_client.py` | 保留 `core/catalog.py`；将轻量 MCP 请求客户端收编至 `core/mcp_client.py`，彻底删除 `Factor/` |
-| **Web 服务与前端（2 套）** | `frontend/{index.html,app.js,styles.css}` + [`workbench.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/workbench.py) + [`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py) | `python/server_main.py` + `frontend/streamlit_app.py` | 无 | 将 `server_main.py` 正式收编为 `python/factorlib/workbench_server.py`；彻底删除 `streamlit_app.py` |
+| **Web 服务与前端（2 套）** | [`python/factorlib/frontend/{index.html,app.js,styles.css}`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/frontend) + [`workbench.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/workbench.py) + [`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py) | `python/server_main.py` + `frontend/streamlit_app.py` | 无 | 将 `server_main.py` 正式收编为 `python/factorlib/workbench_server.py`，并将 `frontend/` 迁入 `python/factorlib/frontend/` 纳入 Wheel 构建；彻底删除 `streamlit_app.py` |
 | **A 股多因子对账与适配** | [`python/factorlib/markets/stocks/`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/__init__.py) + [`core/evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py) | `python/pyrust_bt/market_data/` | [`scripts/backtest_multi_factors.py`](file:///home/cr9294/repos/FactorLibrary/scripts/backtest_multi_factors.py) + [`scripts/backtest_volume_price_factor.py`](file:///home/cr9294/repos/FactorLibrary/scripts/backtest_volume_price_factor.py) | 在 `markets/stocks/` 建立标准 A 股面板加载器，重构两个对账脚本复用 `core/evaluate` 与 Rust 内核 |
 | **示例、测试与旧文档** | `scripts/*.py` + `tests/python/*.py` + [`docs/{futures_platform_plan,api_reference,code_audit_and_refactor_plan}.md`](file:///home/cr9294/repos/FactorLibrary/docs/futures_platform_plan.md) | `examples/*.py` + `tests/test_*.py` + `docs/{architecture,xtdata_market_data_plan,...}.md` + `CHANGELOG.md` + `images/` | `pyrust-bt-main/`（空目录） | 彻底删除 `pyrust-bt-main/`、`examples/`、`tests/test_*.py`、9 篇旧文档、`CHANGELOG.md`、`images/` 与 `portfolio_equity_curve.png` |
 

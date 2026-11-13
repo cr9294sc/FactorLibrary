@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
 from factorlib.core.workbench import FactorWorkbenchService, create_synthetic_futures_panel
-from factorlib.workbench_server import WorkbenchHTTPHandler
+from factorlib.workbench_server import WorkbenchHTTPHandler, parse_args
 
 
 def test_synthetic_futures_panel_creation():
@@ -261,6 +263,52 @@ def test_workbench_http_server_endpoints(tmp_path: Path):
             rep = json.loads(resp.read().decode("utf-8"))
             assert rep["status"] == "ok"
 
+        # 4. 空请求体调用 POST /api/factors/init-seeds 仍应正常返回 200
+        init_req = urllib.request.Request(
+            f"{base_url}/api/factors/init-seeds",
+            data=b"",
+            method="POST",
+        )
+        with urllib.request.urlopen(init_req) as resp:
+            assert resp.status == 200
+            init_rep = json.loads(resp.read().decode("utf-8"))
+            assert init_rep["status"] == "ok"
+
+        # 5. 非法 JSON 与非对象负载应返回 HTTP 400 Bad Request
+        for method, endpoint, bad_payload in (
+            ("POST", "/api/probe", b"{invalid json"),
+            ("POST", "/api/probe", b"[1, 2, 3]"),
+            ("PATCH", "/api/factors/1/status", b"{invalid json"),
+        ):
+            bad_req = urllib.request.Request(
+                f"{base_url}{endpoint}",
+                data=bad_payload,
+                headers={"Content-Type": "application/json"},
+                method=method,
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(bad_req)
+            assert exc_info.value.code == 400
+            err_body = json.loads(exc_info.value.read().decode("utf-8"))
+            assert "error" in err_body
+
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_workbench_frontend_packaging_and_cli_args():
+    """验证前端静态资源已收编至 factorlib 包内且服务端 CLI 参数解析正常。"""
+    fdir = WorkbenchHTTPHandler.frontend_dir
+    assert fdir.is_dir()
+    assert fdir.parent.name == "factorlib"
+    for asset in ("index.html", "styles.css", "app.js"):
+        assert (fdir / asset).is_file()
+
+    args = parse_args(
+        ["--host", "0.0.0.0", "--port", "9001", "--synthetic", "--log-level", "DEBUG"]
+    )
+    assert args.host == "0.0.0.0"
+    assert args.port == 9001
+    assert args.synthetic is True
+    assert args.log_level == "DEBUG"

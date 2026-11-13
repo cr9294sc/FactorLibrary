@@ -1379,10 +1379,10 @@ class StockMarketAdapter(MarketAdapter):
 
 为将后端的 6 阶段全生命周期能力转化为直观高效的投研生产力，平台构建了零构建依赖的现代量化因子单页工作台（SPA）：
 
-1. **核心服务与 API 架构 (`core/workbench.py` & `server_main.py` / `scripts/run_web.py`)**：
+1. **核心服务与 API 架构 (`core/workbench.py` & `factorlib/workbench_server.py` / `scripts/run_web.py`)**：
    - `FactorWorkbenchService` 统一抽象面板加载（真实面板与合成演示面板动态切换）、目录检索、实时探针、双层回测、不可变版本锁定及流水线调度；
-   - 具备零外部 Web 框架依赖的标准多线程 HTTP 服务端，开箱即用托管静态前端与 RESTful API。
-2. **6 阶段因子 IDE (`frontend/index.html` + `styles.css` + `app.js`)**：
+   - 具备零外部 Web 框架依赖的标准多线程 HTTP 服务端，开箱即用托管内置于 Wheel 的静态前端与 RESTful API（安装发行包后可通过 `factorlib-web` 启动）。
+2. **6 阶段因子 IDE (`python/factorlib/frontend/{index.html,styles.css,app.js}`)**：
    - 目录检索抽屉（Stage 0/1）支持按分类筛选并快捷插入编辑器；
    - 双模态编辑器（Stage 2）支持 DSL 表达式与 Python `def compute(context):` 因果代码，集成 12 算子声明式后处理可视化编排器；
    - 实时静态探针面板（Stage 3）毫秒级推导 4 级预热天数、显隐式依赖树与阶段顺序违规告警。

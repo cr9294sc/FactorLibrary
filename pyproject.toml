@@ -22,6 +22,9 @@ dev = [
     "ruff>=0.5",
 ]
 
+[project.scripts]
+factorlib-web = "factorlib.workbench_server:main"
+
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
@@ -32,6 +35,7 @@ python-source = "python"
 python-packages = ["factorlib", "factorlib_core"]
 module-name = "factorlib_core.factorlib_core"
 features = ["extension-module"]
+include = ["factorlib/frontend/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

@@ -4,7 +4,7 @@
 支持双模启动：
 1. 标准库模式 (零外部依赖，内置 ThreadingHTTPServer，在基础 Python 虚拟环境中开箱即用)；
 2. FastAPI 模式 (若已安装 fastapi 与 uvicorn，自动挂载并暴露全局 ASGI 应用 `app`)。
-托管前端单页应用 (frontend/index.html) 并提供全套 6 阶段量化因子研发 RESTful API。
+托管前端单页应用 (factorlib/frontend/index.html) 并提供全套 6 阶段量化因子研发 RESTful API。
 """
 
 from __future__ import annotations
@@ -24,6 +24,38 @@ from factorlib.core.workbench import FactorWorkbenchService
 
 # 全局默认服务实例
 DEFAULT_SERVICE: FactorWorkbenchService | None = None
+
+
+class _InvalidJsonBodyError(ValueError):
+    """客户端请求体不是合法 UTF-8 JSON 对象时抛出的 400 错误。"""
+
+
+def _resolve_frontend_dir() -> Path:
+    """定位前端静态资源目录（优先包内路径，兼容源码根目录回退）。"""
+    pkg_frontend = Path(__file__).resolve().parent / "frontend"
+    if pkg_frontend.is_dir():
+        return pkg_frontend
+    return Path(__file__).resolve().parents[2] / "frontend"
+
+
+def _parse_json_object_bytes(raw_bytes: bytes) -> dict[str, Any]:
+    """将 HTTP 请求体字节解析为 JSON 字典；空请求体返回 {}，非法负载抛出 400 异常。"""
+    if not raw_bytes:
+        return {}
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        logging.warning("请求体 UTF-8 解码失败: %s", exc, exc_info=True)
+        raise _InvalidJsonBodyError("Invalid UTF-8 request body") from exc
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        logging.warning("请求体 JSON 解析失败: %s", exc, exc_info=True)
+        raise _InvalidJsonBodyError(f"Invalid JSON request body: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        logging.warning("请求体 JSON 顶层类型非法: %s", type(parsed).__name__)
+        raise _InvalidJsonBodyError("JSON request body must be an object")
+    return parsed
 
 
 def get_workbench_service(
@@ -83,7 +115,7 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
     """基于标准库的可并发 HTTP 请求处理器。"""
 
     service: FactorWorkbenchService = None  # type: ignore[assignment]
-    frontend_dir: Path = Path(__file__).resolve().parents[2] / "frontend"
+    frontend_dir: Path = _resolve_frontend_dir()
 
     def log_message(self, format: str, *args: Any) -> None:
         # 重定向至 Python 标准 logging 模块
@@ -97,14 +129,18 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _read_json_body(self) -> dict[str, Any]:
-        clen = int(self.headers.get("Content-Length", 0))
-        if clen <= 0:
-            return {}
-        raw = self.rfile.read(clen).decode("utf-8")
+        raw_clen = self.headers.get("Content-Length", "0")
         try:
-            return json.loads(raw)
-        except Exception:
+            clen = int(raw_clen)
+        except ValueError as exc:
+            logging.warning("请求头 Content-Length 非法: %r", raw_clen, exc_info=True)
+            raise _InvalidJsonBodyError("Invalid Content-Length header") from exc
+        if clen < 0:
+            logging.warning("请求头 Content-Length 为负数: %d", clen)
+            raise _InvalidJsonBodyError("Negative Content-Length header")
+        if clen == 0:
             return {}
+        return _parse_json_object_bytes(self.rfile.read(clen))
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -193,9 +229,9 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
-        body = self._read_json_body()
 
         try:
+            body = self._read_json_body()
             if path == "/api/probe":
                 _json_response(self, self.service.probe(body))
             elif path == "/api/factors/draft":
@@ -217,6 +253,8 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
                 _json_response(self, res)
             else:
                 _json_response(self, {"error": "Not found"}, status=404)
+        except _InvalidJsonBodyError as exc:
+            _json_response(self, {"error": str(exc)}, status=400)
         except Exception as exc:
             logging.exception("处理 POST 请求失败: %s", exc)
             _json_response(self, {"error": str(exc)}, status=500)
@@ -224,9 +262,9 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
-        body = self._read_json_body()
 
         try:
+            body = self._read_json_body()
             if path.startswith("/api/factors/") and path.endswith("/status"):
                 parts = path.strip("/").split("/")
                 fid = int(parts[2])
@@ -236,6 +274,8 @@ class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
                 _json_response(self, res)
             else:
                 _json_response(self, {"error": "Not found"}, status=404)
+        except _InvalidJsonBodyError as exc:
+            _json_response(self, {"error": str(exc)}, status=400)
         except Exception as exc:
             logging.exception("处理 PATCH 请求失败: %s", exc)
             _json_response(self, {"error": str(exc)}, status=500)
@@ -321,19 +361,25 @@ try:
             raise HTTPException(status_code=404, detail="Entry not found")
         return entry
 
+    async def _read_fastapi_json_body(req: Request) -> dict[str, Any]:
+        try:
+            return _parse_json_object_bytes(await req.body())
+        except _InvalidJsonBodyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/probe")
     async def api_probe(req: Request) -> dict[str, Any]:
-        body = await req.json()
+        body = await _read_fastapi_json_body(req)
         return get_workbench_service().probe(body)
 
     @app.post("/api/factors/draft")
     async def api_save_draft(req: Request) -> dict[str, Any]:
-        body = await req.json()
+        body = await _read_fastapi_json_body(req)
         return get_workbench_service().save_draft(body)
 
     @app.post("/api/workflow/run")
     async def api_run_workflow(req: Request) -> dict[str, Any]:
-        body = await req.json()
+        body = await _read_fastapi_json_body(req)
         return get_workbench_service().run_workflow(body)
 
     @app.get("/api/factors")
@@ -363,7 +409,7 @@ try:
 
     @app.patch("/api/factors/{factor_id}/status")
     async def api_update_status(factor_id: int, req: Request) -> dict[str, Any]:
-        body = await req.json()
+        body = await _read_fastapi_json_body(req)
         return get_workbench_service().update_factor_status(
             factor_id=factor_id,
             status=body.get("status", "accepted"),
@@ -380,14 +426,14 @@ try:
 
     @app.post("/api/panel/switch")
     async def api_switch_panel(req: Request) -> dict[str, Any]:
-        body = await req.json()
+        body = await _read_fastapi_json_body(req)
         return get_workbench_service().switch_panel_source(
             mode=body.get("mode", "auto"), panel_dir=body.get("panel_dir")
         )
 
     @app.post("/api/pipeline/run")
     async def api_run_pipeline(req: Request) -> dict[str, Any]:
-        body = await req.json()
+        body = await _read_fastapi_json_body(req)
         return get_workbench_service().run_e2e_pipeline(body)
 
     @app.get("/api/runs")
@@ -401,16 +447,16 @@ try:
             raise HTTPException(status_code=404, detail="Report not found")
         return html
 
-    frontend_path = Path(__file__).resolve().parents[2] / "frontend"
+    frontend_path = _resolve_frontend_dir()
     if frontend_path.exists():
         app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
 except ImportError:
     app = None  # type: ignore[assignment]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FactorLibrary 因子研发工作台服务器",
+        description="FactorLibrary 现代化 6 阶段量化因子研发工作台服务启动器",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="监听地址")
@@ -436,34 +482,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--synthetic",
         action="store_true",
-        help="强制使用内置合成演示面板 (不读取本地 Parquet)",
+        help="强制启用内置合成演示面板 (不读取本地 Parquet)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="日志输出级别",
+    )
+    return parser.parse_args(args)
 
 
-def main() -> int:
-    args = parse_args()
+def main(cli_args: list[str] | None = None) -> int:
+    args = parse_args(cli_args)
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, args.log_level),
         format="[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    service = get_workbench_service(
-        panel_dir=args.panel_dir,
-        db_path=args.db,
-        runs_dir=args.runs_dir,
-        force_synthetic=args.synthetic,
-    )
-
-    server = run_std_server(service, host=args.host, port=args.port)
+    server: ThreadingHTTPServer | None = None
     try:
+        service = get_workbench_service(
+            panel_dir=args.panel_dir,
+            db_path=args.db,
+            runs_dir=args.runs_dir,
+            force_synthetic=args.synthetic,
+        )
+        server = run_std_server(service, host=args.host, port=args.port)
         server.serve_forever()
+        return 0
     except KeyboardInterrupt:
         logging.info("收到中断信号，正在安全关闭工作台服务...")
-        server.shutdown()
-        server.server_close()
-    return 0
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        return 0
+    except Exception as exc:
+        logging.exception("工作台服务运行失败: %s", exc)
+        return 1
 
 
 if __name__ == "__main__":

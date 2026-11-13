@@ -278,7 +278,7 @@ flowchart TD
 
 ---
 
-## 10. 统一研发工作台与 Web 服务接口 (`workbench` & `server_main`)
+## 10. 统一研发工作台与 Web 服务接口 (`workbench` & `workbench_server`)
 
 - **`FactorWorkbenchService` (`factorlib.core.workbench`)**：
   - `get_context() -> dict`：获取平台状态、面板规格（支持真实/合成双模式）、模板集与默认组合参数；
@@ -288,7 +288,7 @@ flowchart TD
   - `run_workflow(payload) -> dict`：执行双层回测、物化落盘与不可变版本快照锁定 (`v1, v2, ...`)；
   - `list_factors(status, source, mode, min_icir)`、`get_factor_detail(id)`、`update_factor_status(id, status)`、`delete_factor(id)`、`init_seed_factors()`：因子资产管理；
   - `run_e2e_pipeline(payload) -> dict`、`list_runs() -> list`、`get_run_report_html(run_id) -> str`：端到端流水线调用与实验查看。
-- **Web 服务端与启动器 (`python/server_main.py` & `scripts/run_web.py`)**：
-  - 启动命令：`python scripts/run_web.py --port 8080`；
+- **Web 服务端与启动器 (`factorlib.workbench_server` & `scripts/run_web.py`)**：
+  - 启动命令：`python scripts/run_web.py --port 8080`、或安装 Wheel 后直接执行 `factorlib-web --port 8080`；
   - 提供完整 REST API 路由 (`/api/context`, `/api/probe`, `/api/workflow/run`, `/api/factors`, `/api/runs` 等)；
-  - 托管单页工作台 (`/`, `/app.js`, `/styles.css`)，开箱即用支持双模态编辑、12 算子编排与双层看板。
+  - 托管内置于 `factorlib/frontend/` 的单页工作台 (`/`, `/app.js`, `/styles.css`)，开箱即用支持双模态编辑、12 算子编排与双层看板。

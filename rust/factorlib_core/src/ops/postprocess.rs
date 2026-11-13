@@ -18,10 +18,14 @@
 use crate::nan::cmp_f64;
 use crate::panel::alloc_nan_matrix;
 use ahash::AHashMap;
-use ndarray::Array2;
+use ndarray::{Array2, ArrayBase, Data, Ix2};
 
 /// 1 & 2. `baseUniMask` / `trdMask`: 逐元素乘法掩码过滤（Opcode: `Mul`）。
-pub fn pp_mask_mul(x1: &Array2<f64>, x2: &Array2<f64>) -> Array2<f64> {
+pub fn pp_mask_mul<S1, S2>(x1: &ArrayBase<S1, Ix2>, x2: &ArrayBase<S2, Ix2>) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+    S2: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     debug_assert_eq!((t, n), x2.dim());
     let mut out = alloc_nan_matrix(t, n);
@@ -44,7 +48,15 @@ pub fn pp_mask_mul(x1: &Array2<f64>, x2: &Array2<f64>) -> Array2<f64> {
 }
 
 /// 3. `dropNewStock`: 过滤上市不足 `min_days` 的标的（Opcode: `ZsimDropNewStock`）。
-pub fn pp_drop_new_stock(x1: &Array2<f64>, x2: &Array2<f64>, min_days: f64) -> Array2<f64> {
+pub fn pp_drop_new_stock<S1, S2>(
+    x1: &ArrayBase<S1, Ix2>,
+    x2: &ArrayBase<S2, Ix2>,
+    min_days: f64,
+) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+    S2: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     debug_assert_eq!((t, n), x2.dim());
     let mut out = alloc_nan_matrix(t, n);
@@ -68,7 +80,10 @@ pub fn pp_drop_new_stock(x1: &Array2<f64>, x2: &Array2<f64>, min_days: f64) -> A
 /// 采用下中位数（排序后下标 `(k - 1) / 2`）：
 /// $m = \text{median}_{\text{lower}}(x_1)$，$\text{mad} = \text{median}_{\text{lower}}(|x_1 - m|)$，
 /// 裁剪至 $[m - \text{threshold} \cdot 1.4826 \cdot \text{mad}, \; m + \text{threshold} \cdot 1.4826 \cdot \text{mad}]$。
-pub fn pp_mad(x1: &Array2<f64>, threshold: f64) -> Array2<f64> {
+pub fn pp_mad<S1>(x1: &ArrayBase<S1, Ix2>, threshold: f64) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     let mut out = alloc_nan_matrix(t, n);
     if t == 0 || n == 0 || !threshold.is_finite() {
@@ -131,7 +146,10 @@ fn linear_quantile_sorted(sorted_vals: &[f64], p: f64) -> f64 {
 }
 
 /// 5. `winsor`: 截面线性内插分位数裁剪（Opcode: `ZsimWinsor`）。
-pub fn pp_winsor(x1: &Array2<f64>, quantile: f64) -> Array2<f64> {
+pub fn pp_winsor<S1>(x1: &ArrayBase<S1, Ix2>, quantile: f64) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     let mut out = alloc_nan_matrix(t, n);
     if t == 0 || n == 0 || !quantile.is_finite() {
@@ -169,7 +187,11 @@ pub fn pp_winsor(x1: &Array2<f64>, quantile: f64) -> Array2<f64> {
 /// 6. `indNeut`: 行业/期货板块截面去均值（Opcode: `ZsimIndustryNeutral`）。
 ///
 /// 对 `x2 > 0` 的有效板块编码减去同板块均值；若 `x2` 为 `NaN` 或 `<= 0`，**保留原值 `x1`**。
-pub fn pp_ind_neut(x1: &Array2<f64>, x2: &Array2<f64>) -> Array2<f64> {
+pub fn pp_ind_neut<S1, S2>(x1: &ArrayBase<S1, Ix2>, x2: &ArrayBase<S2, Ix2>) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+    S2: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     debug_assert_eq!((t, n), x2.dim());
     let mut out = alloc_nan_matrix(t, n);
@@ -216,7 +238,11 @@ pub fn pp_ind_neut(x1: &Array2<f64>, x2: &Array2<f64>) -> Array2<f64> {
 /// - 斜率 $\beta$ 使用 $(x_1, x_2)$ 同时有限的样本计算；
 /// - 截距 $\alpha = \text{mean}(x_1) - \beta \cdot \text{mean}(x_2)$ 分别在各自有限样本上独立计算均值；
 /// - 若 $x_2$ 缺失（`NaN`），保留原值 $x_1$。
-pub fn pp_risk_neut(x1: &Array2<f64>, x2: &Array2<f64>) -> Array2<f64> {
+pub fn pp_risk_neut<S1, S2>(x1: &ArrayBase<S1, Ix2>, x2: &ArrayBase<S2, Ix2>) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+    S2: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     debug_assert_eq!((t, n), x2.dim());
     let mut out = alloc_nan_matrix(t, n);
@@ -350,11 +376,27 @@ fn solve_linear_system(a: &mut [Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
 ///
 /// 正规方程对角线加 $10^{-8}$ 岭正则项：$\beta = (X^T X + 10^{-8} I)^{-1} X^T y$，
 /// 仅在 $y$ 与所有暴露 $X$ 均有限的样本上拟合并输出残差 $r = y - X\beta$。
-pub fn pp_risk_neut_multi(y: &Array2<f64>, exposures: &[&Array2<f64>]) -> Array2<f64> {
+pub fn pp_risk_neut_multi<S1, S2>(
+    y: &ArrayBase<S1, Ix2>,
+    exposures: &[&ArrayBase<S2, Ix2>],
+) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+    S2: Data<Elem = f64>,
+{
     let (t, n) = y.dim();
     let k = exposures.len();
     if k == 0 {
-        return y.clone();
+        let mut out = alloc_nan_matrix(t, n);
+        for col in 0..n {
+            for row in 0..t {
+                let v = y[[row, col]];
+                if v.is_finite() {
+                    out[[row, col]] = v;
+                }
+            }
+        }
+        return out;
     }
     for exp in exposures {
         debug_assert_eq!((t, n), exp.dim());
@@ -414,7 +456,10 @@ pub fn pp_risk_neut_multi(y: &Array2<f64>, exposures: &[&Array2<f64>]) -> Array2
 }
 
 /// 9. `zScore`: 每日截面总体标准差（`ddof=0`）标准化（Opcode: `ZsimCrossZScore`）。
-pub fn pp_zscore(x1: &Array2<f64>) -> Array2<f64> {
+pub fn pp_zscore<S1>(x1: &ArrayBase<S1, Ix2>) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     let mut out = alloc_nan_matrix(t, n);
     if t == 0 || n == 0 {
@@ -465,7 +510,10 @@ fn round_6_ties_even(val: f64) -> f64 {
 }
 
 /// 10. `rank`: 每日截面 6 位精度截断稳定排序百分位排名（Opcode: `ZsimPctRank`）。
-pub fn pp_rank(x1: &Array2<f64>) -> Array2<f64> {
+pub fn pp_rank<S1>(x1: &ArrayBase<S1, Ix2>) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     let mut out = alloc_nan_matrix(t, n);
     if t == 0 || n == 0 {
@@ -520,7 +568,10 @@ pub fn pp_rank(x1: &Array2<f64>) -> Array2<f64> {
 /// 11. `decay`: 沿时间轴 $T$ 满窗滚动算术均值（Opcode: `ZsimRollingMean`）。
 ///
 /// 当行下标 `row < window - 1` 时强制返回 `NaN`；否则跳过窗内 `NaN` 计算算术平均。
-pub fn pp_decay(x1: &Array2<f64>, window: usize) -> Array2<f64> {
+pub fn pp_decay<S1>(x1: &ArrayBase<S1, Ix2>, window: usize) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     let mut out = alloc_nan_matrix(t, n);
     if t == 0 || n == 0 || window == 0 || window > t {
@@ -552,7 +603,10 @@ pub fn pp_decay(x1: &Array2<f64>, window: usize) -> Array2<f64> {
 ///
 /// 权重为 $1 \dots W$（从最旧到最新）。若窗口内某观测为 `NaN`，剔除其对应权重并重归一化剩余权重；
 /// 当 `row < window - 1` 时强制返回 `NaN`。
-pub fn pp_emadecay(x1: &Array2<f64>, window: usize) -> Array2<f64> {
+pub fn pp_emadecay<S1>(x1: &ArrayBase<S1, Ix2>, window: usize) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+{
     let (t, n) = x1.dim();
     let mut out = alloc_nan_matrix(t, n);
     if t == 0 || n == 0 || window == 0 || window > t {

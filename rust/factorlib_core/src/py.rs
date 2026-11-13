@@ -15,11 +15,13 @@ use crate::expr::cache::SubExprCache;
 use crate::expr::canon::{canonicalize, CanonResult};
 use crate::expr::eval::{eval_batch_str, eval_expr_str};
 use crate::expr::parser::parse_expr;
-use crate::expr::typecheck::{infer_type, typecheck_factor_expr};
-use crate::metrics::corr::{cross_correlation_matrix, cross_correlation_pairwise};
-use crate::metrics::ic::{
-    calc_daily_cross_sectional_ic, calc_ic_metrics, calc_ic_series, IcMetrics,
+use crate::expr::typecheck::{collect_type_warnings, infer_type, typecheck_factor_expr};
+use crate::metrics::corr::{
+    calc_daily_factor_correlation_with_scratch, cross_correlation_matrix,
+    cross_correlation_pairwise, cross_correlation_prepared_seq, CorrScratch, PreparedCandidate,
+    PreparedFactor,
 };
+use crate::metrics::ic::{calc_ic_metrics, calc_ic_series, IcMetrics};
 use crate::metrics::quantile::{
     calc_quantile_metrics, calc_top_quantile_turnover as rust_calc_top_quantile_turnover,
     QuantileMetrics, TopQuantileTurnoverMetrics,
@@ -44,6 +46,21 @@ use std::sync::Arc;
 fn view_to_fortran_f64(view: ArrayView2<'_, f64>) -> Array2<f64> {
     let (t, n) = view.dim();
     let mut f_arr = Array2::<f64>::zeros((t, n).f());
+    if view.t().is_standard_layout() {
+        if let (Some(src), Some(dst)) = (
+            view.as_slice_memory_order(),
+            f_arr.as_slice_memory_order_mut(),
+        ) {
+            if src.iter().all(|v| v.is_finite() || v.is_nan()) {
+                dst.copy_from_slice(src);
+            } else {
+                for (d, &s) in dst.iter_mut().zip(src.iter()) {
+                    *d = if s.is_finite() { s } else { f64::NAN };
+                }
+            }
+            return f_arr;
+        }
+    }
     for col in 0..n {
         let src_col = view.column(col);
         let mut dst_col = f_arr.column_mut(col);
@@ -58,6 +75,15 @@ fn view_to_fortran_f64(view: ArrayView2<'_, f64>) -> Array2<f64> {
 fn view_to_fortran_bool(view: ArrayView2<'_, bool>) -> Array2<bool> {
     let (t, n) = view.dim();
     let mut f_arr = Array2::<bool>::from_elem((t, n).f(), false);
+    if view.t().is_standard_layout() {
+        if let (Some(src), Some(dst)) = (
+            view.as_slice_memory_order(),
+            f_arr.as_slice_memory_order_mut(),
+        ) {
+            dst.copy_from_slice(src);
+            return f_arr;
+        }
+    }
     for col in 0..n {
         let src_col = view.column(col);
         let mut dst_col = f_arr.column_mut(col);
@@ -480,6 +506,7 @@ impl PyEngine {
                         d.set_item("valid", true)?;
                         d.set_item("return_type", ty.as_str())?;
                         d.set_item("error", py.None())?;
+                        d.set_item("warnings", collect_type_warnings(&ast))?;
                         d.set_item("n_nodes", ast.node_count())?;
                         d.set_item("depth", ast.depth())?;
                         d.set_item("canon_expr", cr.canon_expr)?;
@@ -493,6 +520,7 @@ impl PyEngine {
                         d.set_item("valid", false)?;
                         d.set_item("return_type", py.None())?;
                         d.set_item("error", te.to_string())?;
+                        d.set_item("warnings", Vec::<String>::new())?;
                         d.set_item("n_nodes", ast.node_count())?;
                         d.set_item("depth", ast.depth())?;
                     }
@@ -502,6 +530,7 @@ impl PyEngine {
                 d.set_item("valid", false)?;
                 d.set_item("return_type", py.None())?;
                 d.set_item("error", pe.to_string())?;
+                d.set_item("warnings", Vec::<String>::new())?;
                 d.set_item("n_nodes", 0usize)?;
                 d.set_item("depth", 0usize)?;
             }
@@ -550,10 +579,10 @@ impl PyEngine {
                 PyValueError::new_err(format!("未在面板中找到预测标签: '{label_name}'"))
             })?
             .clone();
-        let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let label_sub = label_arc.slice(s![s_row..e_row, ..]);
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
-        let metrics = py.allow_threads(move || {
+        let metrics = py.allow_threads(|| {
             let (t, n) = f_mat.dim();
             let mut valid_f = 0;
             let mut total_univ = 0;
@@ -605,10 +634,10 @@ impl PyEngine {
                 ))
             })?
             .clone();
-        let ret_sub = view_to_fortran_f64(ret_arc.slice(s![s_row..e_row, ..]));
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let ret_sub = ret_arc.slice(s![s_row..e_row, ..]);
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
-        let metrics = py.allow_threads(move || {
+        let metrics = py.allow_threads(|| {
             calc_quantile_metrics(&f_mat, &ret_sub, &mask_sub, n_quantiles, min_names, sign)
         });
 
@@ -627,9 +656,9 @@ impl PyEngine {
     ) -> PyResult<Bound<'py, PyDict>> {
         let f_raw = self.resolve_factor_mat(py, factor)?;
         let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
-        let metrics = py.allow_threads(move || calc_turnover_metrics(&f_mat, &mask_sub, min_names));
+        let metrics = py.allow_threads(|| calc_turnover_metrics(&f_mat, &mask_sub, min_names));
 
         turnover_metrics_to_pydict(py, &metrics)
     }
@@ -649,13 +678,13 @@ impl PyEngine {
     ) -> PyResult<Bound<'py, PyDict>> {
         let f_raw = self.resolve_factor_mat(py, factor)?;
         let (f_mat, s_row, e_row) = self.align_factor_slice(f_raw, start_row, end_row)?;
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
         if n_quantiles < 2 {
             return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
         }
 
-        let metrics = py.allow_threads(move || {
+        let metrics = py.allow_threads(|| {
             rust_calc_top_quantile_turnover(&f_mat, &mask_sub, n_quantiles, min_names, sign)
         });
 
@@ -699,11 +728,11 @@ impl PyEngine {
             .or_else(|| self.panel.labels.get("r_exec_next"))
             .unwrap_or(&label_arc)
             .clone();
-        let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));
-        let ret_sub = view_to_fortran_f64(ret_arc.slice(s![s_row..e_row, ..]));
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let label_sub = label_arc.slice(s![s_row..e_row, ..]);
+        let ret_sub = ret_arc.slice(s![s_row..e_row, ..]);
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
-        let (ic_m, q_m, to_m) = py.allow_threads(move || {
+        let (ic_m, q_m, to_m) = py.allow_threads(|| {
             let (t, n) = f_mat.dim();
             let mut valid_f = 0;
             let mut total_univ = 0;
@@ -767,11 +796,10 @@ impl PyEngine {
                 "factor_a 与 factor_b 的行切片维度不一致",
             ));
         }
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
-        let rho = py.allow_threads(move || {
-            cross_correlation_pairwise(&fa, &fb, &mask_sub, min_names, rank)
-        });
+        let rho =
+            py.allow_threads(|| cross_correlation_pairwise(&fa, &fb, &mask_sub, min_names, rank));
         Ok(rho)
     }
 
@@ -804,16 +832,16 @@ impl PyEngine {
             return Err(PyValueError::new_err("无效的行切片范围"));
         }
 
-        let mut f_mats: Vec<Array2<f64>> = Vec::with_capacity(factors.len());
-        for f in factors {
-            let raw = view_to_fortran_f64(f.as_array());
-            let (sliced, _, _) = self.align_factor_slice(raw, Some(s_row), Some(e_row))?;
-            f_mats.push(sliced);
+        let mut f_views: Vec<ArrayView2<'_, f64>> = Vec::with_capacity(factors.len());
+        for f in &factors {
+            let v = f.as_array();
+            let (sliced, _, _) = self.align_factor_view(v, Some(s_row), Some(e_row))?;
+            f_views.push(sliced);
         }
-        let mask_sub = view_to_fortran_bool(self.panel.universe_mask.slice(s![s_row..e_row, ..]));
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
 
-        let mat = py.allow_threads(move || {
-            let refs: Vec<&Array2<f64>> = f_mats.iter().collect();
+        let mat = py.allow_threads(|| {
+            let refs: Vec<&ArrayView2<'_, f64>> = f_views.iter().collect();
             cross_correlation_matrix(&refs, &mask_sub, min_names, rank)
         });
 
@@ -848,12 +876,13 @@ impl PyEngine {
             })?
             .clone();
 
-        let mut lib_mats: Vec<Array2<f64>> = Vec::new();
-        if let Some(libs) = library_factors {
+        let mut lib_views: Vec<ArrayView2<'_, f64>> = Vec::new();
+        if let Some(ref libs) = library_factors {
+            lib_views.reserve(libs.len());
             for lf in libs {
-                let raw = view_to_fortran_f64(lf.as_array());
-                let (sliced, _, _) = self.align_factor_slice(raw, Some(s_row), Some(e_row))?;
-                lib_mats.push(sliced);
+                let (sliced, _, _) =
+                    self.align_factor_view(lf.as_array(), Some(s_row), Some(e_row))?;
+                lib_views.push(sliced);
             }
         }
 
@@ -879,105 +908,139 @@ impl PyEngine {
             error: Option<String>,
         }
 
-        let batch_items: Vec<GpEvalItem> = py.allow_threads(move || {
+        struct GpThreadScratch {
+            f_row: Vec<f64>,
+            l_row: Vec<f64>,
+            m_row: Vec<bool>,
+            cand: PreparedCandidate,
+            corr: CorrScratch,
+        }
+
+        let batch_items: Vec<GpEvalItem> = py.allow_threads(|| {
             let work = || {
                 let cache_ref = cache.as_deref();
                 let eval_res = eval_batch_str(&exprs, &panel, cache_ref, true);
 
                 let t_sub = e_row - s_row;
-                let label_sub = view_to_fortran_f64(label_arc.slice(s![s_row..e_row, ..]));
-                let mask_sub =
-                    view_to_fortran_bool(panel.universe_mask.slice(s![s_row..e_row, ..]));
+                let label_view = label_arc.slice(s![s_row..e_row, ..]);
+                let mask_view = panel.universe_mask.slice(s![s_row..e_row, ..]);
 
+                let mut mask_rm = vec![false; t_sub * panel_n];
                 let mut total_univ = 0usize;
                 for r in 0..t_sub {
+                    let base = r * panel_n;
                     for c in 0..panel_n {
-                        if mask_sub[[r, c]] {
+                        let m = mask_view[[r, c]];
+                        mask_rm[base + c] = m;
+                        if m {
                             total_univ += 1;
                         }
                     }
                 }
 
+                // 预转换库内因子为行连续 (T, N) 预备表示，消除内层并行与逐日堆分配
+                let prepared_libs: Vec<PreparedFactor> = lib_views
+                    .par_iter()
+                    .map(|lv| PreparedFactor::from_matrix(lv, &mask_view, min_names, true))
+                    .collect();
+
                 eval_res
                     .into_par_iter()
-                    .map(|res| match res {
-                        Ok(mat_arc) => {
-                            let f_sub = view_to_fortran_f64(mat_arc.slice(s![s_row..e_row, ..]));
-                            let mut valid_f = 0usize;
-                            for r in 0..t_sub {
-                                for c in 0..panel_n {
-                                    if mask_sub[[r, c]] && f_sub[[r, c]].is_finite() {
-                                        valid_f += 1;
-                                    }
-                                }
-                            }
-                            let mut daily_ic = Vec::with_capacity(t_sub);
-                            let mut f_row = vec![0.0_f64; panel_n];
-                            let mut l_row = vec![0.0_f64; panel_n];
-                            let mut m_row = vec![false; panel_n];
-                            for r in 0..t_sub {
-                                for c in 0..panel_n {
-                                    f_row[c] = f_sub[[r, c]];
-                                    l_row[c] = label_sub[[r, c]];
-                                    m_row[c] = mask_sub[[r, c]];
-                                }
-                                daily_ic.push(calc_daily_cross_sectional_ic(
-                                    &f_row, &l_row, &m_row, min_names, true,
-                                ));
-                            }
-                            let ic_m =
-                                calc_ic_metrics(&daily_ic, horizon, t_sub, valid_f, total_univ);
-
-                            let mut max_abs_corr = 0.0_f64;
-                            let mut sum_abs_corr = 0.0_f64;
-                            if !lib_mats.is_empty() && ic_m.valid_days > 0 {
-                                for lib_f in &lib_mats {
-                                    let rho = cross_correlation_pairwise(
-                                        &f_sub, lib_f, &mask_sub, min_names, true,
-                                    )
-                                    .abs();
-                                    if rho.is_finite() {
-                                        if rho > max_abs_corr {
-                                            max_abs_corr = rho;
-                                        }
-                                        sum_abs_corr += rho;
-                                    }
-                                }
-                            }
-                            let mean_abs_corr = if !lib_mats.is_empty() {
-                                sum_abs_corr / (lib_mats.len() as f64)
-                            } else {
-                                0.0
-                            };
-
-                            GpEvalItem {
-                                valid: true,
-                                ic_mean: ic_m.ic_mean,
-                                ic_std: ic_m.ic_std,
-                                ic_ir: ic_m.ic_ir,
-                                ic_t: ic_m.ic_t,
-                                ic_win_rate: ic_m.ic_win_rate,
-                                coverage: ic_m.coverage,
-                                valid_days: ic_m.valid_days,
-                                max_abs_corr,
-                                mean_abs_corr,
-                                error: None,
-                            }
-                        }
-                        Err(e) => GpEvalItem {
-                            valid: false,
-                            ic_mean: 0.0,
-                            ic_std: 0.0,
-                            ic_ir: 0.0,
-                            ic_t: 0.0,
-                            ic_win_rate: 0.0,
-                            coverage: 0.0,
-                            valid_days: 0,
-                            max_abs_corr: 0.0,
-                            mean_abs_corr: 0.0,
-                            error: Some(e.to_string()),
+                    .map_init(
+                        || GpThreadScratch {
+                            f_row: vec![0.0_f64; panel_n],
+                            l_row: vec![0.0_f64; panel_n],
+                            m_row: vec![false; panel_n],
+                            cand: PreparedCandidate::default(),
+                            corr: CorrScratch::default(),
                         },
-                    })
+                        |scratch, res| match res {
+                            Ok(mat_arc) => {
+                                let f_view = mat_arc.slice(s![s_row..e_row, ..]);
+                                let mut valid_f = 0usize;
+                                let mut daily_ic = Vec::with_capacity(t_sub);
+                                for r in 0..t_sub {
+                                    let base = r * panel_n;
+                                    for c in 0..panel_n {
+                                        let fv = f_view[[r, c]];
+                                        let m = mask_rm[base + c];
+                                        if m && fv.is_finite() {
+                                            valid_f += 1;
+                                        }
+                                        scratch.f_row[c] = fv;
+                                        scratch.l_row[c] = label_view[[r, c]];
+                                        scratch.m_row[c] = m;
+                                    }
+                                    daily_ic.push(calc_daily_factor_correlation_with_scratch(
+                                        &scratch.f_row,
+                                        &scratch.l_row,
+                                        &scratch.m_row,
+                                        min_names,
+                                        true,
+                                        &mut scratch.corr,
+                                    ));
+                                }
+                                let ic_m =
+                                    calc_ic_metrics(&daily_ic, horizon, t_sub, valid_f, total_univ);
+
+                                let mut max_abs_corr = 0.0_f64;
+                                let mut sum_abs_corr = 0.0_f64;
+                                if !prepared_libs.is_empty() && ic_m.valid_days > 0 {
+                                    scratch
+                                        .cand
+                                        .fill_from_matrix(&f_view, &mask_rm, min_names, true);
+                                    for lib_p in &prepared_libs {
+                                        let rho = cross_correlation_prepared_seq(
+                                            &scratch.cand,
+                                            lib_p,
+                                            min_names,
+                                            true,
+                                            &mut scratch.corr,
+                                        )
+                                        .abs();
+                                        if rho.is_finite() {
+                                            if rho > max_abs_corr {
+                                                max_abs_corr = rho;
+                                            }
+                                            sum_abs_corr += rho;
+                                        }
+                                    }
+                                }
+                                let mean_abs_corr = if !prepared_libs.is_empty() {
+                                    sum_abs_corr / (prepared_libs.len() as f64)
+                                } else {
+                                    0.0
+                                };
+
+                                GpEvalItem {
+                                    valid: true,
+                                    ic_mean: ic_m.ic_mean,
+                                    ic_std: ic_m.ic_std,
+                                    ic_ir: ic_m.ic_ir,
+                                    ic_t: ic_m.ic_t,
+                                    ic_win_rate: ic_m.ic_win_rate,
+                                    coverage: ic_m.coverage,
+                                    valid_days: ic_m.valid_days,
+                                    max_abs_corr,
+                                    mean_abs_corr,
+                                    error: None,
+                                }
+                            }
+                            Err(e) => GpEvalItem {
+                                valid: false,
+                                ic_mean: 0.0,
+                                ic_std: 0.0,
+                                ic_ir: 0.0,
+                                ic_t: 0.0,
+                                ic_win_rate: 0.0,
+                                coverage: 0.0,
+                                valid_days: 0,
+                                max_abs_corr: 0.0,
+                                mean_abs_corr: 0.0,
+                                error: Some(e.to_string()),
+                            },
+                        },
+                    )
                     .collect()
             };
 
@@ -1025,6 +1088,42 @@ impl PyEngine {
             Err(PyValueError::new_err(
                 "factor 必须为 DSL 表达式文本或二维 float64 NumPy 数组",
             ))
+        }
+    }
+
+    fn align_factor_view<'a>(
+        &self,
+        f_view: ArrayView2<'a, f64>,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
+    ) -> PyResult<(ArrayView2<'a, f64>, usize, usize)> {
+        let (panel_t, panel_n) = self.panel.shape();
+        let (f_t, f_n) = f_view.dim();
+        if f_n != panel_n {
+            return Err(PyValueError::new_err(format!(
+                "因子列数 ({f_n}) 与面板品种数 ({panel_n}) 不一致"
+            )));
+        }
+        let s_row = start_row.unwrap_or(0);
+        let e_row = end_row.unwrap_or(if f_t < panel_t && start_row.is_none() {
+            f_t
+        } else {
+            panel_t
+        });
+        if s_row > e_row || e_row > panel_t {
+            return Err(PyValueError::new_err(format!(
+                "无效的行切片范围: [{s_row}, {e_row}), 面板总行数={panel_t}"
+            )));
+        }
+        let expected_sub = e_row - s_row;
+        if f_t == expected_sub {
+            Ok((f_view, s_row, e_row))
+        } else if f_t == panel_t {
+            Ok((f_view.slice_move(s![s_row..e_row, ..]), s_row, e_row))
+        } else {
+            Err(PyValueError::new_err(format!(
+                "因子行数 ({f_t}) 与预期切片行数 ({expected_sub}) 或面板行数 ({panel_t}) 不匹配"
+            )))
         }
     }
 
@@ -1111,6 +1210,7 @@ pub fn check_expr<'py>(
                     d.set_item("valid", true)?;
                     d.set_item("return_type", ty.as_str())?;
                     d.set_item("error", py.None())?;
+                    d.set_item("warnings", collect_type_warnings(&ast))?;
                     d.set_item("n_nodes", ast.node_count())?;
                     d.set_item("depth", ast.depth())?;
                     d.set_item("canon_expr", cr.canon_expr)?;
@@ -1124,6 +1224,7 @@ pub fn check_expr<'py>(
                     d.set_item("valid", false)?;
                     d.set_item("return_type", py.None())?;
                     d.set_item("error", te.to_string())?;
+                    d.set_item("warnings", Vec::<String>::new())?;
                 }
             }
         }
@@ -1131,6 +1232,7 @@ pub fn check_expr<'py>(
             d.set_item("valid", false)?;
             d.set_item("return_type", py.None())?;
             d.set_item("error", pe.to_string())?;
+            d.set_item("warnings", Vec::<String>::new())?;
         }
     }
     Ok(d)
@@ -1167,31 +1269,31 @@ pub fn calc_ic<'py>(
     rank: bool,
     horizon: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let f_mat = view_to_fortran_f64(factor.as_array());
-    let l_mat = view_to_fortran_f64(label.as_array());
-    let m_mat = view_to_fortran_bool(mask.as_array());
+    let f_view = factor.as_array();
+    let l_view = label.as_array();
+    let m_view = mask.as_array();
 
-    let (t, n) = f_mat.dim();
-    if l_mat.dim() != (t, n) || m_mat.dim() != (t, n) {
+    let (t, n) = f_view.dim();
+    if l_view.dim() != (t, n) || m_view.dim() != (t, n) {
         return Err(PyValueError::new_err(
             "factor, label 与 mask 矩阵维度必须完全一致",
         ));
     }
 
-    let metrics = py.allow_threads(move || {
+    let metrics = py.allow_threads(|| {
         let mut valid_f = 0;
         let mut total_univ = 0;
         for row in 0..t {
             for col in 0..n {
-                if m_mat[[row, col]] {
+                if m_view[[row, col]] {
                     total_univ += 1;
-                    if f_mat[[row, col]].is_finite() {
+                    if f_view[[row, col]].is_finite() {
                         valid_f += 1;
                     }
                 }
             }
         }
-        let daily = calc_ic_series(&f_mat, &l_mat, &m_mat, min_names, rank);
+        let daily = calc_ic_series(&f_view, &l_view, &m_view, min_names, rank);
         calc_ic_metrics(&daily, horizon, t, valid_f, total_univ)
     });
 
@@ -1211,12 +1313,12 @@ pub fn calc_quantile_returns<'py>(
     min_names: usize,
     sign: i32,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let f_mat = view_to_fortran_f64(factor.as_array());
-    let r_mat = view_to_fortran_f64(forward_ret.as_array());
-    let m_mat = view_to_fortran_bool(mask.as_array());
+    let f_view = factor.as_array();
+    let r_view = forward_ret.as_array();
+    let m_view = mask.as_array();
 
-    let (t, n) = f_mat.dim();
-    if r_mat.dim() != (t, n) || m_mat.dim() != (t, n) {
+    let (t, n) = f_view.dim();
+    if r_view.dim() != (t, n) || m_view.dim() != (t, n) {
         return Err(PyValueError::new_err(
             "factor, forward_ret 与 mask 矩阵维度必须完全一致",
         ));
@@ -1225,8 +1327,8 @@ pub fn calc_quantile_returns<'py>(
         return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
     }
 
-    let metrics = py.allow_threads(move || {
-        calc_quantile_metrics(&f_mat, &r_mat, &m_mat, n_quantiles, min_names, sign)
+    let metrics = py.allow_threads(|| {
+        calc_quantile_metrics(&f_view, &r_view, &m_view, n_quantiles, min_names, sign)
     });
 
     quantile_metrics_to_pydict(py, &metrics)
@@ -1243,19 +1345,19 @@ pub fn calc_top_quantile_turnover<'py>(
     min_names: usize,
     sign: i32,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let f_mat = view_to_fortran_f64(factor.as_array());
-    let m_mat = view_to_fortran_bool(mask.as_array());
+    let f_view = factor.as_array();
+    let m_view = mask.as_array();
 
-    let (t, n) = f_mat.dim();
-    if m_mat.dim() != (t, n) {
+    let (t, n) = f_view.dim();
+    if m_view.dim() != (t, n) {
         return Err(PyValueError::new_err("factor 与 mask 矩阵维度必须完全一致"));
     }
     if n_quantiles < 2 {
         return Err(PyValueError::new_err("n_quantiles 必须 >= 2"));
     }
 
-    let metrics = py.allow_threads(move || {
-        rust_calc_top_quantile_turnover(&f_mat, &m_mat, n_quantiles, min_names, sign)
+    let metrics = py.allow_threads(|| {
+        rust_calc_top_quantile_turnover(&f_view, &m_view, n_quantiles, min_names, sign)
     });
 
     top_quantile_turnover_to_pydict(py, &metrics)
@@ -1270,15 +1372,15 @@ pub fn calc_turnover<'py>(
     mask: PyReadonlyArray2<'_, bool>,
     min_names: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let f_mat = view_to_fortran_f64(factor.as_array());
-    let m_mat = view_to_fortran_bool(mask.as_array());
+    let f_view = factor.as_array();
+    let m_view = mask.as_array();
 
-    let (t, n) = f_mat.dim();
-    if m_mat.dim() != (t, n) {
+    let (t, n) = f_view.dim();
+    if m_view.dim() != (t, n) {
         return Err(PyValueError::new_err("factor 与 mask 矩阵维度必须完全一致"));
     }
 
-    let metrics = py.allow_threads(move || calc_turnover_metrics(&f_mat, &m_mat, min_names));
+    let metrics = py.allow_threads(|| calc_turnover_metrics(&f_view, &m_view, min_names));
 
     turnover_metrics_to_pydict(py, &metrics)
 }
@@ -1294,9 +1396,9 @@ pub fn calc_pairwise_correlation<'py>(
     min_names: usize,
     rank: bool,
 ) -> PyResult<f64> {
-    let fa = view_to_fortran_f64(factor_a.as_array());
-    let fb = view_to_fortran_f64(factor_b.as_array());
-    let m = view_to_fortran_bool(mask.as_array());
+    let fa = factor_a.as_array();
+    let fb = factor_b.as_array();
+    let m = mask.as_array();
 
     let (t, n) = fa.dim();
     if fb.dim() != (t, n) || m.dim() != (t, n) {
@@ -1305,7 +1407,7 @@ pub fn calc_pairwise_correlation<'py>(
         ));
     }
 
-    let rho = py.allow_threads(move || cross_correlation_pairwise(&fa, &fb, &m, min_names, rank));
+    let rho = py.allow_threads(|| cross_correlation_pairwise(&fa, &fb, &m, min_names, rank));
 
     Ok(rho)
 }
@@ -1320,23 +1422,23 @@ pub fn calc_correlation_matrix<'py>(
     min_names: usize,
     rank: bool,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let m_mat = view_to_fortran_bool(mask.as_array());
-    let (t, n) = m_mat.dim();
+    let m_view = mask.as_array();
+    let (t, n) = m_view.dim();
 
-    let mut f_mats: Vec<Array2<f64>> = Vec::with_capacity(factors.len());
-    for f in factors {
-        let mat = view_to_fortran_f64(f.as_array());
-        if mat.dim() != (t, n) {
+    let mut f_views: Vec<ArrayView2<'_, f64>> = Vec::with_capacity(factors.len());
+    for f in &factors {
+        let view = f.as_array();
+        if view.dim() != (t, n) {
             return Err(PyValueError::new_err(
                 "所有因子矩阵的维度必须与 mask 矩阵严格一致",
             ));
         }
-        f_mats.push(mat);
+        f_views.push(view);
     }
 
-    let mat = py.allow_threads(move || {
-        let refs: Vec<&Array2<f64>> = f_mats.iter().collect();
-        cross_correlation_matrix(&refs, &m_mat, min_names, rank)
+    let mat = py.allow_threads(|| {
+        let refs: Vec<&ArrayView2<'_, f64>> = f_views.iter().collect();
+        cross_correlation_matrix(&refs, &m_view, min_names, rank)
     });
 
     Ok(PyArray2::from_owned_array_bound(py, mat))
@@ -1585,74 +1687,73 @@ pub fn apply_postprocess_op<'py>(
     exposures: Option<Vec<PyReadonlyArray2<'_, f64>>>,
     param: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let m1 = view_to_fortran_f64(x1.as_array());
-    let (t, n) = m1.dim();
+    let m1_view = x1.as_array();
+    let (t, n) = m1_view.dim();
 
-    let m2_opt = match x2 {
+    let m2_opt = match x2.as_ref() {
         Some(arr) => {
-            let m = view_to_fortran_f64(arr.as_array());
-            if m.dim() != (t, n) {
+            let v = arr.as_array();
+            if v.dim() != (t, n) {
                 return Err(PyValueError::new_err(format!(
                     "后处理算子 '{op_name}' 的 x2 维度 {:?} 与 x1 维度 ({t}, {n}) 不一致",
-                    m.dim()
+                    v.dim()
                 )));
             }
-            Some(m)
+            Some(v)
         }
         None => None,
     };
 
-    let exp_mats: Vec<Array2<f64>> = match exposures {
+    let exp_views: Vec<ArrayView2<'_, f64>> = match exposures.as_ref() {
         Some(list) => {
             let mut v = Vec::with_capacity(list.len());
             for arr in list {
-                let m = view_to_fortran_f64(arr.as_array());
-                if m.dim() != (t, n) {
+                let av = arr.as_array();
+                if av.dim() != (t, n) {
                     return Err(PyValueError::new_err(format!(
                         "后处理算子 '{op_name}' 的暴露矩阵维度 {:?} 与 x1 维度 ({t}, {n}) 不一致",
-                        m.dim()
+                        av.dim()
                     )));
                 }
-                v.push(m);
+                v.push(av);
             }
             v
         }
         None => Vec::new(),
     };
 
-    let op_owned = op_name.to_string();
-    let res_mat: Result<Array2<f64>, String> = py.allow_threads(move || match op_owned.as_str() {
+    let res_mat: Result<Array2<f64>, String> = py.allow_threads(|| match op_name {
         "baseUniMask" | "trdMask" => {
             let m2 = m2_opt
                 .as_ref()
-                .ok_or_else(|| format!("算子 '{op_owned}' 需要提供掩码矩阵 x2"))?;
-            Ok(pp_mask_mul(&m1, m2))
+                .ok_or_else(|| format!("算子 '{op_name}' 需要提供掩码矩阵 x2"))?;
+            Ok(pp_mask_mul(&m1_view, m2))
         }
         "dropNewStock" => {
             let m2 = m2_opt
                 .as_ref()
                 .ok_or_else(|| "算子 'dropNewStock' 需要提供上市天数矩阵 x2".to_string())?;
             let min_days = param.unwrap_or(60.0);
-            Ok(pp_drop_new_stock(&m1, m2, min_days))
+            Ok(pp_drop_new_stock(&m1_view, m2, min_days))
         }
         "MAD" => {
             let threshold = param.unwrap_or(3.0);
-            Ok(pp_mad(&m1, threshold))
+            Ok(pp_mad(&m1_view, threshold))
         }
         "winsor" => {
             let quantile = param.unwrap_or(0.025);
-            Ok(pp_winsor(&m1, quantile))
+            Ok(pp_winsor(&m1_view, quantile))
         }
         "indNeut" => {
             let m2 = m2_opt
                 .as_ref()
                 .ok_or_else(|| "算子 'indNeut' 需要提供板块/行业编码矩阵 x2".to_string())?;
-            Ok(pp_ind_neut(&m1, m2))
+            Ok(pp_ind_neut(&m1_view, m2))
         }
         "riskNeut" => {
-            if !exp_mats.is_empty() {
-                let mut curr = m1;
-                for exp in &exp_mats {
+            if !exp_views.is_empty() {
+                let mut curr = pp_risk_neut(&m1_view, &exp_views[0]);
+                for exp in &exp_views[1..] {
                     curr = pp_risk_neut(&curr, exp);
                 }
                 Ok(curr)
@@ -1660,31 +1761,31 @@ pub fn apply_postprocess_op<'py>(
                 let m2 = m2_opt
                     .as_ref()
                     .ok_or_else(|| "算子 'riskNeut' 需要提供风险暴露矩阵 x2".to_string())?;
-                Ok(pp_risk_neut(&m1, m2))
+                Ok(pp_risk_neut(&m1_view, m2))
             }
         }
         "riskNeutMulti" => {
-            if !exp_mats.is_empty() {
-                let refs: Vec<&Array2<f64>> = exp_mats.iter().collect();
-                Ok(pp_risk_neut_multi(&m1, &refs))
+            if !exp_views.is_empty() {
+                let refs: Vec<&ArrayView2<'_, f64>> = exp_views.iter().collect();
+                Ok(pp_risk_neut_multi(&m1_view, &refs))
             } else if let Some(ref m2) = m2_opt {
                 let refs = vec![m2];
-                Ok(pp_risk_neut_multi(&m1, &refs))
+                Ok(pp_risk_neut_multi(&m1_view, &refs))
             } else {
                 Err("算子 'riskNeutMulti' 需要提供至少一个风险暴露矩阵".to_string())
             }
         }
-        "zScore" => Ok(pp_zscore(&m1)),
-        "rank" => Ok(pp_rank(&m1)),
+        "zScore" => Ok(pp_zscore(&m1_view)),
+        "rank" => Ok(pp_rank(&m1_view)),
         "decay" => {
             let w = param.unwrap_or(5.0).max(1.0) as usize;
-            Ok(pp_decay(&m1, w))
+            Ok(pp_decay(&m1_view, w))
         }
         "emadecay" => {
             let w = param.unwrap_or(5.0).max(1.0) as usize;
-            Ok(pp_emadecay(&m1, w))
+            Ok(pp_emadecay(&m1_view, w))
         }
-        _ => Err(format!("未知的后处理算子: '{op_owned}'")),
+        _ => Err(format!("未知的后处理算子: '{op_name}'")),
     });
 
     let out = res_mat.map_err(PyValueError::new_err)?;

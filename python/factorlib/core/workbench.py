@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,8 @@ from factorlib.core.probe import (
 from factorlib.core.registry import FactorRegistry
 from factorlib.core.report import generate_html_report, summary_dict
 from factorlib.core.styles import STYLE_DEFINITIONS
+
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_json_value(obj: Any) -> Any:
@@ -309,7 +312,11 @@ class FactorWorkbenchService:
                 self.panel_source = "real"
                 return p
             except Exception:
-                pass
+                logger.warning(
+                    "加载真实研究面板失败，回退至合成演示面板 (%s)",
+                    self.panel_dir,
+                    exc_info=True,
+                )
         self.panel_source = "synthetic"
         return create_synthetic_futures_panel(n_days=120, seed=42)
 
@@ -423,6 +430,7 @@ class FactorWorkbenchService:
                 "schema_version": "v1",
                 "status": "error",
                 "errors": [str(exc)],
+                "warnings": [],
                 "stage_order_warnings": [],
                 "execution_requirements": {
                     "expression_lookback": 1,

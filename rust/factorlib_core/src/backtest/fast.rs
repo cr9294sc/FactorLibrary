@@ -87,6 +87,7 @@ pub fn run_fast_backtest(
     slippage.push(0.0);
 
     let slip_rate = cfg.slippage_bps * 1e-4;
+    let mut first_active_day: Option<usize> = None;
 
     for d in 1..t {
         let prev_e = equity[d - 1];
@@ -135,6 +136,12 @@ pub fn run_fast_backtest(
         let net_ret = gross_ret - (d_fee + d_slip);
         let curr_e = (prev_e * (1.0 + net_ret)).max(0.0);
 
+        let has_active_weight =
+            !w_curr.is_empty() && w_curr.iter().any(|&w| w.is_finite() && w != 0.0);
+        if first_active_day.is_none() && (d_turnover > 0.0 || has_active_weight) {
+            first_active_day = Some(d);
+        }
+
         equity.push(curr_e);
         daily_returns.push(net_ret);
         turnover.push(d_turnover);
@@ -142,14 +149,15 @@ pub fn run_fast_backtest(
         slippage.push(d_slip * prev_e);
     }
 
-    // 统计指标计算
+    // 统计指标计算 (P2-01: 剔除前导预热空仓日)
     let total_ret = if cfg.init_cash > 0.0 {
         equity.last().copied().unwrap_or(cfg.init_cash) / cfg.init_cash - 1.0
     } else {
         0.0
     };
 
-    let n_days = t - 1;
+    let stat_start = first_active_day.unwrap_or(t);
+    let n_days = t.saturating_sub(stat_start);
     let annual_ret = if n_days > 0 {
         // P0-06: 净值穿仓 1.0 + total_ret <= 0 时封底截断为 -1.0，防止负底数幂运算触发 IEEE-754 NaN
         if 1.0 + total_ret <= 0.0 {
@@ -168,7 +176,7 @@ pub fn run_fast_backtest(
     let mut valid_days = 0;
     let mut downside_sq = 0.0;
 
-    for &r in daily_returns.iter().skip(1) {
+    for &r in daily_returns.iter().skip(stat_start) {
         sum_r += r;
         sum_sq_r += r * r;
         if r > 0.0 {
@@ -202,25 +210,32 @@ pub fn run_fast_backtest(
     };
 
     // 最大回撤
-    let mut peak = equity[0];
+    let eq_anchor = stat_start.saturating_sub(1);
+    let mut peak = if stat_start < t {
+        equity[eq_anchor]
+    } else {
+        0.0
+    };
     let mut max_dd = 0.0;
     let mut max_dd_days = 0;
     let mut current_dd_days = 0;
 
-    for &e in equity.iter() {
-        if e > peak {
-            peak = e;
-            current_dd_days = 0;
-        } else {
-            current_dd_days += 1;
-            if peak > 0.0 {
-                let dd = (peak - e) / peak;
-                if dd > max_dd {
-                    max_dd = dd;
+    if stat_start < t {
+        for &e in equity.iter().skip(stat_start) {
+            if e > peak {
+                peak = e;
+                current_dd_days = 0;
+            } else {
+                current_dd_days += 1;
+                if peak > 0.0 {
+                    let dd = (peak - e) / peak;
+                    if dd > max_dd {
+                        max_dd = dd;
+                    }
                 }
-            }
-            if current_dd_days > max_dd_days {
-                max_dd_days = current_dd_days;
+                if current_dd_days > max_dd_days {
+                    max_dd_days = current_dd_days;
+                }
             }
         }
     }
@@ -232,7 +247,7 @@ pub fn run_fast_backtest(
     };
 
     let mean_turnover = if valid_days > 0 {
-        turnover.iter().skip(1).sum::<f64>() / valid_days as f64
+        turnover.iter().skip(stat_start).sum::<f64>() / valid_days as f64
     } else {
         0.0
     };

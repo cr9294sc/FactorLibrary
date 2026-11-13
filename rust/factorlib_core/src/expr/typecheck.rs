@@ -8,9 +8,13 @@
 
 use crate::expr::ast::ASTNode;
 use crate::expr::types::DataType;
+use crate::ops::BinaryOp;
 use crate::panel::is_reserved_label_name;
 use std::collections::HashSet;
 use thiserror::Error;
+
+/// 前向累乘复权价格字段集合（绝对数值尺度依赖于 `start_date`，禁止与固定绝对常数直接比较）。
+const ADJUSTED_PRICE_FIELDS: &[&str] = &["open", "high", "low", "close", "settle", "vwap"];
 
 #[derive(Error, Debug, Clone, PartialEq)]
 pub enum TypeError {
@@ -153,4 +157,106 @@ pub fn typecheck_factor_expr(
         return Err(TypeError::RootNotSeries(root_ty));
     }
     Ok(root_ty)
+}
+
+#[inline]
+fn extract_adjusted_price_field(node: &ASTNode) -> Option<&str> {
+    match node {
+        ASTNode::Field(name) if ADJUSTED_PRICE_FIELDS.contains(&name.as_str()) => {
+            Some(name.as_str())
+        }
+        ASTNode::UnaryCall { arg, .. } => extract_adjusted_price_field(arg),
+        _ => None,
+    }
+}
+
+#[inline]
+fn extract_nonzero_constant(node: &ASTNode) -> Option<f64> {
+    match node {
+        ASTNode::Constant(c) if c.is_finite() && *c != 0.0 => Some(*c),
+        ASTNode::Window(w) if *w != 0 => Some(*w as f64),
+        _ => None,
+    }
+}
+
+fn collect_warnings_rec(node: &ASTNode, out: &mut Vec<String>) {
+    match node {
+        ASTNode::Field(_) | ASTNode::Constant(_) | ASTNode::Window(_) => {}
+        ASTNode::UnaryCall { arg, .. } => collect_warnings_rec(arg, out),
+        ASTNode::BinaryCall { op, lhs, rhs } => {
+            if matches!(
+                op,
+                BinaryOp::GtConst
+                    | BinaryOp::LtConst
+                    | BinaryOp::Gt
+                    | BinaryOp::Lt
+                    | BinaryOp::Ge
+                    | BinaryOp::Le
+            ) {
+                if let (Some(field), Some(c)) = (
+                    extract_adjusted_price_field(lhs),
+                    extract_nonzero_constant(rhs),
+                ) {
+                    out.push(format!(
+                        "复权价格字段 '{field}' 绝对尺度依赖于 start_date 基准，禁止在 DSL 中与固定绝对价格常数 ({c}) 比较 ({})",
+                        op.name()
+                    ));
+                } else if let (Some(c), Some(field)) = (
+                    extract_nonzero_constant(lhs),
+                    extract_adjusted_price_field(rhs),
+                ) {
+                    out.push(format!(
+                        "复权价格字段 '{field}' 绝对尺度依赖于 start_date 基准，禁止在 DSL 中与固定绝对价格常数 ({c}) 比较 ({})",
+                        op.name()
+                    ));
+                }
+            }
+            collect_warnings_rec(lhs, out);
+            collect_warnings_rec(rhs, out);
+        }
+        ASTNode::TernaryCall {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_warnings_rec(cond, out);
+            collect_warnings_rec(then_branch, out);
+            collect_warnings_rec(else_branch, out);
+        }
+    }
+}
+
+/// 静态检查 AST 中的量化语义告警（例如复权价格与固定绝对常数比较）。
+pub fn collect_type_warnings(node: &ASTNode) -> Vec<String> {
+    let mut warnings = Vec::new();
+    collect_warnings_rec(node, &mut warnings);
+    warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::parser::parse_expr;
+
+    #[test]
+    fn test_adjusted_price_constant_comparison_warning() {
+        let ast_warn = parse_expr("where(gt_const(close, 5000), 1.0, -1.0)").unwrap();
+        let w1 = collect_type_warnings(&ast_warn);
+        assert_eq!(w1.len(), 1);
+        assert!(w1[0].contains("close") && w1[0].contains("5000"));
+
+        let ast_infix = parse_expr("where(high >= 3000, 1.0, 0.0)").unwrap();
+        let w2 = collect_type_warnings(&ast_infix);
+        assert_eq!(w2.len(), 1);
+        assert!(w2[0].contains("high") && w2[0].contains("3000"));
+
+        // 与 0.0 的正负号检查不触发告警
+        let ast_zero = parse_expr("where(gt_const(close, 0), 1.0, 0.0)").unwrap();
+        assert!(collect_type_warnings(&ast_zero).is_empty());
+
+        // 非复权价格字段（如 volume）不触发告警
+        let ast_vol = parse_expr("where(gt_const(volume, 5000), 1.0, 0.0)").unwrap();
+        assert!(collect_type_warnings(&ast_vol).is_empty());
+    }
 }

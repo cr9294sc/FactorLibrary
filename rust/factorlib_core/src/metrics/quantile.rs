@@ -11,7 +11,7 @@
 
 use crate::metrics::ic::{compute_fractional_ranks, pearson_correlation};
 use crate::nan::cmp_f64;
-use ndarray::Array2;
+use ndarray::{ArrayBase, Data, Ix2};
 use rayon::prelude::*;
 
 /// 分位数分组与多空组合评估指标。
@@ -172,14 +172,19 @@ pub fn calc_daily_quantile_returns(
 }
 
 /// 全量面板多日分位数与多空收益计算。
-pub fn calc_quantile_metrics(
-    factor: &Array2<f64>,
-    forward_ret: &Array2<f64>,
-    mask: &Array2<bool>,
+pub fn calc_quantile_metrics<S1, S2, S3>(
+    factor: &ArrayBase<S1, Ix2>,
+    forward_ret: &ArrayBase<S2, Ix2>,
+    mask: &ArrayBase<S3, Ix2>,
     n_quantiles: usize,
     min_names: usize,
     sign: i32,
-) -> QuantileMetrics {
+) -> QuantileMetrics
+where
+    S1: Data<Elem = f64> + Sync,
+    S2: Data<Elem = f64> + Sync,
+    S3: Data<Elem = bool> + Sync,
+{
     let (t, n) = factor.dim();
     assert_eq!(
         forward_ret.dim(),
@@ -189,20 +194,30 @@ pub fn calc_quantile_metrics(
     assert_eq!(mask.dim(), (t, n), "factor 与 mask 矩阵形状必须一致");
     assert!(n_quantiles >= 2, "n_quantiles 必须 >= 2");
 
+    struct RowBuf {
+        f: Vec<f64>,
+        r: Vec<f64>,
+        m: Vec<bool>,
+    }
+
     // 并行计算每日的分组收益、多空收益与 Top 分位标的索引
     let daily_results: Vec<(Vec<f64>, f64, Vec<usize>)> = (0..t)
         .into_par_iter()
-        .map(|row| {
-            let mut f_row = Vec::with_capacity(n);
-            let mut r_row = Vec::with_capacity(n);
-            let mut m_row = Vec::with_capacity(n);
-            for col in 0..n {
-                f_row.push(factor[[row, col]]);
-                r_row.push(forward_ret[[row, col]]);
-                m_row.push(mask[[row, col]]);
-            }
-            calc_daily_quantile_returns(&f_row, &r_row, &m_row, n_quantiles, min_names, sign)
-        })
+        .map_init(
+            || RowBuf {
+                f: vec![0.0; n],
+                r: vec![0.0; n],
+                m: vec![false; n],
+            },
+            |buf, row| {
+                for col in 0..n {
+                    buf.f[col] = factor[[row, col]];
+                    buf.r[col] = forward_ret[[row, col]];
+                    buf.m[col] = mask[[row, col]];
+                }
+                calc_daily_quantile_returns(&buf.f, &buf.r, &buf.m, n_quantiles, min_names, sign)
+            },
+        )
         .collect();
 
     let mut group_daily_returns: Vec<Vec<f64>> = vec![vec![f64::NAN; t]; n_quantiles];
@@ -398,13 +413,17 @@ pub fn extract_daily_top_indices(
 }
 
 /// 全量面板多日 Top 分位组合单边换手率计算。
-pub fn calc_top_quantile_turnover(
-    factor: &Array2<f64>,
-    mask: &Array2<bool>,
+pub fn calc_top_quantile_turnover<S1, S2>(
+    factor: &ArrayBase<S1, Ix2>,
+    mask: &ArrayBase<S2, Ix2>,
     n_quantiles: usize,
     min_names: usize,
     sign: i32,
-) -> TopQuantileTurnoverMetrics {
+) -> TopQuantileTurnoverMetrics
+where
+    S1: Data<Elem = f64> + Sync,
+    S2: Data<Elem = bool> + Sync,
+{
     let (t, n) = factor.dim();
     assert_eq!(mask.dim(), (t, n), "factor 与 mask 矩阵形状必须一致");
     assert!(n_quantiles >= 2, "n_quantiles 必须 >= 2");
@@ -417,17 +436,26 @@ pub fn calc_top_quantile_turnover(
         };
     }
 
+    struct RowBuf {
+        f: Vec<f64>,
+        m: Vec<bool>,
+    }
+
     let daily_tops: Vec<Vec<usize>> = (0..t)
         .into_par_iter()
-        .map(|row| {
-            let mut f_row = Vec::with_capacity(n);
-            let mut m_row = Vec::with_capacity(n);
-            for col in 0..n {
-                f_row.push(factor[[row, col]]);
-                m_row.push(mask[[row, col]]);
-            }
-            extract_daily_top_indices(&f_row, &m_row, n_quantiles, min_names, sign)
-        })
+        .map_init(
+            || RowBuf {
+                f: vec![0.0; n],
+                m: vec![false; n],
+            },
+            |buf, row| {
+                for col in 0..n {
+                    buf.f[col] = factor[[row, col]];
+                    buf.m[col] = mask[[row, col]];
+                }
+                extract_daily_top_indices(&buf.f, &buf.m, n_quantiles, min_names, sign)
+            },
+        )
         .collect();
 
     let mut daily_turnover = vec![f64::NAN; t];

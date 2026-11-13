@@ -33,6 +33,46 @@ STYLE_NAMES: tuple[str, ...] = (
     "POSITIONING",
 )
 
+
+def _pearson_corr_1d(x: np.ndarray, y: np.ndarray) -> float:
+    """计算一维有效向量的 Pearson 相关系数。"""
+    if len(x) < 3:
+        return np.nan
+    mx = float(np.mean(x))
+    my = float(np.mean(y))
+    dx = x - mx
+    dy = y - my
+    vx = float(np.sum(dx * dx))
+    vy = float(np.sum(dy * dy))
+    if vx <= 1e-16 or vy <= 1e-16:
+        return np.nan
+    return float(np.sum(dx * dy) / np.sqrt(vx * vy))
+
+
+def _spearman_corr_1d(x: np.ndarray, y: np.ndarray) -> float:
+    """计算一维有效向量的 Spearman 秩相关系数（支持并列平均秩）。"""
+    n = len(x)
+    if n < 3:
+        return np.nan
+
+    def _avg_ranks(arr: np.ndarray) -> np.ndarray:
+        order = np.argsort(arr, kind="mergesort")
+        ranks = np.empty(n, dtype=np.float64)
+        i = 0
+        while i < n:
+            j = i + 1
+            v = arr[order[i]]
+            while j < n and arr[order[j]] == v:
+                j += 1
+            avg_r = 0.5 * (i + j - 1) + 1.0
+            for m in range(i, j):
+                ranks[order[m]] = avg_r
+            i = j
+        return ranks
+
+    return _pearson_corr_1d(_avg_ranks(x), _avg_ranks(y))
+
+
 STYLE_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "SIZE",
@@ -245,22 +285,15 @@ def compute_style_exposures(
                 if len(s_valid) > 0:
                     group_accum[g_key][s].append(float(np.mean(s_valid)))
 
-        # 计算因子与各风格的截面秩相关
+        # 计算因子与各风格的截面秩相关（支持并列平均秩）
         for s in style_names:
             s_row = styles_dict[s][t, :]
             both = valid_f & np.isfinite(s_row)
             b_idx = np.where(both)[0]
             if len(b_idx) >= 5:
-                fx = f_row[b_idx]
-                sx = s_row[b_idx]
-                rx = np.argsort(np.argsort(fx)).astype(np.float64)
-                ry = np.argsort(np.argsort(sx)).astype(np.float64)
-                std_x = float(np.std(rx))
-                std_y = float(np.std(ry))
-                if std_x > 1e-12 and std_y > 1e-12:
-                    c = float(np.mean((rx - np.mean(rx)) * (ry - np.mean(ry))) / (std_x * std_y))
-                    if np.isfinite(c):
-                        corr_accum[s].append(c)
+                c = _spearman_corr_1d(f_row[b_idx], s_row[b_idx])
+                if np.isfinite(c):
+                    corr_accum[s].append(c)
 
     group_exposures: dict[str, dict[str, float]] = {}
     for g_key, s_map in group_accum.items():

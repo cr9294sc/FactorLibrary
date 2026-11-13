@@ -227,6 +227,7 @@ pub fn run_futures_backtest(
 
     // 逐日推进状态机 (从 d=1 到 T-1)
     let mut is_bankrupt = false;
+    let mut first_active_day: Option<usize> = None;
     for d in 1..t {
         let prev_e = equity[d - 1];
         let mut daily_gross_pnl = 0.0;
@@ -494,6 +495,14 @@ pub fn run_futures_backtest(
         let turn = daily_traded_notional / prev_e.max(1.0);
         let ret = delta_e / prev_e.max(1.0);
 
+        if first_active_day.is_none()
+            && (daily_traded_notional > 0.0
+                || current_lots.iter().any(|&l| l != 0)
+                || delta_e != 0.0)
+        {
+            first_active_day = Some(d);
+        }
+
         equity.push(curr_e);
         returns.push(ret);
         cash.push(curr_e - margin_curr);
@@ -508,7 +517,7 @@ pub fn run_futures_backtest(
     }
 
     // -------------------------------------------------------------
-    // Step 8: 多维评估统计指标结算
+    // Step 8: 多维评估统计指标结算 (P2-01: 剔除前导预热空仓日)
     // -------------------------------------------------------------
     let total_ret = if cfg.init_cash > 0.0 {
         equity.last().copied().unwrap_or(cfg.init_cash) / cfg.init_cash - 1.0
@@ -516,7 +525,8 @@ pub fn run_futures_backtest(
         0.0
     };
 
-    let n_days = t - 1;
+    let stat_start = first_active_day.unwrap_or(t);
+    let n_days = t.saturating_sub(stat_start);
     let annual_ret = if n_days > 0 {
         // P0-06: 净值穿仓 1.0 + total_ret <= 0 时封底截断为 -1.0，防止负底数幂运算触发 IEEE-754 NaN
         if 1.0 + total_ret <= 0.0 {
@@ -537,7 +547,7 @@ pub fn run_futures_backtest(
     let mut sum_loss = 0.0;
     let mut loss_count = 0;
 
-    for &r in returns.iter().skip(1) {
+    for &r in returns.iter().skip(stat_start) {
         sum_r += r;
         sum_sq_r += r * r;
         if r > 0.0 {
@@ -590,25 +600,32 @@ pub fn run_futures_backtest(
         (0.0, 0.0, 0.0, 0.0, 0.0)
     };
 
-    let mut peak = equity[0];
+    let eq_anchor = stat_start.saturating_sub(1);
+    let mut peak = if stat_start < t {
+        equity[eq_anchor]
+    } else {
+        0.0
+    };
     let mut max_dd = 0.0;
     let mut max_dd_days = 0;
     let mut current_dd_days = 0;
 
-    for &e in equity.iter() {
-        if e > peak {
-            peak = e;
-            current_dd_days = 0;
-        } else {
-            current_dd_days += 1;
-            if peak > 0.0 {
-                let dd = (peak - e) / peak;
-                if dd > max_dd {
-                    max_dd = dd;
+    if stat_start < t {
+        for &e in equity.iter().skip(stat_start) {
+            if e > peak {
+                peak = e;
+                current_dd_days = 0;
+            } else {
+                current_dd_days += 1;
+                if peak > 0.0 {
+                    let dd = (peak - e) / peak;
+                    if dd > max_dd {
+                        max_dd = dd;
+                    }
                 }
-            }
-            if current_dd_days > max_dd_days {
-                max_dd_days = current_dd_days;
+                if current_dd_days > max_dd_days {
+                    max_dd_days = current_dd_days;
+                }
             }
         }
     }
@@ -620,7 +637,7 @@ pub fn run_futures_backtest(
     };
 
     let mean_turnover = if valid_days > 0 {
-        turnover.iter().skip(1).sum::<f64>() / valid_days as f64
+        turnover.iter().skip(stat_start).sum::<f64>() / valid_days as f64
     } else {
         0.0
     };

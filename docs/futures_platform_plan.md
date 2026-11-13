@@ -1368,12 +1368,14 @@ class StockMarketAdapter(MarketAdapter):
    - 统一纳管 `variables`（面板字段与隐式掩码）、`functions`（68 个原生算子与 `log`/`sqrt`/`ts_delay`/`ts_delta`/`decay`/`emadecay` 兼容别名）、`postprocess`（12 个声明式后处理算子）以及 `styles`（6 大期货标准风格因子）。
 2. **Stage 2 — 双模态因子定义与 12 算子声明式后处理链 (`core/probe.py` & `rust/factorlib_core/src/ops/postprocess.rs`)**：
    - 支持 `expression`（Rust 极速 DSL）与 `code`（Python `def compute(context):` 因果沙箱）双模态编写；
-   - 在 Rust 内核中精确实现 12 个 C++ 级语义的后处理算子：`baseUniMask`、`trdMask`、`dropNewStock`、`MAD`（下中位数索引 `(k-1)//2` 与 `1.4826` 缩放）、`winsor`、`indNeut`、`riskNeut`、`riskNeutMulti`（多元无截距 OLS 高斯消元）、`zScore`（`ddof=0`）、`rank`（6 位银行家舍入）、`decay`、`emadecay`。
-3. **Stage 3 — 静态探针 (`probe_factor`)**：
+   - 在 Rust 内核中精确实现 12 个 C++ 级语义的后处理算子：`baseUniMask`、`trdMask`、`dropNewStock`、`MAD`（下中位数索引 `(k-1)//2` 与 `1.4826` 缩放）、`winsor`、`indNeut`、`riskNeut`、`riskNeutMulti`（多元无截距 OLS 高斯消元）、`zScore`（`ddof=0`）、`rank`（6 位银行家舍入）、`decay`、`emadecay`；均通过泛型 `ArrayBase<S, Ix2>` 与 PyO3 只读 `ArrayView2` 零拷贝借用执行，并在 Python 管线 `apply_postprocess_pipeline` 执行 `decay`/`emadecay` 后自动重施 Stage 1 累积有效掩码，杜绝退市或池外标的残值渗出。
+3. **Stage 3 — 静态探针与 AST 安全检查 (`probe_factor` & `rust/factorlib_core/src/expr/{parser,typecheck}.rs`)**：
+   - 递归下降解析器强制 `MAX_PARSE_DEPTH = 128` 防止跨 FFI 栈溢出；静态类型检查新增 `collect_type_warnings`，当表达式对前向复权价格字段（`open`/`high`/`low`/`close`/`settle`/`vwap`）执行非零常数比较时产出非阻断性 `warnings`（保留正值检查如 `close > 0`），并透传至 `validate_expr`、`check_expr` 与 `probe_factor`；
    - 毫秒级静态解析 AST 节点、拦截未来函数与非法导入，推导 4 级回看预热窗口（`expression_lookback`、`postprocess_lookback`、`total_required_lookback`、`warmup_bars`），并精确计算后处理时序平滑算子对前置隐式依赖（如 `in_universe_mask`、`sector`、`SIZE`）的窗口放大效应。
-4. **Stage 4 & Stage 5 — 因子物化、版本锁定与双层回测 (`core/styles.py`, `core/registry.py`, `core/evaluate.py`)**：
-   - 内置 6 大期货标准风格因子（`SIZE`、`VOLATILITY`、`MOMENTUM`、`CARRY`、`INVENTORY`、`POSITIONING`）；
-   - `run_factor_workflow()` 同时产出 **Layer 1（FactorLab Schema v4 统计分布评估：`ic`/`rank_ic`/`perc_ic`/`ic_5d`、分组复利净值、相对等权商品池基准的多头超额收益与加法最大回撤、风格暴露归因）** 与 **Layer 2（连续组合优化 + Rust 期货实盘逐日盯市回测）**，并在 SQLite `factor_version` 表中锁定不可变版本快照。
+4. **Stage 4 & Stage 5 — 因子物化、版本锁定与双层回测 (`core/styles.py`, `core/registry.py`, `core/evaluate.py`, `rust/factorlib_core/src/{backtest,metrics}/`)**：
+   - 内置 6 大期货标准风格因子（`SIZE`、`VOLATILITY`、`MOMENTUM`、`CARRY`、`INVENTORY`、`POSITIONING`），风格暴露相关性采用并列平均秩 Spearman 相关计算；
+   - `run_factor_workflow()` 同时产出 **Layer 1（FactorLab Schema v4 统计分布评估：`ic`/`rank_ic`/`perc_ic`/`ic_5d`、分组复利净值、相对等权商品池基准的多头超额收益与加法最大回撤、风格暴露归因）** 与 **Layer 2（连续组合优化 + Rust 期货实盘逐日盯市回测）**；Layer 1 与 Layer 2 回测均保持完整长度 `T` 曲线并在统计指标（年化收益、波动率、Sharpe/Sortino、胜率、盈亏比、回撤与换手）中从首个有效活跃日 `first_active_day` 起算，消除前导预热零值稀释；
+   - Rust `eval_gp_batch` 相关性去重通过行连续 `PreparedFactor` + `PreparedCandidate` + 线程复用 `CorrScratch` 在保持位等价的前提下消除外层 Rayon 嵌套并行与逐日堆分配，並在 SQLite `factor_version` 表中锁定不可变版本快照。
 
 ---
 

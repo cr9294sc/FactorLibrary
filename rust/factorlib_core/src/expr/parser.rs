@@ -30,14 +30,38 @@ pub enum ParseError {
     ForbiddenLabelAccess(String),
 }
 
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
+    depth: usize,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, cursor: 0 }
+        Self {
+            tokens,
+            cursor: 0,
+            depth: 0,
+        }
+    }
+
+    #[inline]
+    fn enter_depth(&mut self) -> Result<(), ParseError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(ParseError::Syntax {
+                pos: self.peek().pos,
+                msg: format!("表达式递归嵌套深度超过上限 ({MAX_PARSE_DEPTH})"),
+            });
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    #[inline]
+    fn leave_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     #[inline]
@@ -67,7 +91,10 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<ASTNode, ParseError> {
-        self.parse_comparison()
+        self.enter_depth()?;
+        let res = self.parse_comparison();
+        self.leave_depth();
+        res
     }
 
     fn parse_comparison(&mut self) -> Result<ASTNode, ParseError> {
@@ -218,7 +245,10 @@ impl Parser {
                         Ok(ASTNode::Constant(-fv))
                     }
                     _ => {
-                        let inner = self.parse_unary()?;
+                        self.enter_depth()?;
+                        let inner_res = self.parse_unary();
+                        self.leave_depth();
+                        let inner = inner_res?;
                         Ok(ASTNode::UnaryCall {
                             op: UnaryOp::Neg,
                             arg: Box::new(inner),
@@ -228,7 +258,10 @@ impl Parser {
             }
             TokenKind::Plus => {
                 self.advance();
-                self.parse_unary()
+                self.enter_depth()?;
+                let res = self.parse_unary();
+                self.leave_depth();
+                res
             }
             _ => self.parse_primary(),
         }
@@ -359,4 +392,23 @@ pub fn parse_expr(input: &str) -> Result<ASTNode, ParseError> {
     let node = parser.parse_expr()?;
     parser.expect(&TokenKind::Eof)?;
     Ok(node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parser_depth_limit_blocks_overflow() {
+        let deep_parens = format!("{}close{}", "(".repeat(200), ")".repeat(200));
+        let err = parse_expr(&deep_parens).expect_err("超深括号嵌套必须被拦截");
+        assert!(matches!(err, ParseError::Syntax { .. }));
+
+        let deep_unary = format!("{}close", "-".repeat(200));
+        let err_unary = parse_expr(&deep_unary).expect_err("超深一元前缀必须被拦截");
+        assert!(matches!(err_unary, ParseError::Syntax { .. }));
+
+        let ok_parens = format!("{}close{}", "(".repeat(32), ")".repeat(32));
+        assert!(parse_expr(&ok_parens).is_ok());
+    }
 }

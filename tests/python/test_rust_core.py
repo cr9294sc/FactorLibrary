@@ -536,3 +536,150 @@ def test_rust_blocks_r_exec_next_reserved_field():
         panel_engine.eval("r_exec_next")
     with pytest.raises(ValueError):
         panel_engine.eval("ts_mean(r_exec_next, 2)")
+
+
+def test_zero_copy_c_and_f_order_parity_across_metrics_and_postprocess():
+    """验证 P2-05: C-order、F-order 与非连续切片输入在指标与后处理算子上完全位等价。"""
+    rng = np.random.default_rng(2025)
+    t, n = 25, 10
+    f_c = rng.normal(0.0, 1.0, (t, n))
+    f_c[3, 2] = np.nan
+    f_c[7, 5] = 0.0
+    f_c[7, 6] = 0.0  # 引入并列值
+    f_f = np.asfortranarray(f_c)
+
+    r_c = rng.normal(0.0, 0.02, (t, n))
+    r_c[4, 1] = np.nan
+    r_f = np.asfortranarray(r_c)
+
+    b_c = rng.normal(0.0, 1.0, (t, n))
+    b_c[5, 4] = np.nan
+    b_f = np.asfortranarray(b_c)
+
+    mask_c = rng.random((t, n)) > 0.1
+    mask_f = np.asfortranarray(mask_c)
+
+    # 非连续跨步视图（逐行重复后取奇数/偶数行，保证数值与 f_c / r_c 完全一致且步长非紧致）
+    f_strided = np.repeat(f_c, 2, axis=0)[::2, :]
+    r_strided = np.repeat(r_c, 2, axis=0)[::2, :]
+    assert not f_strided.flags["C_CONTIGUOUS"] and not f_strided.flags["F_CONTIGUOUS"]
+
+    for cand_f, cand_r, cand_m in (
+        (f_c, r_c, mask_c),
+        (f_strided, r_strided, mask_c),
+    ):
+        for use_rank in (False, True):
+            ic_ref = factorlib_core.calc_ic(f_f, r_f, mask_f, 4, use_rank, 1)
+            ic_cur = factorlib_core.calc_ic(cand_f, cand_r, cand_m, 4, use_rank, 1)
+            for k in ("ic_mean", "ic_std", "ic_ir", "ic_t", "ic_win_rate", "coverage"):
+                assert np.isclose(ic_ref[k], ic_cur[k], rtol=0.0, atol=1e-13)
+            assert ic_ref["valid_days"] == ic_cur["valid_days"]
+
+        q_ref = factorlib_core.calc_quantile_returns(f_f, r_f, mask_f, 5, 4, 1)
+        q_cur = factorlib_core.calc_quantile_returns(cand_f, cand_r, cand_m, 5, 4, 1)
+        assert np.allclose(q_ref["group_returns"], q_cur["group_returns"], rtol=0.0, atol=1e-13)
+        assert np.isclose(q_ref["ls_mean"], q_cur["ls_mean"], rtol=0.0, atol=1e-13)
+
+        to_ref = factorlib_core.calc_turnover(f_f, mask_f, 4)
+        to_cur = factorlib_core.calc_turnover(cand_f, cand_m, 4)
+        assert np.isclose(to_ref["turnover"], to_cur["turnover"], rtol=0.0, atol=1e-13)
+        assert np.isclose(to_ref["rank_autocorr"], to_cur["rank_autocorr"], rtol=0.0, atol=1e-13)
+
+        tto_ref = factorlib_core.calc_top_quantile_turnover(f_f, mask_f, 5, 4, 1)
+        tto_cur = factorlib_core.calc_top_quantile_turnover(cand_f, cand_m, 5, 4, 1)
+        assert np.allclose(
+            tto_ref["daily_turnover"],
+            tto_cur["daily_turnover"],
+            equal_nan=True,
+            rtol=0.0,
+            atol=1e-13,
+        )
+
+    corr_f = factorlib_core.calc_correlation_matrix([f_f, b_f], mask_f, 4, True)
+    corr_c = factorlib_core.calc_correlation_matrix([f_c, b_c], mask_c, 4, True)
+    assert np.allclose(corr_f, corr_c, rtol=0.0, atol=1e-13)
+
+    for op, kw in (
+        ("zScore", {}),
+        ("rank", {}),
+        ("MAD", {"param": 3.0}),
+        ("winsor", {"param": 0.05}),
+        ("decay", {"param": 4.0}),
+        ("emadecay", {"param": 4.0}),
+        ("riskNeut", {"x2": b_c}),
+        ("riskNeutMulti", {"exposures": [b_c]}),
+    ):
+        kw_f = dict(kw)
+        if "x2" in kw_f:
+            kw_f["x2"] = np.asfortranarray(kw_f["x2"])
+        if "exposures" in kw_f:
+            kw_f["exposures"] = [np.asfortranarray(x) for x in kw_f["exposures"]]
+        out_f = factorlib_core.apply_postprocess_op(op, f_f, **kw_f)
+        out_c = factorlib_core.apply_postprocess_op(op, f_c, **kw)
+        out_s = factorlib_core.apply_postprocess_op(op, f_strided, **kw)
+        np.testing.assert_allclose(out_f, out_c, equal_nan=True, rtol=0.0, atol=1e-13)
+        np.testing.assert_allclose(out_f, out_s, equal_nan=True, rtol=0.0, atol=1e-13)
+
+
+def test_eval_gp_batch_prepared_correlation_parity_with_extra_nans_and_ties():
+    """验证 P2-04: PreparedFactor 快速路径在库因子与候选因子含额外 NaN 及并列值时与两两 Spearman 完全一致。"""
+    rng = np.random.default_rng(101)
+    t, n = 24, 10
+    close = np.asfortranarray(100.0 + np.cumsum(rng.normal(0.0, 1.0, (t, n)), axis=0))
+    y_5 = np.asfortranarray(rng.normal(0.0, 0.02, (t, n)))
+    mask = np.ones((t, n), dtype=bool, order="F")
+    mask[0:2, 0] = False
+
+    lib1 = np.asfortranarray(rng.normal(0.0, 1.0, (t, n)))
+    lib1[5:9, 2] = 0.25  # 并列值
+    lib1[10, 3] = np.nan  # 额外 NaN
+    lib2 = np.asfortranarray(np.round(rng.normal(0.0, 1.0, (t, n)), 1))
+
+    engine = factorlib_core.Engine(
+        {"close": close},
+        mask,
+        {"y_5": y_5},
+        [f"2024-01-{i + 1:02d}" for i in range(t)],
+        [f"S{j}" for j in range(n)],
+    )
+
+    expr = "ts_std(close, 5)"
+    cand = engine.eval(expr)
+    res = engine.eval_gp_batch(
+        [expr],
+        label_name="y_5",
+        start_row=4,
+        end_row=t,
+        min_names=5,
+        horizon=5,
+        library_factors=[lib1, lib2],
+        use_cache=False,
+    )
+    got_max_corr = res[0]["max_abs_corr"]
+
+    sub_cand = cand[4:t, :]
+    sub_mask = mask[4:t, :]
+    expected_1 = factorlib_core.calc_pairwise_correlation(sub_cand, lib1[4:t, :], sub_mask, 5, True)
+    expected_2 = factorlib_core.calc_pairwise_correlation(sub_cand, lib2[4:t, :], sub_mask, 5, True)
+    expected_max = max(abs(expected_1), abs(expected_2))
+    assert np.isclose(got_max_corr, expected_max, rtol=0.0, atol=1e-12)
+
+
+def test_check_expr_deep_nesting_blocked_and_price_warning():
+    """验证 P3-01 与 P2-03(b): 深度超过 128 层触发语法拒绝，前复权价非零常数比较产生 warnings。"""
+    deep_expr = "close"
+    for _ in range(140):
+        deep_expr = f"abs({deep_expr})"
+    chk_deep = validate_expr(deep_expr, available_fields=["close"])
+    assert not chk_deep["valid"]
+    assert chk_deep["error"] is not None
+
+    chk_warn = validate_expr(
+        "where(gt_const(close, 5000.0), close, neg(close))", available_fields=["close"]
+    )
+    assert chk_warn["valid"]
+    assert len(chk_warn["warnings"]) >= 1
+
+    chk_pos = validate_expr("where(close > 0, close, neg(close))", available_fields=["close"])
+    assert chk_pos["valid"]
+    assert chk_pos["warnings"] == []

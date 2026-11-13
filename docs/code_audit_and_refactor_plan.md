@@ -1350,3 +1350,18 @@ git rm -rf Factor python/pyrust_bt rust/engine_rust pyrust-bt-main examples \
 | **多头超额年化波动率** | `7.67%` | `8.95%` | `16.53%` | `open_adj` 与开盘基准同钟对齐后超额波动率（`8.95%`）与线上（`7.67%`）高度一致 |
 | **多头超额最大回撤** | `28.73%` | `20.47%` | `21.66%` | 同量级对齐 |
 
+---
+
+### 4.4 P2 & P3 改进建议与架构性能治理验收清单（2026-11-13 验收）
+
+| 编号 | 问题与优化项 | 实施模块 | 验收结果与关键机制 |
+| :--- | :--- | :--- | :--- |
+| **`P2-01`** | Layer 1 评估与 Rust 回测前导预热零值稀释年化与波动率指标 | [`evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py), [`futures.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/futures.rs), [`fast.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/backtest/fast.rs) | ✅ **已闭环**：保持完整 `T` 长度曲线；从 `first_active_day` 起算统计摘要与回撤；`evaluate_factor_v4_stats` 将非活跃行从多头超额剔除 |
+| **`P2-02`** | `decay`/`emadecay` 平滑向退市或池外标的回渗信号 | [`probe.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/probe.py) | ✅ **已闭环**：保持 Rust `pp_decay`/`pp_emadecay` 严格对齐 C++ 真值向量；`apply_postprocess_pipeline` 追踪 Stage 1 掩码并在平滑后重施掩码 |
+| **`P2-03`** | 风格归因并列秩失真 & 前复权绝对价格常数比较隐患 | [`styles.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/styles.py), [`typecheck.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/typecheck.rs), [`py.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/py.rs), [`probe.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/probe.py) | ✅ **已闭环**：`styles.py` 共享并列平均秩 `_spearman_corr_1d`；`typecheck.rs` 新增 `collect_type_warnings` 对前复权价非零常数比较输出非阻断告警并透传至 `validate_expr`/`check_expr`/`probe_factor` |
+| **`P2-04`** | `eval_gp_batch` 库内去相关嵌套 Rayon 并行与逐日堆分配 | [`corr.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/metrics/corr.rs), [`py.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/py.rs) | ✅ **已闭环**：引入行连续 `PreparedFactor` + `PreparedCandidate` + 线程复用 `CorrScratch` 与 `cross_correlation_prepared_seq`，掩码一致走归一化点积快路径、额外 `NaN` 自动精确回退（与两两 `calc_pairwise_correlation` 误差 `< 1e-12`） |
+| **`P2-05`** | PyO3 FFI `view_to_fortran` 拷贝与只读评估/后处理接口零拷贝 | [`py.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/py.rs), [`ic.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/metrics/ic.rs), [`quantile.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/metrics/quantile.rs), [`turnover.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/metrics/turnover.rs), [`postprocess.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/ops/postprocess.rs) | ✅ **已闭环**：`view_to_fortran_*` 增加 `as_slice_memory_order()` memcpy 快路径；只读指标与 12 个 `pp_*` 后处理算子全面泛型化为 `ArrayBase<S, Ix2>` 并以 `ArrayView2` 零拷贝借用传入 GIL 释放区 |
+| **`P3-01`** | DSL 解析器深层嵌套跨 FFI 栈溢出风险 | [`parser.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/parser.rs) | ✅ **已闭环**：新增 `MAX_PARSE_DEPTH = 128` 深度追踪与单测拦截 |
+| **`P3-02`** | 研究面板加载失败静默回退吞异常 | [`workbench.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/workbench.py) | ✅ **已闭环**：`_load_panel` 捕获异常后使用 `logger.warning(..., exc_info=True)` 输出完整回退轨迹 |
+| **`P3-03`** | `evaluate.py` 类型注解宽泛 `Any` 收紧 | [`evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py), [`probe.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/probe.py) | ✅ **已闭环**：提取 `PostprocessSpec`，在 `TYPE_CHECKING` 下替换为 `BacktestResult`、`PortfolioConfig | None`、`BacktestConfig | None` |
+

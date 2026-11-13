@@ -567,3 +567,61 @@ def test_trd_mask_uses_is_unilateral_traded_and_volume_when_limit_mask_absent():
     )
     np.testing.assert_array_equal(np.isnan(masked), expected_nan)
     np.testing.assert_allclose(masked[~expected_nan], 2.5)
+
+
+def test_postprocess_decay_and_emadecay_reapply_masks():
+    """验证 P2-02: decay / emadecay 后处理之后自动重施 Stage 1 掩码，禁止退市/停牌窗口渗出信号。"""
+    from factorlib.core.probe import apply_postprocess_pipeline
+
+    panel = _make_synthetic_panel(T=8, N=4, seed=99)
+    # 标的 1 从 t=4 起退市/移出可交易池，标的 2 在 t=5..7 涨跌停不可交易
+    panel.mask[4:, 1] = False
+    panel.fields["in_universe_mask"][4:, 1] = np.nan
+    panel.fields["limit_mask"][5:, 2] = np.nan
+
+    raw = np.asfortranarray(np.arange(1, 33, dtype=np.float64).reshape(8, 4))
+
+    for op_name in ("decay", "emadecay"):
+        steps = [{"op": "baseUniMask"}, {"op": "trdMask"}, {"op": op_name, "window": 3}]
+        out = apply_postprocess_pipeline(raw, steps, panel)
+        assert np.all(np.isfinite(out[2:, 0])), f"{op_name} 正常活跃品种 t>=2 应保持有效"
+        assert np.all(np.isnan(out[4:, 1])), f"{op_name} 退市/池外行不得渗出非 NaN 衰减残值"
+        assert np.all(np.isnan(out[5:, 2])), f"{op_name} trdMask 禁用行不得渗出非 NaN 衰减残值"
+
+
+def test_probe_factor_adjusted_price_constant_warning():
+    """验证 P2-03: 对前复权价格字段做非零常数比较时产出非阻断性静态告警，正值检查不触发。"""
+    panel = _make_synthetic_panel(T=10, N=5, seed=7)
+
+    rep_warn = probe_factor("where(gt_const(close, 5000.0), close, open)", panel=panel)
+    assert rep_warn["status"] == "ok"
+    assert len(rep_warn["warnings"]) >= 1
+    assert any("close" in w for w in rep_warn["warnings"])
+
+    rep_ok = probe_factor("where(close > 0, close, open)", panel=panel)
+    assert rep_ok["status"] == "ok"
+    assert rep_ok["warnings"] == []
+
+
+def test_workbench_load_panel_corrupt_logs_warning(tmp_path: Path, caplog):
+    """验证 P3-02: 研究面板加载异常回退合成面板时必须输出带异常栈的 WARNING 日志。"""
+    import logging
+
+    from factorlib.core.workbench import FactorWorkbenchService
+
+    corrupt_dir = tmp_path / "corrupt_panel"
+    corrupt_dir.mkdir(parents=True, exist_ok=True)
+    (corrupt_dir / "panel_daily.parquet").write_bytes(b"NOT_A_VALID_PARQUET")
+
+    with caplog.at_level(logging.WARNING, logger="factorlib.core.workbench"):
+        wb = FactorWorkbenchService(
+            panel_dir=corrupt_dir,
+            db_path=tmp_path / "reg.sqlite",
+            runs_dir=tmp_path / "runs",
+        )
+
+    assert wb.panel_source == "synthetic"
+    assert any(
+        rec.levelno == logging.WARNING and "回退" in rec.getMessage() for rec in caplog.records
+    )
+    assert any(rec.exc_info is not None for rec in caplog.records if rec.levelno == logging.WARNING)

@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import factorlib_core
 import numpy as np
@@ -25,11 +25,21 @@ import numpy as np
 from factorlib.core.panel import Panel
 from factorlib.core.probe import (
     FactorDefinition,
+    PostprocessSpec,
     evaluate_factor_definition,
     parse_postprocess_pipeline,
 )
 from factorlib.core.registry import FactorMetricsRecord, FactorRecord, FactorRegistry
-from factorlib.core.styles import compute_futures_styles, compute_style_exposures
+from factorlib.core.styles import (
+    _pearson_corr_1d,
+    _spearman_corr_1d,
+    compute_futures_styles,
+    compute_style_exposures,
+)
+
+if TYPE_CHECKING:
+    from factorlib.core.backtest import BacktestResult
+    from factorlib.core.config import BacktestConfig, PortfolioConfig
 
 # 白皮书 Q6 与 13.4 节规定的标准样本切分区间
 DEFAULT_SPLITS: dict[str, tuple[str, str]] = {
@@ -111,7 +121,7 @@ def evaluate_factor(
     min_names: int = 5,
     n_quantiles: int = 5,
     force_sign: int | None = None,
-    postprocess: Any = None,
+    postprocess: PostprocessSpec | None = None,
 ) -> FactorEvaluationResult:
     """对单个 DSL 因子表达式或 FactorDefinition 执行全时段多预测期数综合评价。"""
     engine, dates, _ = _resolve_engine_and_panel(engine_or_panel)
@@ -291,45 +301,6 @@ def _evaluate_factor_matrix_core(
 # ==============================================================================
 # Layer 1: FactorLab Schema v4 统计分布评估 (IC/PercIC/5dIC + 分组净值 + 多头超额 + 风格暴露)
 # ==============================================================================
-
-
-def _pearson_corr_1d(x: np.ndarray, y: np.ndarray) -> float:
-    """计算一维有效向量的 Pearson 相关系数。"""
-    if len(x) < 3:
-        return np.nan
-    mx = float(np.mean(x))
-    my = float(np.mean(y))
-    dx = x - mx
-    dy = y - my
-    vx = float(np.sum(dx * dx))
-    vy = float(np.sum(dy * dy))
-    if vx <= 1e-16 or vy <= 1e-16:
-        return np.nan
-    return float(np.sum(dx * dy) / np.sqrt(vx * vy))
-
-
-def _spearman_corr_1d(x: np.ndarray, y: np.ndarray) -> float:
-    """计算一维有效向量的 Spearman 秩相关系数（支持并列平均秩）。"""
-    n = len(x)
-    if n < 3:
-        return np.nan
-
-    def _avg_ranks(arr: np.ndarray) -> np.ndarray:
-        order = np.argsort(arr, kind="mergesort")
-        ranks = np.empty(n, dtype=np.float64)
-        i = 0
-        while i < n:
-            j = i + 1
-            v = arr[order[i]]
-            while j < n and arr[order[j]] == v:
-                j += 1
-            avg_r = 0.5 * (i + j - 1) + 1.0
-            for m in range(i, j):
-                ranks[order[m]] = avg_r
-            i = j
-        return ranks
-
-    return _pearson_corr_1d(_avg_ranks(x), _avg_ranks(y))
 
 
 def _summarize_ic_slice(
@@ -551,6 +522,7 @@ def evaluate_factor_v4_stats(
     rank_ic_5d_series = np.full(T, np.nan, dtype=np.float64)
 
     group_daily_rets = {f"G{q + 1}": np.zeros(T, dtype=np.float64) for q in range(n_quantiles)}
+    active_days_mask = np.zeros(T, dtype=bool)
     if benchmark_rets is not None:
         bench_daily_rets = np.asarray(benchmark_rets, dtype=np.float64)
     else:
@@ -568,6 +540,7 @@ def evaluate_factor_v4_stats(
         m = len(idx_1d)
 
         if m >= min_names:
+            active_days_mask[t] = True
             fx = f_row[idx_1d]
             ry = r1_row[idx_1d]
             ic_series[t] = _pearson_corr_1d(fx, ry)
@@ -627,19 +600,30 @@ def evaluate_factor_v4_stats(
         ic_series, rank_ic_series, perc_ic_series, ic_5d_series, rank_ic_5d_series
     )
 
-    # 分组复利净值与年化收益
+    # 分组复利净值与年化收益（净值序列保持完整 T 长度，统计量从首个有效活跃日开始以免前导 0 稀释波动率与年化指标）
     group_nav_series: dict[str, list[float]] = {}
     group_summary: dict[str, dict[str, float]] = {}
-    n_years = max(T / trading_days_per_year, 1.0 / trading_days_per_year)
+    first_active_day = int(np.argmax(active_days_mask)) if np.any(active_days_mask) else None
 
     for g_key, g_rets in group_daily_rets.items():
         nav = np.cumprod(1.0 + g_rets)
         group_nav_series[g_key] = [float(x) for x in nav]
+        if first_active_day is None:
+            group_summary[g_key] = {
+                "total_return": 0.0,
+                "annual_return": 0.0,
+                "annual_volatility": 0.0,
+                "sharpe": 0.0,
+            }
+            continue
+        active_rets = g_rets[first_active_day:]
+        active_len = len(active_rets)
+        n_years = max(active_len / trading_days_per_year, 1.0 / trading_days_per_year)
         tot_ret = float(nav[-1] - 1.0) if len(nav) > 0 else 0.0
         ann_ret = float((1.0 + max(tot_ret, -0.9999)) ** (1.0 / n_years) - 1.0)
         vol = (
-            float(np.std(g_rets, ddof=1) * np.sqrt(trading_days_per_year))
-            if len(g_rets) > 1
+            float(np.std(active_rets, ddof=1) * np.sqrt(trading_days_per_year))
+            if active_len > 1
             else 0.0
         )
         sharpe = ann_ret / vol if vol > 1e-12 else 0.0
@@ -650,11 +634,11 @@ def evaluate_factor_v4_stats(
             "sharpe": sharpe,
         }
 
-    # 多头超额分析 (Long Excess Analysis: Top Group vs Benchmark)
+    # 多头超额分析 (Long Excess Analysis: Top Group vs Benchmark；未达 min_names 的预热日置 NaN，避免混入 -benchmark)
     top_key = f"G{n_quantiles}"
-    long_rets = group_daily_rets[top_key]
+    long_rets_for_excess = np.where(active_days_mask, group_daily_rets[top_key], np.nan)
     excess_res = calc_long_excess_metrics(
-        long_rets,
+        long_rets_for_excess,
         bench_daily_rets,
         dates=dates,
         trading_days_per_year=trading_days_per_year,
@@ -735,7 +719,7 @@ class DualLayerWorkflowResult:
     probe_report: dict[str, Any]
     evaluation: FactorEvaluationResult
     v4_stats: dict[str, Any]
-    backtest_result: Any  # BacktestResult
+    backtest_result: BacktestResult
     weights: np.ndarray
     factor_id: int | None = None
     version_locked: int | None = None
@@ -745,9 +729,9 @@ class DualLayerWorkflowResult:
 def run_factor_workflow(
     panel: Panel,
     definition: FactorDefinition | dict[str, Any] | str,
-    postprocess: Any = None,
-    portfolio_config: Any = None,
-    backtest_config: Any = None,
+    postprocess: PostprocessSpec | None = None,
+    portfolio_config: PortfolioConfig | None = None,
+    backtest_config: BacktestConfig | None = None,
     registry: FactorRegistry | None = None,
     materialize: bool = True,
     lock_version: bool = True,

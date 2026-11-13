@@ -11,7 +11,10 @@ pub mod ic;
 pub mod quantile;
 pub mod turnover;
 
-pub use corr::{cross_correlation_matrix, cross_correlation_pairwise};
+pub use corr::{
+    cross_correlation_matrix, cross_correlation_pairwise, cross_correlation_pairwise_seq,
+    cross_correlation_prepared_seq, CorrScratch, PreparedCandidate, PreparedFactor,
+};
 pub use ic::{calc_ic_metrics, calc_ic_series, IcMetrics};
 pub use quantile::{
     calc_quantile_metrics, calc_top_quantile_turnover, QuantileMetrics, TopQuantileTurnoverMetrics,

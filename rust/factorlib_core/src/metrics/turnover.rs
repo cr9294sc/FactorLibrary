@@ -7,7 +7,7 @@
 //! - 支持 Rayon 相邻日并发计算。
 
 use crate::metrics::ic::{compute_fractional_ranks, pearson_correlation};
-use ndarray::Array2;
+use ndarray::{ArrayBase, Data, Ix2};
 use rayon::prelude::*;
 
 /// 因子换手率与自相关评价指标。
@@ -63,11 +63,15 @@ pub fn calc_daily_autocorr(
 }
 
 /// 并行计算整个面板在所有相邻交易日上的换手率指标。
-pub fn calc_turnover_metrics(
-    factor: &Array2<f64>,
-    mask: &Array2<bool>,
+pub fn calc_turnover_metrics<S1, S2>(
+    factor: &ArrayBase<S1, Ix2>,
+    mask: &ArrayBase<S2, Ix2>,
     min_names: usize,
-) -> TurnoverMetrics {
+) -> TurnoverMetrics
+where
+    S1: Data<Elem = f64> + Sync,
+    S2: Data<Elem = bool> + Sync,
+{
     let (t, n) = factor.dim();
     assert_eq!(mask.dim(), (t, n), "factor 与 mask 矩阵形状必须一致");
 
@@ -81,21 +85,38 @@ pub fn calc_turnover_metrics(
         };
     }
 
+    struct RowBuf {
+        f_prev: Vec<f64>,
+        f_curr: Vec<f64>,
+        m_prev: Vec<bool>,
+        m_curr: Vec<bool>,
+    }
+
     let daily_autocorr: Vec<f64> = (1..t)
         .into_par_iter()
-        .map(|row| {
-            let mut f_prev = Vec::with_capacity(n);
-            let mut f_curr = Vec::with_capacity(n);
-            let mut m_prev = Vec::with_capacity(n);
-            let mut m_curr = Vec::with_capacity(n);
-            for col in 0..n {
-                f_prev.push(factor[[row - 1, col]]);
-                f_curr.push(factor[[row, col]]);
-                m_prev.push(mask[[row - 1, col]]);
-                m_curr.push(mask[[row, col]]);
-            }
-            calc_daily_autocorr(&f_prev, &f_curr, &m_prev, &m_curr, min_names)
-        })
+        .map_init(
+            || RowBuf {
+                f_prev: vec![0.0; n],
+                f_curr: vec![0.0; n],
+                m_prev: vec![false; n],
+                m_curr: vec![false; n],
+            },
+            |buf, row| {
+                for col in 0..n {
+                    buf.f_prev[col] = factor[[row - 1, col]];
+                    buf.f_curr[col] = factor[[row, col]];
+                    buf.m_prev[col] = mask[[row - 1, col]];
+                    buf.m_curr[col] = mask[[row, col]];
+                }
+                calc_daily_autocorr(
+                    &buf.f_prev,
+                    &buf.f_curr,
+                    &buf.m_prev,
+                    &buf.m_curr,
+                    min_names,
+                )
+            },
+        )
         .collect();
 
     let valid_autocorr: Vec<f64> = daily_autocorr

@@ -373,3 +373,84 @@ def test_run_futures_backtest_roll_bidirectional_cost():
     expected_roll_cost = 2 * (fee_per_side + slip_per_side)
 
     assert abs(res.roll_cost[2] - expected_roll_cost) < 1e-4
+
+
+def test_backtest_leading_warmup_zeros_excluded_from_annualized_metrics():
+    """验证 P2-01: 期货回测与快速回测在前导零权重预热期结束后才起算年化统计指标，序列长度保持 T。"""
+    T = 20
+    warmup = 10
+    symbols = ["RB", "CU"]
+    N = len(symbols)
+    dates = np.array([f"2024-01-{i + 1:02d}" for i in range(T)])
+
+    rng = np.random.default_rng(42)
+    ret_step = rng.normal(0.002, 0.01, (T, N))
+    prices = 100.0 * np.exp(np.cumsum(ret_step, axis=0))
+    exec_vwap = np.asfortranarray(prices, dtype=np.float64)
+    settle_raw = np.asfortranarray(prices * 1.001, dtype=np.float64)
+
+    panel_full = Panel(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "exec_vwap": exec_vwap,
+            "exec_vwap_old": exec_vwap,
+            "settle_raw": settle_raw,
+            "close": settle_raw,
+        },
+        mask=np.ones((T, N), dtype=bool),
+    )
+    weights_full = np.zeros((T, N), dtype=np.float64, order="F")
+    weights_full[warmup:-1, 0] = 0.20
+    weights_full[warmup:-1, 1] = -0.15
+
+    panel_act = Panel(
+        dates=dates[warmup:],
+        symbols=symbols,
+        fields={k: np.asfortranarray(v[warmup:, :]) for k, v in panel_full.fields.items()},
+        mask=np.ones((T - warmup, N), dtype=bool),
+    )
+    weights_act = np.asfortranarray(weights_full[warmup:, :])
+
+    cfg = BacktestConfig(
+        capital=CapitalConfig(init_cash=1_000_000.0),
+        execution=ExecutionConfig(max_margin_ratio=0.50, margin_safety_multiplier=1.0),
+    )
+    res_full = run_backtest(panel_full, weights_full, config=cfg)
+    res_act = run_backtest(panel_act, weights_act, config=cfg)
+
+    assert len(res_full.equity) == T
+    assert np.allclose(res_full.equity[: warmup + 1], 1_000_000.0)
+    for k in (
+        "annual_return",
+        "annual_volatility",
+        "sharpe",
+        "sortino",
+        "win_rate",
+        "profit_loss_ratio",
+        "daily_turnover_mean",
+        "max_drawdown",
+        "max_drawdown_days",
+    ):
+        assert np.isclose(res_full.metrics[k], res_act.metrics[k], rtol=1e-12, atol=1e-12), (
+            f"{k} mismatch: {res_full.metrics[k]} vs {res_act.metrics[k]}"
+        )
+
+    # 快速向量化回测同样剥离前导全零持仓日
+    rets_full = np.asfortranarray(ret_step, dtype=np.float64)
+    w_fast = np.zeros((T, N), dtype=np.float64, order="F")
+    w_fast[warmup:, 0] = 0.5
+    w_fast[warmup:, 1] = -0.5
+
+    fast_full = run_fast_backtest(w_fast, rets_full, fee_rate=0.0001, slippage_bps=1.0)
+    fast_act = run_fast_backtest(
+        np.asfortranarray(w_fast[warmup:, :]),
+        np.asfortranarray(rets_full[warmup:, :]),
+        fee_rate=0.0001,
+        slippage_bps=1.0,
+    )
+    assert len(fast_full["equity"]) == T
+    for k in ("annual_return", "annual_volatility", "sharpe", "win_rate", "daily_turnover_mean"):
+        assert np.isclose(
+            fast_full["metrics"][k], fast_act["metrics"][k], rtol=1e-12, atol=1e-12
+        ), f"fast {k} mismatch: {fast_full['metrics'][k]} vs {fast_act['metrics'][k]}"

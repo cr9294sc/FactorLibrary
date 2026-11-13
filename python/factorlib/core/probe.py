@@ -140,8 +140,11 @@ class PostprocessStep:
         raise TypeError(f"无法解析后处理步骤: {item!r}")
 
 
+PostprocessSpec = str | Sequence[str | dict[str, Any] | PostprocessStep]
+
+
 def parse_postprocess_pipeline(
-    spec: str | Sequence[str | dict[str, Any] | PostprocessStep] | None,
+    spec: PostprocessSpec | None,
 ) -> list[PostprocessStep]:
     """将预设名、JSON 字符串、逗号分隔简写或字典列表统一解析为 PostprocessStep 列表。"""
     if spec is None:
@@ -331,6 +334,7 @@ def probe_factor(
 
     errors: list[str] = []
     stage_warnings: list[str] = []
+    expr_warnings: list[str] = []
     explicit_vars: list[dict[str, Any]] = []
     used_functions: list[str] = []
     expr_lookback = 1
@@ -355,6 +359,7 @@ def probe_factor(
                     depth = int(v_info["depth"])
                     expr_lookback = max(1, int(v_info.get("lookback", 1)))
                     used_functions = list(v_info.get("operators", []))
+                    expr_warnings.extend(str(w) for w in v_info.get("warnings", []))
                     fw_raw = v_info.get("field_windows", {})
                     fw_items = fw_raw.items() if isinstance(fw_raw, dict) else fw_raw
                     for f_name, f_win in sorted(fw_items):
@@ -504,6 +509,7 @@ def probe_factor(
             "warmup_bars": int(warmup_bars),
         },
         "stage_order_warnings": stage_warnings,
+        "warnings": expr_warnings,
         "errors": errors,
     }
 
@@ -681,7 +687,7 @@ def _resolve_implicit_field(
 
 def apply_postprocess_pipeline(
     raw_factor: np.ndarray,
-    steps: Sequence[PostprocessStep | dict[str, Any] | str],
+    steps: PostprocessSpec | None,
     panel: Panel,
 ) -> np.ndarray:
     """在 Rust 内核中按序执行声明式后处理算子链。"""
@@ -690,6 +696,9 @@ def apply_postprocess_pipeline(
         return np.asfortranarray(raw_factor, dtype=np.float64)
 
     curr = np.asfortranarray(raw_factor, dtype=np.float64)
+    # 累积有效掩码：默认继承面板 valid_mask，并在 Stage 1 掩码算子执行时同步收缩；
+    # 在 decay/emadecay 平滑后重施该掩码，避免退市/不在池/停牌窗口内渗出历史衰减残值。
+    active_mask = np.asfortranarray(panel.valid_mask, dtype=bool)
     styles_cache: dict[str, np.ndarray] | None = None
 
     for step in parsed_steps:
@@ -698,20 +707,22 @@ def apply_postprocess_pipeline(
             mask_mat, styles_cache = _resolve_implicit_field(
                 "in_universe_mask", panel, styles_cache
             )
+            active_mask &= np.isfinite(mask_mat) & (mask_mat > 0.0)
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("baseUniMask", curr, x2=mask_mat)
             )
         elif op == "trdMask":
             mask_mat, styles_cache = _resolve_implicit_field("limit_mask", panel, styles_cache)
+            active_mask &= np.isfinite(mask_mat) & (mask_mat > 0.0)
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("trdMask", curr, x2=mask_mat)
             )
         elif op == "dropNewStock":
+            min_days = float(step.window or 60)
             ld_mat, styles_cache = _resolve_implicit_field("listed_days", panel, styles_cache)
+            active_mask &= np.isfinite(ld_mat) & (ld_mat >= min_days)
             curr = np.asfortranarray(
-                factorlib_core.apply_postprocess_op(
-                    "dropNewStock", curr, x2=ld_mat, param=float(step.window or 60)
-                )
+                factorlib_core.apply_postprocess_op("dropNewStock", curr, x2=ld_mat, param=min_days)
             )
         elif op in ("MAD", "winsor"):
             curr = np.asfortranarray(
@@ -743,6 +754,7 @@ def apply_postprocess_pipeline(
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op(op, curr, param=float(step.window or 5))
             )
+            curr = np.asfortranarray(np.where(active_mask, curr, np.nan), dtype=np.float64)
         else:
             raise ValueError(f"不支持的后处理算子: {op!r}")
 

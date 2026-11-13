@@ -17,6 +17,7 @@ from factorlib.core.evaluate import (
     calc_long_excess_metrics,
     evaluate_factor_v4_stats,
 )
+from factorlib.core.panel import Panel
 from factorlib.core.workbench import create_synthetic_futures_panel
 
 
@@ -203,3 +204,81 @@ def test_evaluate_factor_v4_stats_splits_5d_pearson_ic_and_spearman_rank_ic() ->
     assert math.isclose(ic_sum["ic_5d_mean"], expected_pearson, rel_tol=1e-9, abs_tol=1e-9)
     assert math.isclose(ic_sum["rank_ic_5d_mean"], expected_spearman, rel_tol=1e-9, abs_tol=1e-9)
     assert ic_sum["rank_ic_5d_mean"] - ic_sum["ic_5d_mean"] > 0.2
+
+
+def test_evaluate_factor_v4_stats_warmup_days_excluded_from_annualized_metrics() -> None:
+    """验证 P2-01: evaluate_factor_v4_stats 的前导预热 NaN 零收益日不稀释年化/波动率/夏普与多头超额。"""
+    panel = create_synthetic_futures_panel(n_days=30, seed=17)
+    T, N = panel.shape
+    warmup = 20
+
+    rng = np.random.default_rng(77)
+    factor_mat = np.full((T, N), np.nan, dtype=np.float64, order="F")
+    factor_mat[warmup:, :] = rng.normal(0.0, 1.0, (T - warmup, N))
+
+    bench = np.full(T, 0.001, dtype=np.float64)
+
+    active_panel = Panel(
+        dates=panel.dates[warmup:],
+        symbols=panel.symbols,
+        fields={k: np.asfortranarray(v[warmup:, :]) for k, v in panel.fields.items()},
+        labels={k: np.asfortranarray(v[warmup:, :]) for k, v in panel.labels.items()},
+        mask=np.asfortranarray(panel.mask[warmup:, :]),
+    )
+    active_factor = np.asfortranarray(factor_mat[warmup:, :])
+
+    # 1. 外部传入 benchmark_rets 场景
+    stats_full = evaluate_factor_v4_stats(factor_mat, panel, benchmark_rets=bench, n_quantiles=5)
+    stats_act = evaluate_factor_v4_stats(
+        active_factor, active_panel, benchmark_rets=bench[warmup:], n_quantiles=5
+    )
+
+    nav_g5 = stats_full["group_analysis"]["nav_series"]["G5"]
+    assert len(nav_g5) == T
+    assert all(math.isclose(x, 1.0, abs_tol=1e-12) for x in nav_g5[:warmup])
+
+    for k in ("total_return", "annual_return", "annual_volatility", "sharpe"):
+        assert math.isclose(
+            stats_full["group_analysis"]["summary"]["G5"][k],
+            stats_act["group_analysis"]["summary"]["G5"][k],
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+
+    assert math.isclose(
+        stats_full["long_analysis"]["summary"]["annual_excess_return"],
+        stats_act["long_analysis"]["summary"]["annual_excess_return"],
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+    assert math.isclose(
+        stats_full["long_analysis"]["summary"]["excess_sharpe"],
+        stats_act["long_analysis"]["summary"]["excess_sharpe"],
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+
+    # 2. 默认等权基准 (benchmark_rets=None) 场景同样对齐
+    stats_full_ew = evaluate_factor_v4_stats(factor_mat, panel, n_quantiles=5)
+    stats_act_ew = evaluate_factor_v4_stats(active_factor, active_panel, n_quantiles=5)
+    assert math.isclose(
+        stats_full_ew["long_analysis"]["summary"]["annual_excess_return"],
+        stats_act_ew["long_analysis"]["summary"]["annual_excess_return"],
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+
+
+def test_compute_style_exposures_tie_aware_spearman() -> None:
+    """验证 P2-03: compute_style_exposures 对并列值严格采用平均秩 Spearman 相关。"""
+    from factorlib.core.styles import compute_style_exposures
+    from scipy.stats import spearmanr
+
+    T, N = 5, 8
+    factor = np.tile(np.array([1.0, 1.0, 1.0, 2.0, 3.0, 3.0, 4.0, 5.0]), (T, 1))
+    style = np.tile(np.array([5.0, 1.0, 3.0, 2.0, 4.0, 4.0, 6.0, 7.0]), (T, 1))
+    mask = np.ones((T, N), dtype=bool)
+
+    res = compute_style_exposures(factor, {"SIZE": style}, mask=mask, n_quantiles=4, sign=1)
+    expected = float(spearmanr(factor[0], style[0]).statistic)
+    assert math.isclose(res["rank_corr"]["SIZE"], expected, rel_tol=1e-12, abs_tol=1e-12)

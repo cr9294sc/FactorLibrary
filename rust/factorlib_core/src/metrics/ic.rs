@@ -10,7 +10,7 @@
 //! - 支持 Rayon 行并发极速计算。
 
 use crate::nan::{cmp_f64, STD_EPS};
-use ndarray::Array2;
+use ndarray::{ArrayBase, Data, Ix2};
 use rayon::prelude::*;
 
 /// 因子 IC 评价汇总指标结构体。
@@ -145,31 +145,46 @@ pub fn calc_daily_cross_sectional_ic(
 }
 
 /// 并行计算整个面板在所有交易日上的截面 IC 时序。
-pub fn calc_ic_series(
-    factor: &Array2<f64>,
-    label: &Array2<f64>,
-    mask: &Array2<bool>,
+pub fn calc_ic_series<S1, S2, S3>(
+    factor: &ArrayBase<S1, Ix2>,
+    label: &ArrayBase<S2, Ix2>,
+    mask: &ArrayBase<S3, Ix2>,
     min_names: usize,
     rank: bool,
-) -> Vec<f64> {
+) -> Vec<f64>
+where
+    S1: Data<Elem = f64> + Sync,
+    S2: Data<Elem = f64> + Sync,
+    S3: Data<Elem = bool> + Sync,
+{
     let (t, n) = factor.dim();
     assert_eq!(label.dim(), (t, n), "factor 与 label 矩阵形状必须一致");
     assert_eq!(mask.dim(), (t, n), "factor 与 mask 矩阵形状必须一致");
 
-    // 每一天为一截面，按交易日并行
+    struct RowBuf {
+        f: Vec<f64>,
+        l: Vec<f64>,
+        m: Vec<bool>,
+    }
+
+    // 每一天为一截面，按交易日并行（每个工作线程复用切片缓冲）
     (0..t)
         .into_par_iter()
-        .map(|row| {
-            let mut f_row = Vec::with_capacity(n);
-            let mut l_row = Vec::with_capacity(n);
-            let mut m_row = Vec::with_capacity(n);
-            for col in 0..n {
-                f_row.push(factor[[row, col]]);
-                l_row.push(label[[row, col]]);
-                m_row.push(mask[[row, col]]);
-            }
-            calc_daily_cross_sectional_ic(&f_row, &l_row, &m_row, min_names, rank)
-        })
+        .map_init(
+            || RowBuf {
+                f: vec![0.0; n],
+                l: vec![0.0; n],
+                m: vec![false; n],
+            },
+            |buf, row| {
+                for col in 0..n {
+                    buf.f[col] = factor[[row, col]];
+                    buf.l[col] = label[[row, col]];
+                    buf.m[col] = mask[[row, col]];
+                }
+                calc_daily_cross_sectional_ic(&buf.f, &buf.l, &buf.m, min_names, rank)
+            },
+        )
         .collect()
 }
 

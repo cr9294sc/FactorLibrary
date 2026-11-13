@@ -24,7 +24,7 @@ import polars as pl
 
 from factorlib.core.config import DataConfig
 
-from .calendar import lag_by_idx
+from .calendar import apply_alt_data_lag, lag_by_idx
 from .io import scan_dataset
 
 
@@ -33,6 +33,7 @@ def build_member_features(
     cfg: DataConfig,
     daily: pl.DataFrame,
     end_date: date,
+    cal: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """返回 ``symbol, trading_date, mr_net_ratio, mr_cr20, mr_net_ratio_chg5``。"""
     mcfg = cfg.features.member_rank
@@ -41,7 +42,7 @@ def build_member_features(
         pl.col("contract").alias("order_book_id"), "trading_date", "symbol"
     ).lazy()
 
-    top = (
+    raw_top = (
         scan_dataset(
             raw_dir,
             "member_rank",
@@ -53,12 +54,17 @@ def build_member_features(
             & pl.col("trading_date").is_between(cfg.start_date, end_date)
         )
         .join(pair_lf, on=["order_book_id", "trading_date"], how="inner")
-        .group_by(["symbol", "trading_date"])
-        .agg(
-            pl.col("volume").filter(pl.col("rank_by") == "long").sum().alias("_long"),
-            pl.col("volume").filter(pl.col("rank_by") == "short").sum().alias("_short"),
-        )
         .collect()
+        .sort(["trading_date", "order_book_id", "rank_by", "member_rank", "volume"])
+        .unique(
+            subset=["trading_date", "order_book_id", "rank_by", "member_rank"],
+            keep="last",
+            maintain_order=True,
+        )
+    )
+    top = raw_top.group_by(["symbol", "trading_date"]).agg(
+        pl.col("volume").filter(pl.col("rank_by") == "long").sum().alias("_long"),
+        pl.col("volume").filter(pl.col("rank_by") == "short").sum().alias("_short"),
     )
 
     base = keys.join(top, on=["symbol", "trading_date"], how="left").with_columns(
@@ -75,4 +81,11 @@ def build_member_features(
     base = lag_by_idx(base, ["mr_net_ratio"], mcfg.delta_lag, suffix="_lag").with_columns(
         mr_net_ratio_chg5=pl.col("mr_net_ratio") - pl.col("mr_net_ratio_lag")
     )
-    return base.select(["symbol", "trading_date", "mr_net_ratio", "mr_cr20", "mr_net_ratio_chg5"])
+    out = base.select(["symbol", "trading_date", "mr_net_ratio", "mr_cr20", "mr_net_ratio_chg5"])
+    return apply_alt_data_lag(
+        out,
+        daily,
+        cal,
+        ["mr_net_ratio", "mr_cr20", "mr_net_ratio_chg5"],
+        cfg.alt_data_lag_days,
+    )

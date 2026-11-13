@@ -552,7 +552,11 @@
     $("#kpi-pic-mean").textContent = formatSigned(icSum.perc_ic_mean, 4);
     $("#kpi-pic-ir").textContent = `IR: ${formatNum(icSum.perc_ic_ir, 2)}`;
     $("#kpi-ic5-mean").textContent = formatSigned(icSum.ic_5d_mean, 4);
-    $("#kpi-ic5-ir").textContent = `IR: ${formatNum(icSum.ic_5d_ir, 2)}`;
+    const rankIc5dText =
+      icSum.rank_ic_5d_mean !== undefined
+        ? ` | 5d RankIC: ${formatSigned(icSum.rank_ic_5d_mean, 4)}`
+        : "";
+    $("#kpi-ic5-ir").textContent = `IR: ${formatNum(icSum.ic_5d_ir, 2)}${rankIc5dText}`;
     $("#kpi-winrate").textContent = formatPct(icSum.win_rate);
     $("#kpi-excess-ret").textContent = formatPctSigned(longSum.annual_excess_return);
     $("#kpi-excess-sharpe").textContent = `超额夏普: ${formatNum(longSum.excess_sharpe, 2)}`;

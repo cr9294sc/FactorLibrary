@@ -40,8 +40,9 @@ def build_warehouse_features(
         )
         .filter(pl.col("trading_date").is_between(cfg.start_date, end_date))
         .rename({"underlying_symbol": "symbol", "on_warrant": "stock"})
-        .unique(subset=["symbol", "trading_date"], keep="first")
         .collect()
+        .sort(["symbol", "trading_date", "stock"])
+        .unique(subset=["symbol", "trading_date"], keep="last", maintain_order=True)
     )
     keys = daily.select(["symbol", "trading_date", "date_idx"])
     grid = (
@@ -70,6 +71,12 @@ def build_warehouse_features(
         )
         .over("symbol"),
     ).with_columns(wh_z60=(pl.col("stock") - pl.col("_mu")) / (pl.col("_sd") + wcfg.eps))
+    if cfg.alt_data_lag_days > 0:
+        grid = lag_by_idx(grid, ["wh_chg5", "wh_z60"], cfg.alt_data_lag_days, suffix="_altlag")
+        grid = grid.with_columns(
+            wh_chg5=pl.col("wh_chg5_altlag"),
+            wh_z60=pl.col("wh_z60_altlag"),
+        )
     return keys.select(["symbol", "trading_date"]).join(
         grid.select(["symbol", "trading_date", "wh_chg5", "wh_z60"]),
         on=["symbol", "trading_date"],

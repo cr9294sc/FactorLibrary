@@ -5,7 +5,7 @@
   与多预测期数（h in [1, 3, 5, 10, 20]）下的高并发评估；
 - 自动根据训练集 Rank IC 符号决定因子的推荐方向 sign (1 或 -1)；
 - 实现 FactorLab Schema v4 Layer 1 统计分布评估 (`evaluate_factor_v4_stats`)：
-  - 4 类 IC 序列 (`ic`, `rank_ic`, `perc_ic` 首尾 20% 极值相关, `ic_5d`) 及分年度 `ddof=1` IR 汇总；
+  - 5 类 IC 序列 (`ic`, `rank_ic`, `perc_ic` 首尾 20% 极值相关, `ic_5d` 线性 Pearson, `rank_ic_5d` 秩 Spearman) 及分年度 `ddof=1` IR 汇总；
   - 分位数 `G1..G5` 复利净值与单调性检验；
   - 多头超额分析 (`long_analysis`)：相对等权商品池基准的超额收益、加法口径最大回撤与换手率；
   - 6 大期货标准风格暴露归因 (`style_exposure`)；
@@ -337,8 +337,9 @@ def _summarize_ic_slice(
     rank_ic_arr: np.ndarray,
     perc_ic_arr: np.ndarray,
     ic_5d_arr: np.ndarray,
+    rank_ic_5d_arr: np.ndarray | None = None,
 ) -> dict[str, float]:
-    """按样本标准差 (ddof=1) 汇总指定时段内的 4 类 IC 统计指标。"""
+    """按样本标准差 (ddof=1) 汇总指定时段内的 IC 统计指标（显式区分 5d Pearson IC 与 5d RankIC）。"""
 
     def _mean_std_ir(arr: np.ndarray) -> tuple[float, float, float]:
         valid = arr[np.isfinite(arr)]
@@ -353,6 +354,9 @@ def _summarize_ic_slice(
     ric_m, ric_s, ric_ir = _mean_std_ir(rank_ic_arr)
     pic_m, _, pic_ir = _mean_std_ir(perc_ic_arr)
     ic5_m, _, ic5_ir = _mean_std_ir(ic_5d_arr)
+    ric5_m, _, ric5_ir = (
+        _mean_std_ir(rank_ic_5d_arr) if rank_ic_5d_arr is not None else (0.0, 0.0, 0.0)
+    )
 
     valid_ric = rank_ic_arr[np.isfinite(rank_ic_arr)]
     win_rate = float(np.mean(valid_ric > 0.0)) if len(valid_ric) > 0 else 0.0
@@ -368,6 +372,8 @@ def _summarize_ic_slice(
         "perc_ic_ir": pic_ir,
         "ic_5d_mean": ic5_m,
         "ic_5d_ir": ic5_ir,
+        "rank_ic_5d_mean": ric5_m,
+        "rank_ic_5d_ir": ric5_ir,
         "win_rate": win_rate,
     }
 
@@ -542,6 +548,7 @@ def evaluate_factor_v4_stats(
     rank_ic_series = np.full(T, np.nan, dtype=np.float64)
     perc_ic_series = np.full(T, np.nan, dtype=np.float64)
     ic_5d_series = np.full(T, np.nan, dtype=np.float64)
+    rank_ic_5d_series = np.full(T, np.nan, dtype=np.float64)
 
     group_daily_rets = {f"G{q + 1}": np.zeros(T, dtype=np.float64) for q in range(n_quantiles)}
     if benchmark_rets is not None:
@@ -599,7 +606,10 @@ def evaluate_factor_v4_stats(
         valid_5d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r5_row)
         idx_5d = np.where(valid_5d)[0]
         if len(idx_5d) >= min_names:
-            ic_5d_series[t] = _spearman_corr_1d(f_row[idx_5d], r5_row[idx_5d])
+            fx5 = f_row[idx_5d]
+            ry5 = r5_row[idx_5d]
+            ic_5d_series[t] = _pearson_corr_1d(fx5, ry5)
+            rank_ic_5d_series[t] = _spearman_corr_1d(fx5, ry5)
 
     # 按年份与全样本汇总 IC
     years = sorted({d[:4] for d in dates if len(d) >= 4})
@@ -611,8 +621,11 @@ def evaluate_factor_v4_stats(
             rank_ic_series[y_idx],
             perc_ic_series[y_idx],
             ic_5d_series[y_idx],
+            rank_ic_5d_series[y_idx],
         )
-    ic_full = _summarize_ic_slice(ic_series, rank_ic_series, perc_ic_series, ic_5d_series)
+    ic_full = _summarize_ic_slice(
+        ic_series, rank_ic_series, perc_ic_series, ic_5d_series, rank_ic_5d_series
+    )
 
     # 分组复利净值与年化收益
     group_nav_series: dict[str, list[float]] = {}
@@ -679,6 +692,7 @@ def evaluate_factor_v4_stats(
                 "rank_ic": [float(x) if np.isfinite(x) else None for x in rank_ic_series],
                 "perc_ic": [float(x) if np.isfinite(x) else None for x in perc_ic_series],
                 "ic_5d": [float(x) if np.isfinite(x) else None for x in ic_5d_series],
+                "rank_ic_5d": [float(x) if np.isfinite(x) else None for x in rank_ic_5d_series],
             },
         },
         "group_analysis": {

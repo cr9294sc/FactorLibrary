@@ -385,3 +385,88 @@ def test_roll_exec_vwap_old_fallback_cascade():
             f"Row {i} 错误使用了新合约当日收盘结算价未来信息: "
             f"exec_vwap_old={res['exec_vwap_old'][i]}, settle_raw={res['settle_raw'][i]}"
         )
+
+
+def test_minute_features_physical_30m_window_and_open_denominator():
+    """验证 P1-06: 稀疏分钟线严格按物理 30 分钟时间窗及首根 open 计算 ret_first30 与 ret_last30。"""
+    times = [
+        dt.datetime(2024, 3, 4, 9, 1),
+        dt.datetime(2024, 3, 4, 9, 20),
+        dt.datetime(2024, 3, 4, 11, 0),
+        dt.datetime(2024, 3, 4, 14, 35),
+        dt.datetime(2024, 3, 4, 15, 0),
+    ]
+    df = pl.DataFrame(
+        {
+            "order_book_id": ["SI2405"] * 5,
+            "trading_date": [date(2024, 3, 4)] * 5,
+            "datetime": times,
+            "open": [100.0, 101.0, 105.0, 120.0, 118.0],
+            "high": [102.0, 106.0, 121.0, 121.0, 127.0],
+            "low": [99.0, 100.5, 104.0, 117.0, 117.5],
+            "close": [101.0, 105.0, 120.0, 118.0, 126.0],
+            "volume": [10.0, 20.0, 30.0, 40.0, 50.0],
+            "prev_settlement": [100.0] * 5,
+        }
+    )
+
+    res = aggregate_features(df, MinuteFeaturesConfig())
+    # [09:01, 09:31) 包含前两根 (open[0]=100.0, close[1]=105.0) -> +5%
+    assert abs(res["ret_first30"][0] - 0.05) < 1e-12
+    # (14:30, 15:00] 包含后两根 (open[3]=120.0, close[4]=126.0) -> +5%
+    assert abs(res["ret_last30"][0] - 0.05) < 1e-12
+
+
+def test_alt_data_lag_days_and_deterministic_dedup(tmp_path):
+    """验证 P1-06: 盘后另类数据按日期排序后 keep='last' 确定性去重及 alt_data_lag_days=1 滞后开关。"""
+    from factorlib.core.config import DataConfig
+    from factorlib.markets.futures.etl.aux_warehouse import build_warehouse_features
+
+    cal = pl.DataFrame(
+        {
+            "trading_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+            "date_idx": [0, 1, 2],
+        }
+    ).with_columns(pl.col("date_idx").cast(pl.Int64))
+    daily = cal.with_columns(pl.lit("CU").alias("symbol"))
+
+    # 故意乱序写入重复行 (100.0 与 200.0)，排序后 keep='last' 应确定性保留较大的 200.0
+    wh_dir = tmp_path / "warehouse_stocks"
+    wh_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trading_date": [
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 4),
+            ],
+            "underlying_symbol": ["CU", "CU", "CU", "CU"],
+            "on_warrant": [200.0, 100.0, 300.0, 400.0],
+        }
+    ).write_parquet(wh_dir / "warehouse_stocks.parquet")
+
+    cfg_lag0 = DataConfig(
+        raw_dir=tmp_path,
+        derived_dir=tmp_path / "derived",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 10),
+        alt_data_lag_days=0,
+    )
+    # 设 chg_lag=1 便于短样本测试
+    from dataclasses import replace
+
+    from factorlib.core.config import WarehouseConfig
+
+    wcfg = WarehouseConfig(chg_lag=1, z_window=2, z_min_samples=2, eps=0.0)
+    cfg0 = replace(cfg_lag0, warehouse=wcfg)
+    cfg1 = replace(cfg0, alt_data_lag_days=1)
+
+    res0 = build_warehouse_features(tmp_path, cfg0, daily, cal, date(2024, 1, 10))
+    res1 = build_warehouse_features(tmp_path, cfg1, daily, cal, date(2024, 1, 10))
+
+    # 1月3日 stock=300 vs 1月2日去重保留 stock=200 => wh_chg5[1] == (300 - 200) / 200 = 0.5
+    assert abs(res0["wh_chg5"][1] - 0.5) < 1e-12
+    # alt_data_lag_days=1 时，1月3日特征应前推至 1月4日，且 1月3日自身为空
+    assert res1["wh_chg5"][1] is None
+    assert abs(res1["wh_chg5"][2] - 0.5) < 1e-12

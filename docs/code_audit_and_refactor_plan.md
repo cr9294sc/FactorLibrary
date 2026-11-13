@@ -986,7 +986,9 @@
 
 ---
 
-### P1-05 `[P1-架构隐患]` `SubExprCache` 伪 LRU 实为 FIFO 淘汰、全局写锁线性扫描，且纯 `u64` 键存在哈希碰撞串值隐患
+### P1-05 `[P1-架构隐患]` [已修复 / FIXED] `SubExprCache` 伪 LRU 实为 FIFO 淘汰、全局写锁线性扫描，且纯 `u64` 键存在哈希碰撞串值隐患
+
+> **修复状态**：已修复（[`SubExprCache`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/cache.rs) 升级为 32 分片并发缓存 + 每分片基于槽位索引侵入式双向链表实现 $O(1)$ 真 LRU 命中置顶与尾部淘汰 + `(u64 哈希选片, Arc<str> 规范化表达式原文)` 精确比对防碰撞，[`eval.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/eval.rs) 同步消除批预热 DAG 的纯 `u64` 去重隐患并附带 Rust LRU/并发/同哈希隔离单测）。
 
 - **定位信息**：
   - [`rust/factorlib_core/src/expr/cache.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/cache.rs#L24-L116)（结构体 [`SubExprCache`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/cache.rs#L32-L40)，方法 [`get`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/cache.rs#L64-L77) 与 [`insert`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/expr/cache.rs#L80-L116)）
@@ -1047,7 +1049,9 @@
 
 ---
 
-### P1-06 `[P1-架构隐患]` 分钟微结构按 Bar 计数替代物理时间窗、另类数据无序去重，以及 `RidgeModel` / `LightGBMModel` 训练缺陷
+### P1-06 `[P1-架构隐患]` [已修复 / FIXED] 分钟微结构按 Bar 计数替代物理时间窗、另类数据无序去重，以及 `RidgeModel` / `LightGBMModel` 训练缺陷
+
+> **修复状态**：已修复（[`minute_features.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/minute_features.py) 的 `ret_first30` / `ret_last30` 改用首末 30 分钟物理时间窗与首根 `open`；[`aux_warehouse.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/aux_warehouse.py)、[`aux_roll.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/aux_roll.py)、[`aux_member.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/aux_member.py) 与 [`exec_price.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/exec_price.py) 先排序后 `.unique(..., keep="last", maintain_order=True)`；[`configs/futures/data.yaml`](file:///home/cr9294/repos/FactorLibrary/configs/futures/data.yaml) 与 [`DataConfig`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/config.py) 新增 `alt_data_lag_days` (`0 | 1`) 并同步更新 [`futures_platform_plan.md`](file:///home/cr9294/repos/FactorLibrary/docs/futures_platform_plan.md) 盘后 `17:30` 清算截止说明；[`RidgeModel`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/ml/models/linear.py) 优先使用隔离验证集/时间分块 CV 寻优 `alpha`；[`LightGBMModel`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/ml/models/lgbm.py) 在 `lambdarank`/`rank_xendcg` 下将连续收益率按截面离散为 `0..4` 整型相关性等级并默认匹配 `ndcg` 指标）。
 
 - **定位信息**：
   - [`python/factorlib/markets/futures/etl/minute_features.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/minute_features.py#L92-L96)（函数 [`_aggregate_one_year`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/futures/etl/minute_features.py#L56-L135)）
@@ -1142,7 +1146,9 @@
 
 ---
 
-### P1-07 `[P1-架构隐患]` 裸因子 `Gaussian distribution` 线上 `Inf` 污染误判、`Tech_Trend_VP_1_Rev` 复权口径不一致、`5d IC` 混用及 A 股独立脚本脱离主框架
+### P1-07 `[P1-架构隐患]` [已修复 / FIXED] 裸因子 `Gaussian distribution` 线上 `Inf` 污染误判、`Tech_Trend_VP_1_Rev` 复权口径不一致、`5d IC` 混用及 A 股独立脚本脱离主框架
+
+> **修复状态**：已修复（[`StockPanelLoader`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/panel_loader.py) 已收敛 A 股多因子加载与基准对齐逻辑；[`evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py) 将 `ic_5d` 严格修正为 Pearson 线性相关并新增 `rank_ic_5d` (Spearman)，同步更新 [`report.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/report.py) 与工作台前端展示；[`backtest_multi_factors.py`](file:///home/cr9294/repos/FactorLibrary/scripts/backtest_multi_factors.py) 增加 `--tech-trend-high-low {adj,raw}` 命令行开关并在消融洞察中实时双轨实测对比全复权与混合未复权口径）。
 
 - **定位信息**：
   - [`scripts/backtest_multi_factors.py`](file:///home/cr9294/repos/FactorLibrary/scripts/backtest_multi_factors.py#L334-L353)（函数 [`compute_base_expressions`](file:///home/cr9294/repos/FactorLibrary/scripts/backtest_multi_factors.py#L330-L354)）

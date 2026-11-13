@@ -35,7 +35,11 @@ def minute_pairs(daily: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame:
     old = daily.filter(pl.col("is_roll")).select(
         pl.col("prev_contract").alias("order_book_id"), "trading_date", "symbol"
     )
-    pairs = pl.concat([cur, old]).unique(subset=["order_book_id", "trading_date"], keep="first")
+    pairs = (
+        pl.concat([cur, old])
+        .sort(["order_book_id", "trading_date", "symbol"])
+        .unique(subset=["order_book_id", "trading_date"], keep="last", maintain_order=True)
+    )
     traded = bars.filter(pl.col("volume") > 0).select(
         pl.col("contract").alias("order_book_id"),
         "trading_date",

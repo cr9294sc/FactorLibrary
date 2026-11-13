@@ -267,3 +267,24 @@ def test_load_default_backtest_yaml():
     assert cfg.capital.init_cash == 10_000_000.0
     assert cfg.portfolio.target_volatility == 0.10
     assert cfg.execution.max_margin_ratio == 0.50
+
+
+def test_alt_data_lag_days_validation(tmp_path: Path):
+    """验证 P1-06: timeline.alt_data_lag_days 仅允许 0 或 1。"""
+    base_yaml = """
+raw_dir: "./exports"
+derived_dir: "./data/derived/futures"
+timeline:
+  start_date: "2020-01-01"
+  end_date: "2024-01-01"
+  alt_data_lag_days: {lag}
+"""
+    p1 = tmp_path / "ok.yaml"
+    p1.write_text(base_yaml.format(lag=1), encoding="utf-8")
+    cfg = load_data_config(p1, root=tmp_path)
+    assert cfg.alt_data_lag_days == 1
+
+    p2 = tmp_path / "bad.yaml"
+    p2.write_text(base_yaml.format(lag=2), encoding="utf-8")
+    with pytest.raises(ConfigError, match="alt_data_lag_days"):
+        load_data_config(p2, root=tmp_path)

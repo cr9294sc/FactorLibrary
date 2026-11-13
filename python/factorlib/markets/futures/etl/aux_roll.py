@@ -21,11 +21,16 @@ import polars as pl
 
 from factorlib.core.config import DataConfig
 
+from .calendar import apply_alt_data_lag
 from .io import scan_dataset
 
 
 def build_roll_yield(
-    raw_dir: Path, cfg: DataConfig, daily: pl.DataFrame, end_date: date
+    raw_dir: Path,
+    cfg: DataConfig,
+    daily: pl.DataFrame,
+    end_date: date,
+    cal: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """返回 ``symbol, trading_date, ry_main_sub, ry_ann, ry_near_main``。"""
     ry = (
@@ -49,12 +54,13 @@ def build_roll_yield(
         )
         .rename({"underlying_symbol": "symbol"})
         .collect()
+        .sort(["symbol", "trading_date", "roll_type", "from_contract", "to_contract"])
     )
     keys = daily.select(["symbol", "trading_date", "contract"])
 
     main_sub = (
         ry.filter(pl.col("roll_type") == "main_sub")
-        .unique(subset=["symbol", "trading_date"], keep="first")
+        .unique(subset=["symbol", "trading_date"], keep="last", maintain_order=True)
         .join(keys, on=["symbol", "trading_date"], how="inner")
         .filter(pl.col("from_contract") == pl.col("contract"))
         .select(
@@ -66,13 +72,16 @@ def build_roll_yield(
     )
     near_main = (
         ry.filter(pl.col("roll_type") == "near_main")
-        .unique(subset=["symbol", "trading_date"], keep="first")
+        .unique(subset=["symbol", "trading_date"], keep="last", maintain_order=True)
         .join(keys, on=["symbol", "trading_date"], how="inner")
         .filter(pl.col("to_contract") == pl.col("contract"))
         .select("symbol", "trading_date", pl.col("roll_yield").alias("ry_near_main"))
     )
-    return (
+    out = (
         keys.select(["symbol", "trading_date"])
         .join(main_sub, on=["symbol", "trading_date"], how="left")
         .join(near_main, on=["symbol", "trading_date"], how="left")
+    )
+    return apply_alt_data_lag(
+        out, daily, cal, ["ry_main_sub", "ry_ann", "ry_near_main"], cfg.alt_data_lag_days
     )

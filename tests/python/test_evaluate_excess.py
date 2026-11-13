@@ -171,3 +171,35 @@ def test_benchmark_forward_timing_shift_logic() -> None:
     # 在信号日 t=1 上，远期区间是 [2->3]，而旧代码记录的是 [0->1]
     assert math.isclose(bench_fwd_ret_fixed[1], 105.0 / 101.0 - 1.0, rel_tol=1e-12)
     assert math.isclose(bench_ret_buggy[1], 102.0 / 100.0 - 1.0, rel_tol=1e-12)
+
+
+def test_evaluate_factor_v4_stats_splits_5d_pearson_ic_and_spearman_rank_ic() -> None:
+    """验证 P1-07: evaluate_factor_v4_stats 将 ic_5d 严格计算为 Pearson IC 并独立输出 rank_ic_5d (Spearman)。"""
+    from scipy.stats import pearsonr, spearmanr
+
+    panel = create_synthetic_futures_panel(n_days=20, seed=9)
+    T, N = panel.shape
+
+    # 构造非线性单调因子与 y_5（严格正序但非直线关系，使 Pearson IC 与 Spearman RankIC 显著区分）
+    lin = np.linspace(0.0, 1.0, N)
+    factor_mat = np.asfortranarray(np.tile(np.exp(8.0 * lin), (T, 1)), dtype=np.float64)
+    y5_mat = np.asfortranarray(np.tile(lin, (T, 1)), dtype=np.float64)
+    panel.labels["y_5"] = y5_mat
+
+    stats = evaluate_factor_v4_stats(factor_mat, panel, n_quantiles=5)
+    ic_sum = stats["ic_analysis"]["summary"]
+    ic_series = stats["ic_analysis"]["series"]
+
+    expected_pearson = float(
+        pearsonr(factor_mat[0, panel.mask[0]], y5_mat[0, panel.mask[0]]).statistic
+    )
+    expected_spearman = float(
+        spearmanr(factor_mat[0, panel.mask[0]], y5_mat[0, panel.mask[0]]).statistic
+    )
+
+    assert "rank_ic_5d_mean" in ic_sum
+    assert "rank_ic_5d_ir" in ic_sum
+    assert "rank_ic_5d" in ic_series
+    assert math.isclose(ic_sum["ic_5d_mean"], expected_pearson, rel_tol=1e-9, abs_tol=1e-9)
+    assert math.isclose(ic_sum["rank_ic_5d_mean"], expected_spearman, rel_tol=1e-9, abs_tol=1e-9)
+    assert ic_sum["rank_ic_5d_mean"] - ic_sum["ic_5d_mean"] > 0.2

@@ -13,8 +13,43 @@ from typing import Any
 
 import lightgbm as lgb
 import numpy as np
+from scipy.stats import rankdata
 
 from factorlib.core.config import LightGBMConfig
+
+
+def _discretize_ranking_labels(
+    y_arr: np.ndarray,
+    groups: np.ndarray | None,
+    n_bins: int = 5,
+) -> np.ndarray:
+    """将连续收益率按截面分组离散化为 0..n_bins-1 的整型相关性等级，适配 lambdarank/rank_xendcg。"""
+    y_vec = np.asarray(y_arr, dtype=np.float64)
+    out = np.zeros(len(y_vec), dtype=np.int32)
+    if len(y_vec) == 0:
+        return out
+
+    def _bin_slice(sub: np.ndarray) -> np.ndarray:
+        m = len(sub)
+        if m <= 1:
+            return np.zeros(m, dtype=np.int32)
+        ranks0 = rankdata(sub, method="average") - 1.0
+        bins = np.floor(ranks0 * n_bins / float(m)).astype(np.int32)
+        return np.clip(bins, 0, n_bins - 1)
+
+    if groups is None or len(groups) == 0:
+        return _bin_slice(y_vec)
+
+    offset = 0
+    for g in groups:
+        g_int = int(g)
+        if g_int > 0 and offset < len(y_vec):
+            end = min(offset + g_int, len(y_vec))
+            out[offset:end] = _bin_slice(y_vec[offset:end])
+            offset = end
+    if offset < len(y_vec):
+        out[offset:] = _bin_slice(y_vec[offset:])
+    return out
 
 
 class LightGBMModel:
@@ -101,10 +136,13 @@ class LightGBMModel:
         # 根据样本量动态适配最小叶子样本数 (小测试集或少标的时防止报错)
         effective_min_child = max(1, min(self.min_child_samples, len(X) // 3))
 
+        is_ranking = self.objective in ("lambdarank", "rank_xendcg")
+        effective_metric = "ndcg" if is_ranking and self.metric == "rmse" else self.metric
+
         # 构建原生 LightGBM 参数字典
         lgb_params: dict[str, Any] = {
             "objective": self.objective,
-            "metric": self.metric,
+            "metric": effective_metric,
             "boosting_type": self.boosting_type,
             "max_depth": self.max_depth,
             "num_leaves": self.num_leaves,
@@ -117,11 +155,13 @@ class LightGBMModel:
             "verbose": -1,
         }
 
+        y_train_eff = _discretize_ranking_labels(y, groups) if is_ranking else y
+
         # 构建 Dataset
         train_data = lgb.Dataset(
             X,
-            label=y,
-            group=groups if self.objective == "lambdarank" else None,
+            label=y_train_eff,
+            group=groups if is_ranking else None,
             feature_name=self.feature_names,
             free_raw_data=False,
         )
@@ -130,10 +170,11 @@ class LightGBMModel:
         callbacks = []
 
         if X_val is not None and y_val is not None and len(X_val) > 0:
+            y_val_eff = _discretize_ranking_labels(y_val, groups_val) if is_ranking else y_val
             val_data = lgb.Dataset(
                 X_val,
-                label=y_val,
-                group=groups_val if self.objective == "lambdarank" else None,
+                label=y_val_eff,
+                group=groups_val if is_ranking else None,
                 reference=train_data,
                 feature_name=self.feature_names,
                 free_raw_data=False,

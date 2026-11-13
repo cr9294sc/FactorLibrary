@@ -85,3 +85,26 @@ def lag_by_idx(
         ]
     )
     return df.join(right, on=[key, "date_idx"], how="left")
+
+
+def apply_alt_data_lag(
+    df: pl.DataFrame,
+    daily: pl.DataFrame,
+    cal: pl.DataFrame | None,
+    cols: Sequence[str],
+    lag_days: int,
+    key: str = "symbol",
+) -> pl.DataFrame:
+    """当 ``lag_days > 0`` 时，按交易日历 ``date_idx`` 将另类特征滞后 ``lag_days`` 日以用于严格盘中截点消融。"""
+    if lag_days <= 0:
+        return df
+    keys = daily.select([key, "trading_date", "date_idx"])
+    base = dense_grid(keys, cal, key=key) if cal is not None else keys
+    grid = base.join(df, on=[key, "trading_date"], how="left")
+    lagged = lag_by_idx(grid, cols, lag_days, key=key, suffix="_altlag")
+    lagged = lagged.with_columns([pl.col(f"{c}_altlag").alias(c) for c in cols])
+    return keys.select([key, "trading_date"]).join(
+        lagged.select([key, "trading_date", *cols]),
+        on=[key, "trading_date"],
+        how="left",
+    )

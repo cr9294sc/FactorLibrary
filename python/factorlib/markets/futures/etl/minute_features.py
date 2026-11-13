@@ -79,9 +79,20 @@ def aggregate_features(df: pl.DataFrame, mcfg: MinuteFeaturesConfig) -> pl.DataF
     )
 
     r = pl.col("_r")
+    dt = pl.col("datetime")
+    open_p = pl.col("open")
     close = pl.col("close")
     vol = pl.col("volume")
     n = pl.len()
+
+    dt_min = dt.min()
+    dt_max = dt.max()
+    first30_mask = dt < dt_min + pl.duration(minutes=30)
+    last30_mask = dt > dt_max - pl.duration(minutes=30)
+    first30_open = open_p.filter(first30_mask).first()
+    first30_close = close.filter(first30_mask).last()
+    last30_open = open_p.filter(last30_mask).first()
+    last30_close = close.filter(last30_mask).last()
 
     agg = d.group_by(_KEYS, maintain_order=True).agg(
         n.cast(pl.Int64).alias("n_bars"),
@@ -89,11 +100,14 @@ def aggregate_features(df: pl.DataFrame, mcfg: MinuteFeaturesConfig) -> pl.DataF
         (r**2).sum().alias("_rv2"),
         pl.when(r > 0).then(r**2).otherwise(0.0).sum().alias("_rv2_up"),
         pl.when(r < 0).then(r**2).otherwise(0.0).sum().alias("_rv2_down"),
-        pl.when(n > 30)
-        .then(close.last() / close.slice(n - 31, 1).first() - 1.0)
+        pl.when(((dt_max - dt_min) > pl.duration(minutes=30)) & (last30_open > 0))
+        .then(last30_close / last30_open - 1.0)
         .otherwise(None)
         .alias("ret_last30"),
-        (close.slice(29, 1).first() / close.first() - 1.0).alias("ret_first30"),
+        pl.when(first30_open > 0)
+        .then(first30_close / first30_open - 1.0)
+        .otherwise(None)
+        .alias("ret_first30"),
         (
             close.filter(pl.col("_night")).last() / pl.col("open").filter(pl.col("_night")).first()
             - 1.0

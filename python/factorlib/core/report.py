@@ -543,9 +543,9 @@ def _build_v4_stats_html(
                 <div class="kpi-sub">PercIC IR: {ic_sum.get("perc_ic_ir", 0.0):.2f}</div>
               </div>
               <div class="kpi-card">
-                <div class="kpi-label">5 日预测 Rank IC</div>
+                <div class="kpi-label">5 日线性 IC (Pearson)</div>
                 <div class="kpi-value">{ic_sum.get("ic_5d_mean", 0.0):+.4f}</div>
-                <div class="kpi-sub">5d ICIR: {ic_sum.get("ic_5d_ir", 0.0):.2f}</div>
+                <div class="kpi-sub">5d ICIR: {ic_sum.get("ic_5d_ir", 0.0):.2f} | 5d RankIC: {ic_sum.get("rank_ic_5d_mean", 0.0):+.4f}</div>
               </div>
               <div class="kpi-card">
                 <div class="kpi-label">多头超额年化 (vs 等权池)</div>

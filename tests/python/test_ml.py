@@ -517,3 +517,59 @@ def test_ml_pipeline_enforces_min_purge_from_label_horizon_p0_05(synthetic_ml_pa
     assert len(res_p1.fold_metrics) == 2
     assert res_p1.fold_metrics[0]["n_train"] == res_p5.fold_metrics[0]["n_train"]
     assert res_p1.fold_metrics[1]["n_train"] == res_p5.fold_metrics[1]["n_train"]
+
+
+def test_ridge_validation_set_and_date_blocked_alpha_selection():
+    """验证 P1-06: RidgeModel 优先使用隔离验证集 (X_val, y_val) 及按日期分块 CV 寻优 alpha。"""
+    from factorlib.ml.models.linear import RidgeModel
+
+    rng = np.random.default_rng(7)
+    n_train, n_val, K = 80, 60, 8
+    # 构造仅第 0 列略相关、其余特征高度共线噪声的数据；强正则化应在隔离验证集上胜出
+    X_train = rng.normal(0.0, 1.0, size=(n_train, K))
+    y_train = 0.2 * X_train[:, 0] + rng.normal(0.0, 1.5, size=n_train)
+    X_val = rng.normal(0.0, 1.0, size=(n_val, K))
+    y_val = 0.2 * X_val[:, 0] + rng.normal(0.0, 1.5, size=n_val)
+
+    alphas = np.array([1e-4, 1.0, 1e3])
+    model = RidgeModel(alphas=alphas).fit(X_train, y_train, X_val=X_val, y_val=y_val)
+    # 验证集 MSE 最优的 alpha 必须恰好与手动遍历 alphas 结果一致
+    mses = []
+    from sklearn.linear_model import Ridge
+
+    for a in alphas:
+        r = Ridge(alpha=float(a), fit_intercept=True).fit(X_train, y_train)
+        mses.append(float(np.mean((r.predict(X_val) - y_val) ** 2)))
+    assert model.best_alpha_ == float(alphas[int(np.argmin(mses))])
+
+    # 未传验证集但传入 date_indices 时，按时间日期分块 CV 正常工作且输出有限预测
+    date_indices = np.repeat(np.arange(10), n_train // 10)
+    m_blk = RidgeModel(alphas=alphas).fit(X_train, y_train, date_indices=date_indices)
+    assert m_blk.best_alpha_ in alphas
+    assert np.all(np.isfinite(m_blk.predict(X_val)))
+
+
+def test_lightgbm_lambdarank_float_label_discretization():
+    """验证 P1-06: LightGBMModel(objective='lambdarank') 自动将连续浮点收益按截面离散为整型相关性等级。"""
+    rng = np.random.default_rng(11)
+    n_days, n_assets, K = 12, 10, 4
+    X = rng.normal(0.0, 1.0, size=(n_days * n_assets, K))
+    y = 0.6 * X[:, 0] - 0.3 * X[:, 1] + rng.normal(0.0, 0.1, size=n_days * n_assets)
+    groups = np.full(n_days, n_assets, dtype=np.int32)
+
+    X_tr, y_tr, g_tr = X[: 8 * n_assets], y[: 8 * n_assets], groups[:8]
+    X_va, y_va, g_va = X[8 * n_assets :], y[8 * n_assets :], groups[8:]
+
+    ranker = LightGBMModel(
+        objective="lambdarank",
+        metric="rmse",
+        n_estimators=20,
+        max_depth=3,
+        num_leaves=7,
+        min_child_samples=5,
+        early_stopping_rounds=5,
+    )
+    ranker.fit(X_tr, y_tr, X_val=X_va, y_val=y_va, groups=g_tr, groups_val=g_va)
+    preds = ranker.predict(X_va)
+    assert len(preds) == len(y_va)
+    assert np.all(np.isfinite(preds))

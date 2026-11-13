@@ -7,7 +7,7 @@
 //!    - 同一深度层内的唯一子表达式通过 `rayon` 并行求值并写入 `SubExprCache`；
 //!    - 彻底消除多线程同时求值相同公共子表达式的重复计算（Cache Stampede），实现超高吞吐。
 
-use crate::expr::ast::ASTNode;
+use crate::expr::ast::{hash_canon_str, ASTNode};
 use crate::expr::cache::SubExprCache;
 use crate::expr::canon::{canonicalize, canonicalize_value_preserving};
 use crate::expr::parser::{parse_expr, ParseError};
@@ -74,6 +74,29 @@ fn mask_to_universe<'a>(mat: &'a Array2<f64>, mask: &Array2<bool>) -> Cow<'a, Ar
     Cow::Owned(out)
 }
 
+/// 带分片防碰撞缓存的公共非叶子节点求值包装。
+fn eval_nonleaf_cached<F>(
+    node: &ASTNode,
+    cache: Option<&SubExprCache>,
+    compute: F,
+) -> Result<Arc<Array2<f64>>, EvalError>
+where
+    F: FnOnce() -> Result<Array2<f64>, EvalError>,
+{
+    if let Some(c) = cache {
+        let canon_expr = node.to_canon_string();
+        let key_hash = hash_canon_str(&canon_expr);
+        if let Some(hit) = c.get(key_hash, &canon_expr) {
+            return Ok(hit);
+        }
+        let arc_out = Arc::new(compute()?);
+        c.insert(key_hash, canon_expr, Arc::clone(&arc_out));
+        Ok(arc_out)
+    } else {
+        Ok(Arc::new(compute()?))
+    }
+}
+
 /// 递归求值单个 `ASTNode`，返回共享列优先矩阵指针 `Arc<Array2<f64>>`。
 pub fn eval_ast(
     node: &ASTNode,
@@ -88,13 +111,7 @@ pub fn eval_ast(
         ASTNode::Constant(_) | ASTNode::Window(_) => {
             Err(EvalError::CannotEvalScalarLeaf(node.to_canon_string()))
         }
-        ASTNode::UnaryCall { op, arg } => {
-            let key = node.canon_hash();
-            if let Some(c) = cache {
-                if let Some(hit) = c.get(key) {
-                    return Ok(hit);
-                }
-            }
+        ASTNode::UnaryCall { op, arg } => eval_nonleaf_cached(node, cache, || {
             let arg_mat = eval_ast(arg, panel, cache)?;
             let out = match op {
                 UnaryOp::Neg => elem::op_neg(&arg_mat),
@@ -126,19 +143,9 @@ pub fn eval_ast(
                     }
                 }
             };
-            let arc_out = Arc::new(out);
-            if let Some(c) = cache {
-                c.insert(key, Arc::clone(&arc_out));
-            }
-            Ok(arc_out)
-        }
-        ASTNode::BinaryCall { op, lhs, rhs } => {
-            let key = node.canon_hash();
-            if let Some(c) = cache {
-                if let Some(hit) = c.get(key) {
-                    return Ok(hit);
-                }
-            }
+            Ok(out)
+        }),
+        ASTNode::BinaryCall { op, lhs, rhs } => eval_nonleaf_cached(node, cache, || {
             let lhs_mat = eval_ast(lhs, panel, cache)?;
             let out = match op {
                 // (Series, Series) -> Series / BoolCond
@@ -212,24 +219,14 @@ pub fn eval_ast(
                 BinaryOp::TsDecayLinear => ts::op_ts_decay_linear(&lhs_mat, extract_window(rhs)?),
                 BinaryOp::TsMad => ts::op_ts_mad(&lhs_mat, extract_window(rhs)?),
             };
-            let arc_out = Arc::new(out);
-            if let Some(c) = cache {
-                c.insert(key, Arc::clone(&arc_out));
-            }
-            Ok(arc_out)
-        }
+            Ok(out)
+        }),
         ASTNode::TernaryCall {
             op,
             cond,
             then_branch,
             else_branch,
-        } => {
-            let key = node.canon_hash();
-            if let Some(c) = cache {
-                if let Some(hit) = c.get(key) {
-                    return Ok(hit);
-                }
-            }
+        } => eval_nonleaf_cached(node, cache, || {
             let out = match op {
                 TernaryOp::Where => {
                     let c_mat = eval_ast(cond, panel, cache)?;
@@ -262,12 +259,8 @@ pub fn eval_ast(
                     ts::op_ts_resid(&x_mat, &y_mat, w)
                 }
             };
-            let arc_out = Arc::new(out);
-            if let Some(c) = cache {
-                c.insert(key, Arc::clone(&arc_out));
-            }
-            Ok(arc_out)
-        }
+            Ok(out)
+        }),
     }
 }
 
@@ -299,26 +292,29 @@ pub fn eval_expr_str(
     eval_ast(&ast_to_eval, panel, cache)
 }
 
-/// 递归收集语法树中所有非叶子求值节点（按深度分层去重）。
-fn collect_dag_nodes_by_depth<'a>(node: &'a ASTNode, levels: &mut Vec<AHashMap<u64, &'a ASTNode>>) {
+/// 递归收集语法树中所有非叶子求值节点（按深度分层，基于规范化表达式字符串精确去重防碰撞）。
+fn record_dag_node<'a>(node: &'a ASTNode, levels: &mut Vec<AHashMap<String, &'a ASTNode>>) {
+    let d = node.depth();
+    if levels.len() <= d {
+        levels.resize_with(d + 1, AHashMap::new);
+    }
+    levels[d].entry(node.to_canon_string()).or_insert(node);
+}
+
+fn collect_dag_nodes_by_depth<'a>(
+    node: &'a ASTNode,
+    levels: &mut Vec<AHashMap<String, &'a ASTNode>>,
+) {
     match node {
         ASTNode::Field(_) | ASTNode::Constant(_) | ASTNode::Window(_) => {}
         ASTNode::UnaryCall { arg, .. } => {
             collect_dag_nodes_by_depth(arg, levels);
-            let d = node.depth();
-            if levels.len() <= d {
-                levels.resize_with(d + 1, AHashMap::new);
-            }
-            levels[d].entry(node.canon_hash()).or_insert(node);
+            record_dag_node(node, levels);
         }
         ASTNode::BinaryCall { lhs, rhs, .. } => {
             collect_dag_nodes_by_depth(lhs, levels);
             collect_dag_nodes_by_depth(rhs, levels);
-            let d = node.depth();
-            if levels.len() <= d {
-                levels.resize_with(d + 1, AHashMap::new);
-            }
-            levels[d].entry(node.canon_hash()).or_insert(node);
+            record_dag_node(node, levels);
         }
         ASTNode::TernaryCall {
             cond,
@@ -329,11 +325,7 @@ fn collect_dag_nodes_by_depth<'a>(node: &'a ASTNode, levels: &mut Vec<AHashMap<u
             collect_dag_nodes_by_depth(cond, levels);
             collect_dag_nodes_by_depth(then_branch, levels);
             collect_dag_nodes_by_depth(else_branch, levels);
-            let d = node.depth();
-            if levels.len() <= d {
-                levels.resize_with(d + 1, AHashMap::new);
-            }
-            levels[d].entry(node.canon_hash()).or_insert(node);
+            record_dag_node(node, levels);
         }
     }
 }
@@ -372,7 +364,7 @@ pub fn eval_batch_str(
     // 2. 若启用了缓存且批量规模 >= 2，构建自底向上分层去重 DAG 并发预热求值
     if let Some(c) = cache {
         if exprs.len() >= 2 {
-            let mut levels: Vec<AHashMap<u64, &ASTNode>> = Vec::with_capacity(16);
+            let mut levels: Vec<AHashMap<String, &ASTNode>> = Vec::with_capacity(16);
             for ast in parsed_asts.iter().flatten() {
                 collect_dag_nodes_by_depth(ast, &mut levels);
             }

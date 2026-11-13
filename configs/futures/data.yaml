@@ -18,10 +18,13 @@ exec_price:
   window_minutes: 30             # 开盘后 30 分钟窗口内的 1m bar
   calc_method: "vwap_close_volume"  # sum(close*volume)/sum(volume)
 
-# 时间跨度
+# 时间跨度与盘后另类数据可用性开关
 timeline:
   start_date: "2010-01-01"
   end_date: "2026-08-31"
+  # 仓单/龙虎榜/展期收益率通常于 T 日 15:30~17:00 盘后公布，于 T 日 17:30 批处理清算时已知，
+  # 严格早于 T+1 夜盘(21:00)与日盘(09:00)撮合执行窗口；设为 1 可开启更保守的 T+1 滞后消融对比
+  alt_data_lag_days: 0
 
 # 特征开关
 features:

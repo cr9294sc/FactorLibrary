@@ -125,12 +125,15 @@ class DataConfig:
     minute_features: MinuteFeaturesConfig = field(default_factory=MinuteFeaturesConfig)
     warehouse: WarehouseConfig = field(default_factory=WarehouseConfig)
     label_horizons: tuple[int, ...] = (1, 3, 5, 10, 20)
+    alt_data_lag_days: int = 0
 
     def __post_init__(self) -> None:
         if self.start_date > self.end_date:
             raise ConfigError("timeline.start_date 不得晚于 end_date")
         if not self.label_horizons or any(h <= 0 for h in self.label_horizons):
             raise ConfigError("labels.horizons 必须为正整数列表")
+        if self.alt_data_lag_days not in (0, 1):
+            raise ConfigError("alt_data_lag_days 只允许 0 或 1")
 
     @property
     def panel_dir(self) -> Path:
@@ -238,6 +241,10 @@ def load_data_config(path: Path, root: Path | None = None) -> DataConfig:
         kwargs["start_date"] = _parse_date(tl["start_date"], "timeline.start_date")
     if "end_date" in tl:
         kwargs["end_date"] = _parse_date(tl["end_date"], "timeline.end_date")
+    if "alt_data_lag_days" in raw or "alt_data_lag_days" in tl:
+        kwargs["alt_data_lag_days"] = int(
+            tl.get("alt_data_lag_days", raw.get("alt_data_lag_days", 0))
+        )
     if "horizons" in lab:
         kwargs["label_horizons"] = tuple(int(h) for h in lab["horizons"])
     return DataConfig(**kwargs)

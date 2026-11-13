@@ -231,7 +231,7 @@ def build_panel(
 
     if cfg.features.roll_yield:
         _step("清洗展期收益率 (roll_yield)...")
-        ry = build_roll_yield(cfg.raw_dir, cfg, daily, max_date)
+        ry = build_roll_yield(cfg.raw_dir, cfg, daily, max_date, cal=cal)
         daily = daily.join(ry, on=["symbol", "trading_date"], how="left")
     else:
         daily = daily.with_columns(
@@ -252,7 +252,7 @@ def build_panel(
 
     if cfg.features.member_rank.enabled:
         _step("清洗会员持仓龙虎榜特征 (member_rank)...")
-        mr = build_member_features(cfg.raw_dir, cfg, daily, max_date)
+        mr = build_member_features(cfg.raw_dir, cfg, daily, max_date, cal=cal)
         daily = daily.join(mr, on=["symbol", "trading_date"], how="left")
     else:
         daily = daily.with_columns(

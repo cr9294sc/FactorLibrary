@@ -576,15 +576,34 @@ def print_ablation_insights(
             "  => 深度结论: 线上裸因子 RankIC=0.0017 属于未剔除异常股导致 Inf 污染截面方差的数值崩溃，本地 Rust 内核拦截 Inf 后求得其真实 RankIC 达 0.0503！"
         )
 
-    # 5. 技术趋势反转因子的异质性与复权说明
-    f_tech = res_map.get("Tech_Trend_VP_1_Rev")
-    if f_tech:
-        print("\n【实验五：异质结构多因子对比与复权口径 (Tech_Trend_VP_1_Rev)】")
+    # 5. 技术趋势反转因子的异质性与复权双轨实测对比 (P1-07)
+    tech_cfg = next((c for c in FACTOR_CONFIGS if c["name"] == "Tech_Trend_VP_1_Rev"), None)
+    if tech_cfg is not None:
+        tech_adj = evaluate_single_factor(
+            cfg={**tech_cfg, "use_adj_high_low": True},
+            dates=dates,
+            symbols=symbols,
+            panel_data=panel_data,
+            engine=engine,
+            fwd_ret_matrices=fwd_ret_open,
+        )
+        tech_raw = evaluate_single_factor(
+            cfg={**tech_cfg, "use_adj_high_low": False},
+            dates=dates,
+            symbols=symbols,
+            panel_data=panel_data,
+            engine=engine,
+            fwd_ret_matrices=fwd_ret_open,
+        )
+        print("\n【实验五：Tech_Trend_VP_1_Rev 复权双轨对照 (P1-07 修正 vs 线上原样混算)】")
         print(
-            f"  - 技术趋势因子 (本地修正后复权 high_adj/low_adj): RankIC={f_tech['rankic']:.4f}, IR={f_tech['rankic_ir']:.4f}, 多空夏普={f_tech['ls_sharpe']:.2f}"
+            f"  - 修正全后复权 (high_adj/low_adj): RankIC={tech_adj['rankic']:.4f}, IR={tech_adj['rankic_ir']:.4f}, 多空夏普={tech_adj['ls_sharpe']:.2f}"
         )
         print(
-            "  => 结论: 线上原文混用了后复权 close_hfq 与不复权 high/low，除权后比值畸变导致线上 RankIC 偏低 (0.0395)；本地修正全复权后恢复至 0.0437。"
+            f"  - 线上混合口径 (未复权 high/low):  RankIC={tech_raw['rankic']:.4f}, IR={tech_raw['rankic_ir']:.4f}, 多空夏普={tech_raw['ls_sharpe']:.2f}"
+        )
+        print(
+            "  => 结论: 线上原文混用了后复权 close_hfq 与不复权 high/low 导致除权比值畸变，本地双轨开关可用于精确复现与修正对照。"
         )
 
     print("=" * 90)
@@ -604,11 +623,17 @@ def parse_args() -> argparse.Namespace:
         default="20241231",
         help="回测评估结束日期 (默认: 20241231)",
     )
+    parser.add_argument(
+        "--tech-trend-high-low",
+        choices=("adj", "raw"),
+        default="adj",
+        help="Tech_Trend_VP_1_Rev 振幅项 high/low 口径: adj=修正全后复权 (默认), raw=线上原样不复权混合口径",
+    )
     return parser.parse_args()
 
 
 def main():
-    _ = parse_args()
+    args = parse_args()
     print("=" * 90)
     print(" 🚀 FactorLab 5 大因子多维度本地回测与全量对账评测启动 (P0-11 升级版)")
     print("=" * 90)
@@ -659,7 +684,15 @@ def main():
     # 4. 循环评估各因子
     print("[4/4] 正在通过 Rust 内核批量求值与回测 5 大因子...")
     local_results = []
-    for cfg in FACTOR_CONFIGS:
+    run_configs = [
+        (
+            {**cfg, "use_adj_high_low": args.tech_trend_high_low == "adj"}
+            if cfg.get("expr_type") == "tech_trend"
+            else cfg
+        )
+        for cfg in FACTOR_CONFIGS
+    ]
+    for cfg in run_configs:
         print(f"      ▶ 正在回测: {cfg['name']} ({cfg['category']})...")
         res = evaluate_single_factor(
             cfg=cfg,
@@ -668,6 +701,8 @@ def main():
             panel_data=panel_data,
             engine=engine,
             fwd_ret_matrices=fwd_ret_matrices,
+            start_eval_date=args.start_date,
+            end_eval_date=args.end_date,
         )
         local_results.append(res)
         print(

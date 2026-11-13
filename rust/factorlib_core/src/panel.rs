@@ -58,6 +58,7 @@ pub fn is_reserved_label_name(name: &str) -> bool {
         || lower.starts_with("fwd_ret")
         || lower.starts_with("target_")
         || lower == "target"
+        || lower == "r_exec_next"
 }
 
 #[derive(Debug, Clone)]

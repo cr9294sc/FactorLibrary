@@ -18,6 +18,7 @@ from datetime import date, timedelta
 
 import factorlib_core
 import numpy as np
+import pytest
 from factorlib.core import ops_ref
 from factorlib.core.dsl import F, canonicalize_expr, get_operator_specs, validate_expr
 from factorlib.core.panel import Panel
@@ -473,3 +474,65 @@ def test_cs_and_group_ops_universe_mask_isolation() -> None:
     # 4. 时序滚动嵌套横截面算子：验证时序特征保留连续性，截面层隔离污染
     nested_polluted = eng_polluted.eval("cs_rank(ts_mean(x, 5))", use_cache=False)
     assert np.all(np.isnan(nested_polluted[~mask])), "嵌套表达式在 ~mask 处必须为 NaN"
+
+
+def test_tie_rank_non_transitive_tolerance_parity():
+    """验证 P1-04 边界样本 [0.0, 0.8e-12, 1.5e-12] 在 Rust 与 Python ops_ref 下采用左锚点容差聚类。"""
+    close = np.asfortranarray(
+        [
+            [0.0, 0.8e-12, 1.5e-12],
+            [1.5e-12, 0.8e-12, 0.0],
+            [0.0, 1.2e-12, 2.5e-12],
+        ],
+        dtype=np.float64,
+    )
+    sector = np.ones((3, 3), dtype=np.float64, order="F")
+    mask = np.ones((3, 3), dtype=bool, order="F")
+    engine = factorlib_core.Engine(
+        {"close": close, "sector": sector},
+        mask,
+        {},
+        ["2024-01-01", "2024-01-02", "2024-01-03"],
+        ["A", "B", "C"],
+    )
+
+    rust_cs = engine.eval("cs_rank(close)")
+    ref_cs = ops_ref.cs_rank(close)
+    expected = np.array(
+        [
+            [0.25, 0.25, 1.0],
+            [1.0, 0.25, 0.25],
+            [0.0, 0.5, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(rust_cs, expected, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(ref_cs, expected, rtol=0.0, atol=1e-15)
+
+    rust_grp = engine.eval("group_rank(close, sector)")
+    ref_grp = ops_ref.group_rank(close, sector)
+    np.testing.assert_allclose(rust_grp, expected, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(ref_grp, expected, rtol=0.0, atol=1e-15)
+
+
+def test_rust_blocks_r_exec_next_reserved_field():
+    """验证 P1-03 Rust 静态类型检查与 Engine 阻断未来执行收益率保留字段 r_exec_next。"""
+    for bad_expr in ("r_exec_next", "ts_mean(r_exec_next, 5)"):
+        chk = validate_expr(bad_expr)
+        assert not chk["valid"], f"validate_expr 应当拦截未来保留字段: {bad_expr}"
+        assert chk["error"] is not None
+
+        direct = factorlib_core.check_expr(bad_expr)
+        assert not direct["valid"]
+
+    panel_engine = factorlib_core.Engine(
+        {"close": np.ones((4, 2), dtype=np.float64, order="F")},
+        np.ones((4, 2), dtype=bool, order="F"),
+        {},
+        ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+        ["A", "B"],
+    )
+    with pytest.raises(ValueError):
+        panel_engine.eval("r_exec_next")
+    with pytest.raises(ValueError):
+        panel_engine.eval("ts_mean(r_exec_next, 2)")

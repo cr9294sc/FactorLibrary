@@ -23,7 +23,7 @@ import factorlib_core
 import numpy as np
 
 from factorlib.core.catalog import POSTPROCESS_SPECS, RECOMMENDED_POSTPROCESS_PRESETS
-from factorlib.core.panel import Panel
+from factorlib.core.panel import Panel, compute_limit_mask
 from factorlib.core.styles import STYLE_DEFINITIONS, STYLE_NAMES, compute_futures_styles
 
 VALID_POSTPROCESS_OPS: dict[str, dict[str, Any]] = {
@@ -658,8 +658,10 @@ def _resolve_implicit_field(
         return np.asfortranarray(mask_arr, dtype=np.float64), styles_cache
 
     if field_name == "limit_mask":
-        mask_arr = np.where(panel.valid_mask, 1.0, np.nan)
-        return np.asfortranarray(mask_arr, dtype=np.float64), styles_cache
+        return (
+            compute_limit_mask(panel.valid_mask, aux_fields=panel.aux_fields, fields=panel.fields),
+            styles_cache,
+        )
 
     if field_name == "listed_days":
         # 若合成测试面板无 listed_days，默认视为已过上市期 (999.0)

@@ -219,8 +219,6 @@ def create_synthetic_futures_panel(n_days: int = 120, seed: int = 42) -> Panel:
         "close": close,
         "settle": settle_p,
         "vwap": vwap_p,
-        "exec_vwap": exec_vwap,
-        "exec_vwap_old": exec_vwap.copy(order="F"),
         "volume": volume,
         "turnover": turnover,
         "open_interest": open_interest,
@@ -259,12 +257,18 @@ def create_synthetic_futures_panel(n_days: int = 120, seed: int = 42) -> Panel:
     labels["r_exec_next"] = labels["y_1"].copy(order="F")
 
     valid_mask = np.ones((T, N), dtype=bool, order="F")
+    aux_fields: dict[str, np.ndarray] = {
+        "exec_vwap": exec_vwap,
+        "exec_vwap_old": exec_vwap.copy(order="F"),
+    }
+
     return Panel(
         dates=np.array(dates),
         symbols=symbols,
         fields=fields,
         mask=valid_mask,
         labels=labels,
+        aux_fields=aux_fields,
         meta={"panel_version": "synthetic_v1", "synthetic": True},
     )
 

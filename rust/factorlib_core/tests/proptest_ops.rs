@@ -406,6 +406,8 @@ fn test_typechecker_blocks_all_whitepaper_illegal_examples() {
         "gt(close, open)", // 根节点为 BoolCond 而非 Series
         "y_5",
         "ts_mean(y_1, 5)",
+        "r_exec_next",
+        "ts_mean(r_exec_next, 5)",
         "add(close, custom_label)",
         "unknown_field_xyz",
     ];

@@ -892,7 +892,9 @@
 
 ---
 
-### P1-03 `[P1-架构隐患]` `Panel.load` 将全部 `aux` 原始列暴露给 DSL、`is_reserved_label_name` 漏拦 `r_exec_next`，且 `trdMask` 绑定错误掩码
+### P1-03 `[P1-架构隐患]` [已修复 / FIXED] `Panel.load` 将全部 `aux` 原始列暴露给 DSL、`is_reserved_label_name` 漏拦 `r_exec_next`，且 `trdMask` 绑定错误掩码
+
+> **修复状态**：已修复（`Panel` 新增与 `fields` 物理隔离的 `aux_fields` 容器，[`Panel.load`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/panel.py#L140-L330) 仅将 DSL 特征与 `sector`/`listed_days`/`in_universe_mask`/`limit_mask` 结构化辅助字段放入 `fields`，其余回测/原始/合约规格 `AUX_BACKTEST_FIELDS` 统一隔离入 `aux_fields`；提取共用 [`compute_limit_mask`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/panel.py#L36-L56) 联动 `is_unilateral`/`traded`/`volume` 并用于 `Panel.load` 与 `_resolve_implicit_field("limit_mask")`；[`is_reserved_label_name`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/panel.rs#L52-L62) 补充拦截 `r_exec_next` 并通过 Rust/Python 回归验证）。
 
 - **定位信息**：
   - [`python/factorlib/core/panel.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/panel.py#L138-L201)（方法 [`Panel.load`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/panel.py#L117-L234)）
@@ -936,7 +938,9 @@
 
 ---
 
-### P1-04 `[P1-架构隐患]` Rust 与 Python 参考实现的并列秩容差聚类算法不一致，边界偏差高达 `0.25`
+### P1-04 `[P1-架构隐患]` [已修复 / FIXED] Rust 与 Python 参考实现的并列秩容差聚类算法不一致，边界偏差高达 `0.25`
+
+> **修复状态**：已修复（Rust [`compute_normalized_ranks`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/nan.rs#L304-L338)、[`op_group_rank`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/ops/group.rs#L50-L94)、[`compute_fractional_ranks`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/metrics/ic.rs#L38-L68) 与 Python [`_rank_1d_normalized`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/ops_ref.py#L868-L894) / [`group_rank`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/ops_ref.py#L1032-L1049) 均已统一为左锚点增量扩展容差聚类，并在 [`tests/python/test_rust_core.py`](file:///home/cr9294/repos/FactorLibrary/tests/python/test_rust_core.py) 增设 `[0.0, 0.8e-12, 1.5e-12]` 非传递性边界回归测试）。
 
 - **定位信息**：
   - [`rust/factorlib_core/src/nan.rs`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/nan.rs#L323-L337)（函数 [`compute_normalized_ranks`](file:///home/cr9294/repos/FactorLibrary/rust/factorlib_core/src/nan.rs#L305-L338)）

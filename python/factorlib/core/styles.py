@@ -143,8 +143,8 @@ def compute_futures_styles(panel: Panel) -> dict[str, np.ndarray]:
     # 1. SIZE: log(ts_mean(turnover, 20))
     if "turnover" in fields:
         turn_ma = _causal_rolling_mean_allow_partial(fields["turnover"], 20)
-    elif "adv20_turnover" in fields:
-        turn_ma = np.array(fields["adv20_turnover"], dtype=np.float64, copy=True)
+    elif panel.has_any_field("adv20_turnover"):
+        turn_ma = np.array(panel.get_any_field("adv20_turnover"), dtype=np.float64, copy=True)
     elif "close" in fields and "volume" in fields:
         turn_ma = _causal_rolling_mean_allow_partial(fields["close"] * fields["volume"], 20)
     else:

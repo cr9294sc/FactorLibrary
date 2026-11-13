@@ -160,47 +160,47 @@ def run_backtest(
     if weights.shape != (T, N):
         raise ValueError(f"weights 形状 {weights.shape} 必须与 panel 形状 ({T}, {N}) 一致")
 
-    # 1. 提取执行价格 exec_vwap 与换月平旧价 exec_vwap_old
-    if "exec_vwap" in panel.fields:
-        exec_price = panel.get_field("exec_vwap")
-    elif "open_raw" in panel.fields:
-        exec_price = panel.get_field("open_raw")
-    elif "close_raw" in panel.fields:
-        exec_price = panel.get_field("close_raw")
+    # 1. 提取执行价格 exec_vwap 与换月平旧价 exec_vwap_old（优先 aux_fields，兼容手工构造面板）
+    if panel.has_any_field("exec_vwap"):
+        exec_price = panel.get_any_field("exec_vwap")
+    elif panel.has_any_field("open_raw"):
+        exec_price = panel.get_any_field("open_raw")
+    elif panel.has_any_field("close_raw"):
+        exec_price = panel.get_any_field("close_raw")
     else:
         exec_price = panel.get_field("close")
 
-    if "exec_vwap_old" in panel.fields:
-        exec_price_old = panel.get_field("exec_vwap_old")
+    if panel.has_any_field("exec_vwap_old"):
+        exec_price_old = panel.get_any_field("exec_vwap_old")
     else:
         exec_price_old = exec_price
 
     # 2. 提取结算价格 settle_price
-    if "settle_raw" in panel.fields:
-        settle_price = panel.get_field("settle_raw")
-    elif "settle" in panel.fields:
-        settle_price = panel.get_field("settle")
+    if panel.has_any_field("settle_raw"):
+        settle_price = panel.get_any_field("settle_raw")
+    elif panel.has_any_field("settle"):
+        settle_price = panel.get_any_field("settle")
     else:
         settle_price = exec_price
 
     # 3. 提取涨跌停与单边市标记
-    if "limit_up" in panel.fields:
-        limit_up = panel.get_field("limit_up")
+    if panel.has_any_field("limit_up"):
+        limit_up = panel.get_any_field("limit_up")
     else:
         limit_up = np.full((T, N), np.inf, dtype=np.float64, order="F")
 
-    if "limit_down" in panel.fields:
-        limit_down = panel.get_field("limit_down")
+    if panel.has_any_field("limit_down"):
+        limit_down = panel.get_any_field("limit_down")
     else:
         limit_down = np.full((T, N), 0.0, dtype=np.float64, order="F")
 
-    if "is_unilateral" in panel.fields:
-        is_unilateral = panel.get_field("is_unilateral") > 0.5
+    if panel.has_any_field("is_unilateral"):
+        is_unilateral = panel.get_any_field("is_unilateral") > 0.5
     else:
         is_unilateral = np.zeros((T, N), dtype=bool, order="F")
 
-    if "is_roll" in panel.fields:
-        is_roll = panel.get_field("is_roll") > 0.5
+    if panel.has_any_field("is_roll"):
+        is_roll = panel.get_any_field("is_roll") > 0.5
     else:
         is_roll = np.zeros((T, N), dtype=bool, order="F")
 

@@ -264,6 +264,14 @@ PANEL_FIELDS: tuple[FieldSpec, ...] = (
 
 PANEL_COLUMNS: list[str] = [f.name for f in PANEL_FIELDS]
 DSL_FIELDS: list[str] = [f.name for f in PANEL_FIELDS if f.role == "dsl"]
+# 允许留在 panel.fields 中供分组与掩码算子使用的结构化辅助字段
+STRUCTURAL_PANEL_AUX_FIELDS: frozenset[str] = frozenset(
+    {"sector", "listed_days", "in_universe_mask", "limit_mask"}
+)
+# 仅限回测/风格/诊断读取、禁止暴露给 DSL 与 Python 因子上下文的辅助字段
+AUX_BACKTEST_FIELDS: frozenset[str] = frozenset(
+    f.name for f in PANEL_FIELDS if f.role == "aux" and f.name not in STRUCTURAL_PANEL_AUX_FIELDS
+)
 
 #: 标签列的规格 (写入 fields.json 的 labels 段, 仅文档用途)
 LABEL_DESCRIPTIONS: dict[str, str] = {

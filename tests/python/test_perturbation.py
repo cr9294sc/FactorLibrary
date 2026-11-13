@@ -320,16 +320,21 @@ def test_perturbation_synthetic(tmp_path: Path):
     p_base = Panel.load(cfg_base.panel_dir)
     p_pert = Panel.load(cfg_pert.panel_dir)
 
-    # 1. 核心断言: T <= T0 的所有特征矩阵逐比特完全一致
-    for fname, base_mat in p_base.fields.items():
-        pert_mat = p_pert.fields[fname]
-        base_slice = base_mat[:cutoff_idx, :]
-        pert_slice = pert_mat[:cutoff_idx, :]
-        np.testing.assert_array_equal(
-            base_slice,
-            pert_slice,
-            err_msg=f"合成数据未来扰动测试失败: 字段 {fname!r} 在 T <= {cutoff_date} 存在差异!",
-        )
+    # 1. 核心断言: T <= T0 的所有特征与辅助字段矩阵逐比特完全一致
+    for map_label, base_map, pert_map in (
+        ("字段", p_base.fields, p_pert.fields),
+        ("辅助字段", p_base.aux_fields, p_pert.aux_fields),
+    ):
+        assert base_map.keys() == pert_map.keys(), f"合成数据 {map_label} 键集合不一致"
+        for fname, base_mat in base_map.items():
+            pert_mat = pert_map[fname]
+            base_slice = base_mat[:cutoff_idx, :]
+            pert_slice = pert_mat[:cutoff_idx, :]
+            np.testing.assert_array_equal(
+                base_slice,
+                pert_slice,
+                err_msg=f"合成数据未来扰动测试失败: {map_label} {fname!r} 在 T <= {cutoff_date} 存在差异!",
+            )
 
     # 2. 掩码在 T <= T0 完全一致
     np.testing.assert_array_equal(p_base.mask[:cutoff_idx, :], p_pert.mask[:cutoff_idx, :])
@@ -431,16 +436,21 @@ def test_perturbation_real_data(tmp_path: Path):
     build_panel(cfg_pert, ucfg, verify_adjust=False, show_progress=False)
     p_pert = Panel.load(cfg_pert.panel_dir)
 
-    # 断言 1: T <= T_0 特征逐比特一致
-    for fname, base_mat in p_base.fields.items():
-        pert_mat = p_pert.fields[fname]
-        base_slice = base_mat[:cutoff_idx, :]
-        pert_slice = pert_mat[:cutoff_idx, :]
-        np.testing.assert_array_equal(
-            base_slice,
-            pert_slice,
-            err_msg=f"实盘未来扰动测试失败: 特征 {fname!r} 在 T <= {cutoff_date_str} 存在差异!",
-        )
+    # 断言 1: T <= T_0 特征与辅助字段逐比特一致
+    for map_label, base_map, pert_map in (
+        ("特征", p_base.fields, p_pert.fields),
+        ("辅助字段", p_base.aux_fields, p_pert.aux_fields),
+    ):
+        assert base_map.keys() == pert_map.keys(), f"实盘 {map_label} 键集合不一致"
+        for fname, base_mat in base_map.items():
+            pert_mat = pert_map[fname]
+            base_slice = base_mat[:cutoff_idx, :]
+            pert_slice = pert_mat[:cutoff_idx, :]
+            np.testing.assert_array_equal(
+                base_slice,
+                pert_slice,
+                err_msg=f"实盘未来扰动测试失败: {map_label} {fname!r} 在 T <= {cutoff_date_str} 存在差异!",
+            )
 
     # 断言 2: 品种池掩码一致
     np.testing.assert_array_equal(

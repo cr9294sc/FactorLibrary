@@ -171,7 +171,118 @@ def test_panel_load_existing_quick_panel():
     assert p.T > 0
     assert p.N == 79
     assert "close" in p.fields
-    assert "exec_vwap" in p.fields
+    assert "exec_vwap" in p.aux_fields
+    assert "exec_vwap" not in p.fields
     assert "y_1" in p.labels
     assert p.fields["close"].flags.f_contiguous
     assert p.labels["y_1"].flags.f_contiguous
+
+
+def test_panel_load_isolates_aux_fields_from_dsl_and_python_sandbox(tmp_path: Path):
+    """验证 P1-03: Panel.load 将回测/原始/规格 aux 列隔离至 aux_fields，对 DSL 与 Python 因子不可见。"""
+    from factorlib.core.probe import (
+        FactorDefinition,
+        evaluate_factor_definition,
+        probe_factor,
+    )
+
+    panel_dir = tmp_path / "derived_aux_iso"
+    panel_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2 日 x 2 品种，注入 traded=0 / is_unilateral=1 边界场景
+    df = pl.DataFrame(
+        {
+            "trading_date": [
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 3),
+            ],
+            "symbol": ["AG", "RB", "AG", "RB"],
+            "in_universe": [True, True, True, True],
+            "sector": ["metal", "black", "metal", "black"],
+            "listed_days": [500, 500, 501, 501],
+            "close": [5000.0, 3800.0, 5050.0, 3820.0],
+            "volume": [10000.0, 20000.0, 11000.0, 0.0],
+            "exec_vwap": [5005.0, 3805.0, 5055.0, 3825.0],
+            "exec_vwap_old": [5005.0, 3805.0, 5050.0, 3825.0],
+            "open_raw": [5000.0, 3800.0, 5040.0, 3810.0],
+            "close_raw": [5000.0, 3800.0, 5050.0, 3820.0],
+            "settle_raw": [5002.0, 3801.0, 5048.0, 3818.0],
+            "limit_up": [5300.0, 4100.0, 5350.0, 4120.0],
+            "limit_down": [4700.0, 3500.0, 4750.0, 3520.0],
+            "is_unilateral": [0, 1, 0, 0],
+            "adj_factor": [1.0, 1.0, 1.0, 1.0],
+            "is_roll": [False, False, True, False],
+            "traded": [1, 1, 1, 0],
+            "adv20_turnover": [1e9, 2e9, 1e9, 2e9],
+            "multiplier": [15.0, 10.0, 15.0, 10.0],
+            "margin_rate": [0.1, 0.1, 0.1, 0.1],
+            "days_to_expiry": [30, 40, 29, 39],
+        }
+    )
+    df.write_parquet(panel_dir / "panel_daily.parquet")
+
+    panel = Panel.load(panel_dir, load_labels=False)
+
+    # DSL 特征与结构化分组/掩码字段保留在 panel.fields
+    for expected_field in ("close", "volume", "sector", "listed_days", "limit_mask"):
+        assert expected_field in panel.fields
+
+    # 回测/原始/规格辅助列全部隔离在 panel.aux_fields，严禁进入 panel.fields
+    expected_aux = (
+        "exec_vwap",
+        "exec_vwap_old",
+        "open_raw",
+        "close_raw",
+        "settle_raw",
+        "limit_up",
+        "limit_down",
+        "is_unilateral",
+        "adj_factor",
+        "is_roll",
+        "traded",
+        "adv20_turnover",
+        "multiplier",
+        "margin_rate",
+        "days_to_expiry",
+    )
+    for col in expected_aux:
+        assert col in panel.aux_fields, f"{col} 应当进入 panel.aux_fields"
+        assert col not in panel.fields, f"{col} 严禁暴露在 panel.fields 中"
+
+    # limit_mask 正确拦截 (0, 1) 单边市与 (1, 1) 停牌无量
+    lmask = panel.fields["limit_mask"]
+    assert lmask[0, 0] == 1.0
+    assert np.isnan(lmask[0, 1])
+    assert lmask[1, 0] == 1.0
+    assert np.isnan(lmask[1, 1])
+
+    # Rust Engine 对 aux 字段不可见
+    engine = panel.to_rust_engine()
+    for bad_field in ("exec_vwap", "is_roll", "settle_raw", "r_exec_next"):
+        with pytest.raises(ValueError):
+            engine.eval(bad_field)
+
+    # Python 因子沙箱与静态探针对 aux 字段不可见
+    from factorlib.core.probe import PythonFactorContext
+
+    py_leak = FactorDefinition(
+        name="py_aux_leak",
+        factor_type="code",
+        code="def compute(context):\n    return context.history('exec_vwap', 1)[0]\n",
+    )
+    rep = probe_factor(py_leak, panel=panel)
+    assert rep["status"] == "error"
+    with pytest.raises(ValueError, match="exec_vwap"):
+        evaluate_factor_definition(py_leak, panel)
+    ctx = PythonFactorContext(panel.fields, panel.dates, panel.symbols, current_t=1)
+    with pytest.raises(KeyError):
+        ctx.history("exec_vwap", 1)
+
+    # fields_subset=["close", "limit_mask"] 自动加载 traded/is_unilateral 到 aux_fields 并正确计算 limit_mask
+    sub = Panel.load(panel_dir, fields_subset=["close", "limit_mask"], load_labels=False)
+    assert set(sub.fields.keys()) == {"close", "limit_mask"}
+    assert "traded" in sub.aux_fields and "traded" not in sub.fields
+    assert "is_unilateral" in sub.aux_fields and "is_unilateral" not in sub.fields
+    np.testing.assert_array_equal(np.isnan(sub.fields["limit_mask"]), np.isnan(lmask))

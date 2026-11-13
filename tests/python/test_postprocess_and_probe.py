@@ -498,3 +498,72 @@ def test_python_factor_sandbox_security_p0_08():
     rep3 = probe_factor(bad_dunder, panel=panel)
     assert rep3["status"] == "error"
     assert any("双下划线" in e for e in rep3["errors"])
+
+
+def test_trd_mask_uses_is_unilateral_traded_and_volume_when_limit_mask_absent():
+    """验证 P1-03: 当 panel.fields 未预置 limit_mask 时，trdMask 联动拦截单边市/未交易/零成交量。"""
+    from factorlib.core.probe import (
+        apply_postprocess_pipeline,
+        parse_postprocess_pipeline,
+    )
+
+    T, N = 2, 4
+    dates = np.array(["2024-01-02", "2024-01-03"])
+    symbols = ["A", "B", "C", "D"]
+    mask = np.ones((T, N), dtype=bool, order="F")
+    mask[0, 3] = False  # 标的 D 首日不在池
+
+    # A: 正常可交易; B: 首日单边市 (is_unilateral=1); C: 首日 traded=0; D: 次日 volume=0
+    volume = np.array(
+        [
+            [100.0, 100.0, 100.0, 100.0],
+            [100.0, 100.0, 100.0, 0.0],
+        ],
+        dtype=np.float64,
+        order="F",
+    )
+    is_unilateral = np.array(
+        [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+        order="F",
+    )
+    traded = np.array(
+        [
+            [1.0, 1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ],
+        dtype=np.float64,
+        order="F",
+    )
+
+    panel = Panel(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "close": np.full((T, N), 100.0, dtype=np.float64, order="F"),
+            "volume": volume,
+        },
+        aux_fields={
+            "is_unilateral": is_unilateral,
+            "traded": traded,
+        },
+        mask=mask,
+    )
+    assert "limit_mask" not in panel.fields
+
+    raw = np.full((T, N), 2.5, dtype=np.float64, order="F")
+    steps = parse_postprocess_pipeline([{"op": "trdMask"}])
+    masked = apply_postprocess_pipeline(raw, steps, panel)
+
+    expected_nan = np.array(
+        [
+            [False, True, True, True],
+            [False, False, False, True],
+        ],
+        dtype=bool,
+    )
+    np.testing.assert_array_equal(np.isnan(masked), expected_nan)
+    np.testing.assert_allclose(masked[~expected_nan], 2.5)

@@ -286,3 +286,24 @@ def test_panel_load_isolates_aux_fields_from_dsl_and_python_sandbox(tmp_path: Pa
     assert "traded" in sub.aux_fields and "traded" not in sub.fields
     assert "is_unilateral" in sub.aux_fields and "is_unilateral" not in sub.fields
     np.testing.assert_array_equal(np.isnan(sub.fields["limit_mask"]), np.isnan(lmask))
+
+
+def test_panel_load_limit_mask_checks_volume_without_polluting_fields(tmp_path: Path):
+    """验证缺少 traded 列仅含 volume 列时，fields_subset=['close', 'limit_mask'] 仍过滤零成交且不污染 fields。"""
+    panel_dir = tmp_path / "vol_only_panel"
+    panel_dir.mkdir(parents=True)
+    df = pl.DataFrame(
+        {
+            "trading_date": [date(2024, 1, 2), date(2024, 1, 2)],
+            "symbol": ["AG", "AU"],
+            "in_universe": [True, True],
+            "close": [5000.0, 480.0],
+            "volume": [100.0, 0.0],
+        }
+    )
+    df.write_parquet(panel_dir / "panel_daily.parquet")
+
+    sub = Panel.load(panel_dir, fields_subset=["close", "limit_mask"], load_labels=False)
+    assert set(sub.fields.keys()) == {"close", "limit_mask"}
+    assert np.isfinite(sub.fields["limit_mask"][0, 0])
+    assert np.isnan(sub.fields["limit_mask"][0, 1])

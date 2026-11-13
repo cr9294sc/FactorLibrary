@@ -18,7 +18,7 @@ where
     let (t, n) = x.dim();
     if let Some(xs) = x.as_slice_memory_order() {
         if !x.is_standard_layout() || t <= 1 || n <= 1 {
-            let mut out = unsafe { Array2::<f64>::uninit((t, n).f()).assume_init() };
+            let mut out = Array2::<f64>::zeros((t, n).f());
             let os = out.as_slice_memory_order_mut().unwrap();
             for (o, &v) in os.iter_mut().zip(xs.iter()) {
                 *o = if v.is_finite() {
@@ -50,7 +50,7 @@ where
     debug_assert_eq!((t, n), y.dim());
     if let (Some(xs), Some(ys)) = (x.as_slice_memory_order(), y.as_slice_memory_order()) {
         if (!x.is_standard_layout() && !y.is_standard_layout()) || t <= 1 || n <= 1 {
-            let mut out = unsafe { Array2::<f64>::uninit((t, n).f()).assume_init() };
+            let mut out = Array2::<f64>::zeros((t, n).f());
             let os = out.as_slice_memory_order_mut().unwrap();
             for (o, (&vx, &vy)) in os.iter_mut().zip(xs.iter().zip(ys.iter())) {
                 *o = if vx.is_finite() && vy.is_finite() {
@@ -335,4 +335,35 @@ pub fn op_where(cond: &Array2<f64>, then_b: &Array2<f64>, else_b: &Array2<f64>) 
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[test]
+    fn test_elem_zeros_alloc_small_and_corder_shapes() {
+        let a_row = array![[-2.0, f64::NAN, 3.0, f64::INFINITY]]; // (1, 4) C-order
+        let b_row = array![[1.0, 2.0, -0.5, 4.0]];
+        let abs_row = op_abs(&a_row);
+        assert_eq!(abs_row[[0, 0]], 2.0);
+        assert!(abs_row[[0, 1]].is_nan());
+        assert_eq!(abs_row[[0, 2]], 3.0);
+        assert!(abs_row[[0, 3]].is_nan());
+
+        let add_row = op_add(&a_row, &b_row);
+        assert_eq!(add_row[[0, 0]], -1.0);
+        assert!(add_row[[0, 1]].is_nan());
+        assert_eq!(add_row[[0, 2]], 2.5);
+        assert!(add_row[[0, 3]].is_nan());
+
+        let a_col = Array2::from_shape_vec((4, 1).f(), vec![-1.0, 2.0, f64::NAN, 0.0]).unwrap();
+        let b_col = Array2::from_shape_vec((4, 1).f(), vec![3.0, -4.0, 1.0, 5.0]).unwrap();
+        let add_col = op_add(&a_col, &b_col);
+        assert_eq!(add_col[[0, 0]], 2.0);
+        assert_eq!(add_col[[1, 0]], -2.0);
+        assert!(add_col[[2, 0]].is_nan());
+        assert_eq!(add_col[[3, 0]], 5.0);
+    }
 }

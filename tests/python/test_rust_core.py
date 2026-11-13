@@ -683,3 +683,24 @@ def test_check_expr_deep_nesting_blocked_and_price_warning():
     chk_pos = validate_expr("where(close > 0, close, neg(close))", available_fields=["close"])
     assert chk_pos["valid"]
     assert chk_pos["warnings"] == []
+
+
+def test_elem_ops_small_and_nonstandard_layout_parity():
+    """验证 T=1/N=1 与 C-order/非标准内存布局下 elem 一元/二元算子 (zeros 分配路径) 与 NumPy 完全对账。"""
+    rng = np.random.default_rng(7)
+    for shape in ((1, 8), (8, 1), (4, 5)):
+        a_c = np.ascontiguousarray(rng.normal(2.0, 0.5, size=shape), dtype=np.float64)
+        b_c = np.ascontiguousarray(rng.uniform(0.5, 3.0, size=shape), dtype=np.float64)
+        a_c[0, 0] = np.nan
+        mask = np.ones(shape, dtype=bool, order="F")
+
+        eng = factorlib_core.Engine(
+            {"a": np.asfortranarray(a_c), "b": np.asfortranarray(b_c)}, mask
+        )
+        got_unary = np.asarray(eng.eval("abs(neg(b))"))
+        ref_unary = np.abs(-b_c)
+        np.testing.assert_allclose(got_unary, ref_unary, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+        got_bin = np.asarray(eng.eval("div(add(a, b), mul(b, b))"))
+        ref_bin = (a_c + b_c) / (b_c * b_c)
+        np.testing.assert_allclose(got_bin, ref_bin, rtol=1e-12, atol=1e-12, equal_nan=True)

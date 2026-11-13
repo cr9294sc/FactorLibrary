@@ -616,7 +616,7 @@ def evaluate_factor_v4_stats(
                 "sharpe": 0.0,
             }
             continue
-        active_rets = g_rets[first_active_day:]
+        active_rets = g_rets[first_active_day:][active_days_mask[first_active_day:]]
         active_len = len(active_rets)
         n_years = max(active_len / trading_days_per_year, 1.0 / trading_days_per_year)
         tot_ret = float(nav[-1] - 1.0) if len(nav) > 0 else 0.0

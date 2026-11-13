@@ -25,6 +25,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")))
 from factorlib.core.evaluate import calc_long_excess_metrics  # noqa: E402
 from factorlib.core.mcp_client import call_mcp_tool  # noqa: E402
+from factorlib.core.probe import apply_postprocess_pipeline  # noqa: E402
 from factorlib.markets.stocks import StockPanelData, StockPanelLoader  # noqa: E402
 
 # FactorLab 线上 Volume_Price_2_H5_2 (bt_bb3a04da6b20456ab444dcb7e5450949) 权威回测快照 (用于远端 503 离线回退)
@@ -408,11 +409,12 @@ def compute_factor_and_postprocess(
     symbols: list[str],
     panel_data: StockPanelData,
 ) -> np.ndarray:
-    """使用 factorlib_core Rust 计算内核执行表达式计算与 6 阶段后处理。"""
+    """使用 factorlib_core Rust 计算内核与统一 P2-02 防泄漏后处理管线执行因子求值。"""
     print("[3/5] 正在通过 factorlib_core Rust 计算内核执行因子求值与后处理流水线...")
     t0 = time.time()
 
-    # 1. 基础股票池有效掩码 (绑定 BaseUnivMask 剔除 ST、停牌与存续期外标的)
+    # 1. 基础股票池有效掩码与标准 Panel (绑定 BaseUnivMask 剔除 ST、停牌与存续期外标的)
+    stock_panel = panel_data.to_panel()
     base_mask = np.asfortranarray(panel_data.base_univ_mask)
 
     # 2. Rust Engine 求值
@@ -428,30 +430,32 @@ def compute_factor_and_postprocess(
     raw_factor = np.asarray(engine.eval(expr))
     print(f"      - [阶段 3] 因子表达式 AST 求值完毕 (有效点数: {np.sum(np.isfinite(raw_factor))})")
 
-    # 3. 阶段四: 后处理流水线 (对齐 FactorLab postprocess)
-    # 步骤 1: trdMask (过滤涨跌停与一字板不可交易标的)
-    f_step1 = factorlib_core.apply_postprocess_op("trdMask", raw_factor, x2=panel_data.limit_mask)
+    # 3. 阶段四: 复用 apply_postprocess_pipeline 执行严格 8 步后处理
+    # (对齐 FactorLab: baseUniMask -> trdMask -> dropNewStock(120) -> MAD(3) -> zScore -> indNeut -> decay(5) + 重施掩码 -> rank)
+    pp_steps = [
+        "baseUniMask",
+        "trdMask",
+        "dropNewStock:120",
+        "MAD:3",
+        "zScore",
+        "indNeut:sector",
+        "decay:5",
+        "rank",
+    ]
+    final_factor = apply_postprocess_pipeline(raw_factor, pp_steps, stock_panel)
 
-    # 步骤 2: dropNewStock(120) (剔除上市未满 120 自然日的次新股)
-    f_step2 = factorlib_core.apply_postprocess_op(
-        "dropNewStock", f_step1, x2=panel_data.stock_listed_days, param=120.0
+    # 零渗漏校验 (确保 decay(5) 未向涨跌停/非在池/次新股渗出无效分数)
+    fin = np.isfinite(final_factor)
+    leak_lim = int(np.sum(fin & (~np.isfinite(panel_data.limit_mask))))
+    leak_univ = int(np.sum(fin & (~panel_data.base_univ_mask)))
+    if leak_lim > 0 or leak_univ > 0:
+        raise RuntimeError(
+            f"后处理后检测到掩码渗漏: leak_limit={leak_lim}, leak_base_univ={leak_univ}"
+        )
+
+    print(
+        f"      - [阶段 4] 统一后处理流水线执行完毕 (含 zScore 与 decay 后重施掩码, 耗时: {time.time() - t0:.2f}s)"
     )
-
-    # 步骤 3: MAD(3) (3 倍中位数绝对偏差去极值)
-    f_step3 = factorlib_core.apply_postprocess_op("MAD", f_step2, param=3.0)
-
-    # 步骤 4: indNeut (申万一级行业截面残差中性化)
-    f_step4 = factorlib_core.apply_postprocess_op(
-        "indNeut", f_step3, x2=panel_data["industry_code"]
-    )
-
-    # 步骤 5: decay(5) (5日线性衰减平滑)
-    f_step5 = factorlib_core.apply_postprocess_op("decay", f_step4, param=5.0)
-
-    # 步骤 6: rank (截面百分比排序归一化)
-    final_factor = factorlib_core.apply_postprocess_op("rank", f_step5)
-
-    print(f"      - [阶段 4] 6 步后处理算子执行完毕 (耗时: {time.time() - t0:.2f}s)")
     return final_factor
 
 
@@ -463,10 +467,12 @@ def run_local_backtest_evaluation(
     start_eval_date: str = "20160104",
     end_eval_date: str = "20241231",
     exec_price_mode: str = "open_adj",
+    execution_simulation: bool = False,
 ) -> dict[str, Any]:
     """执行 2016-2024 全周期与分年度单因子回测评估。"""
     print(
-        f"[4/5] 正在执行全周期 ({start_eval_date} 至 {end_eval_date}) 与分年度单因子回测 (模式: {exec_price_mode})..."
+        f"[4/5] 正在执行全周期 ({start_eval_date} 至 {end_eval_date}) 与分年度单因子回测 "
+        f"(模式: {exec_price_mode}, 涨跌停模拟: {execution_simulation})..."
     )
     t0 = time.time()
 
@@ -474,7 +480,7 @@ def run_local_backtest_evaluation(
     fwd_returns = panel_data.compute_forward_returns(
         horizons=[1, 2, 5, 10],
         exec_price_mode=exec_price_mode,
-        execution_simulation=False,
+        execution_simulation=execution_simulation,
     )
     fwd_ret_1d = fwd_returns[1]
     fwd_ret_2d = fwd_returns[2]
@@ -532,15 +538,31 @@ def run_local_backtest_evaluation(
     )
     turnover_res = factorlib_core.calc_turnover(sub_factor, eval_mask, min_names=10)
 
-    # 6. 计算标准多头超额收益 (G10 vs 000985.CSI)
+    # 6. 计算标准多头超额收益 (G10 vs 000985.CSI) 与等权宇宙/时钟相关性统计
     g10_daily_ret = np.asarray(q_res["group_daily_returns"][9], dtype=np.float64)
     n_valid = len(g10_daily_ret)
+    b_slice = sub_bench_ret[:n_valid]
     excess_metrics = calc_long_excess_metrics(
         long_rets=g10_daily_ret,
-        bench_rets=sub_bench_ret[:n_valid],
+        bench_rets=b_slice,
         dates=sub_dates[:n_valid],
         trading_days_per_year=250.0,
     )
+    ok_pair = np.isfinite(g10_daily_ret) & np.isfinite(b_slice)
+    corr_bench = (
+        float(np.corrcoef(g10_daily_ret[ok_pair], b_slice[ok_pair])[0, 1])
+        if np.sum(ok_pair) > 2
+        else 0.0
+    )
+    has_valid_row = np.any(eval_mask, axis=1)
+    ew_daily = np.full(len(sub_dates), np.nan, dtype=np.float64)
+    if np.any(has_valid_row):
+        ew_daily[has_valid_row] = np.nanmean(
+            np.where(eval_mask[has_valid_row], sub_ret_1d[has_valid_row], np.nan),
+            axis=1,
+        )
+    ew_annual_ret = float(np.nanmean(ew_daily) * 250.0) if np.any(np.isfinite(ew_daily)) else 0.0
+    bench_annual_ret = float(np.nanmean(b_slice) * 250.0) if np.any(np.isfinite(b_slice)) else 0.0
 
     # 7. 分年度回测统计 (2016 .. 2024)
     years = sorted({d[:4] for d in sub_dates})
@@ -625,6 +647,10 @@ def run_local_backtest_evaluation(
         "excess_avg_dd": excess_metrics["average_drawdown"],
         "turnover": top_to_res["mean_top_turnover"],
         "rank_autocorr_turnover": turnover_res["turnover"],
+        "corr_bench": corr_bench,
+        "ew_annual_ret": ew_annual_ret,
+        "bench_annual_ret": bench_annual_ret,
+        "execution_simulation": execution_simulation,
         "group_returns": q_res["group_returns"],
         "annual_breakdown": annual_breakdown,
     }
@@ -844,6 +870,24 @@ def print_comparison_report(
             f"{y:<6} | {row['days']:<4} | {on_ric:<11} | {row['rankic']:<11.4f} | {on_ir:<8} | {row['rankic_ir']:<8.4f} | "
             f"{on_ex_ret:<9} | {row['excess_annual_ret'] * 100:+6.2f}%  | {on_to:<9} | {row['turnover'] * 100:6.2f}%"
         )
+
+    print("\n【5. 跨平台偏差归因摘要】")
+    print("-" * 112)
+    print(
+        f"  1) 后处理全流程闭环: 已接入 apply_postprocess_pipeline (含 baseUniMask/trdMask/dropNewStock/MAD/zScore/indNeut/decay 后重施掩码),"
+        f" 彻底阻断涨跌停/非在池残值渗漏 (execution_simulation={local_open['execution_simulation']})."
+    )
+    spread_pp = (local_open["ew_annual_ret"] - local_open["bench_annual_ret"]) * 100
+    print(
+        f"  2) open_adj 与 000985.CSI 超额结构差: open_adj 组合与开盘基准相关系数 {local_open['corr_bench']:.4f} "
+        f"(超额波动 {local_open['excess_annual_vol'] * 100:.2f}% 贴近线上 7.67%), "
+        f"在池等权全市场年化 {local_open['ew_annual_ret'] * 100:+.2f}% 相对流通市值基准 {local_open['bench_annual_ret'] * 100:+.2f}% "
+        f"结构差 {spread_pp:+.2f}%, 叠加线上 vwap30 代理、涨跌停执行约束及税费归因."
+    )
+    print(
+        f"  3) vwap_adj 基准时钟失配提示: vwap_adj (全天均价) 因缺少指数日内均价而配对收盘基准 bench_fwd_close_1, "
+        f"相关性降至 {local_vwap['corr_bench']:.4f}, 引入跨时钟追踪误差噪声 (超额波动 {local_vwap['excess_annual_vol'] * 100:.2f}%)."
+    )
     print("=" * 112)
 
 
@@ -860,6 +904,11 @@ def parse_args() -> argparse.Namespace:
         "--end-date",
         default="20241231",
         help="回测评估结束日期 (默认: 20241231)",
+    )
+    parser.add_argument(
+        "--execution-simulation",
+        action="store_true",
+        help="启用分方向涨跌停实盘执行约束 (T+1 涨停不可买、T+1+h 跌停/停牌顺延退出)",
     )
     return parser.parse_args()
 
@@ -896,6 +945,7 @@ def main() -> None:
         start_eval_date=args.start_date,
         end_eval_date=args.end_date,
         exec_price_mode="open_adj",
+        execution_simulation=args.execution_simulation,
     )
     local_vwap = run_local_backtest_evaluation(
         dates=dates,
@@ -905,6 +955,7 @@ def main() -> None:
         start_eval_date=args.start_date,
         end_eval_date=args.end_date,
         exec_price_mode="vwap_adj",
+        execution_simulation=args.execution_simulation,
     )
 
     # 5. 输出对比报告

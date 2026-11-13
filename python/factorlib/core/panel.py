@@ -209,12 +209,16 @@ class Panel:
         from factorlib.markets.futures.etl.fields import AUX_BACKTEST_FIELDS
 
         want_limit_mask = fields_subset is None or "limit_mask" in fields_subset
+        unrequested_volume = False
         if fields_subset is not None:
             load_cols = [c for c in fields_subset if c in all_cols]
             if want_limit_mask:
                 for dep_col in ("traded", "is_unilateral"):
                     if dep_col in all_cols and dep_col not in load_cols:
                         load_cols.append(dep_col)
+                if "volume" in all_cols and "volume" not in load_cols:
+                    load_cols.append("volume")
+                    unrequested_volume = True
             load_sector = "sector" in fields_subset and "sector" in all_cols
         else:
             load_cols = [c for c in all_cols if c not in ignore_cols]
@@ -249,6 +253,7 @@ class Panel:
         # 构建各字段宽矩阵（DSL/结构化特征入 fields，回测/原始/规格辅助列隔离入 aux_fields）
         fields_dict: dict[str, np.ndarray] = {}
         aux_fields_dict: dict[str, np.ndarray] = {}
+        limit_extra_fields: dict[str, np.ndarray] = {}
         for col_name in load_cols:
             if col_name == "sector":
                 continue
@@ -266,7 +271,9 @@ class Panel:
                 arr = np.full((T, N), np.nan, dtype=np.float64, order="F")
                 vals = col_series.cast(pl.Float64).to_numpy()
                 arr[row_indices, col_indices] = vals
-                if col_name in AUX_BACKTEST_FIELDS:
+                if col_name == "volume" and unrequested_volume:
+                    limit_extra_fields[col_name] = arr
+                elif col_name in AUX_BACKTEST_FIELDS:
                     aux_fields_dict[col_name] = arr
                 else:
                     fields_dict[col_name] = arr
@@ -291,8 +298,11 @@ class Panel:
             fields_dict["in_universe_mask"] = univ_mask_arr
 
         if want_limit_mask:
+            fields_for_limit = (
+                {**fields_dict, **limit_extra_fields} if limit_extra_fields else fields_dict
+            )
             fields_dict["limit_mask"] = compute_limit_mask(
-                mask, aux_fields=aux_fields_dict, fields=fields_dict
+                mask, aux_fields=aux_fields_dict, fields=fields_for_limit
             )
 
         # 加载标签

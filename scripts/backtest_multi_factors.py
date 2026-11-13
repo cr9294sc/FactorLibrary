@@ -30,6 +30,8 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")))
 from factorlib.core.evaluate import calc_long_excess_metrics  # noqa: E402
 from factorlib.core.mcp_client import call_mcp_tool  # noqa: E402
+from factorlib.core.panel import Panel  # noqa: E402
+from factorlib.core.probe import apply_postprocess_pipeline  # noqa: E402
 from factorlib.markets.stocks import StockPanelData, StockPanelLoader  # noqa: E402
 
 FACTOR_CONFIGS = [
@@ -40,12 +42,14 @@ FACTOR_CONFIGS = [
         "category": "量价背离低波动 (全量后处理+行业中性化)",
         "expr_type": "vp2",
         "postprocess_steps": [
-            ("trdMask", None, None),
-            ("dropNewStock", 120.0, "listed_days"),
-            ("MAD", 3.0, None),
-            ("indNeut", None, "industry_code"),
-            ("decay", 5.0, None),
-            ("rank", None, None),
+            "baseUniMask",
+            "trdMask",
+            "dropNewStock:120",
+            "MAD:3",
+            "zScore",
+            "indNeut:sector",
+            "decay:5",
+            "rank",
         ],
     },
     {
@@ -55,11 +59,12 @@ FACTOR_CONFIGS = [
         "category": "量价背离低波动 (无行业中性化)",
         "expr_type": "vp2",
         "postprocess_steps": [
-            ("trdMask", None, None),
-            ("dropNewStock", 120.0, "listed_days"),
-            ("MAD", 3.0, None),
-            ("decay", 5.0, None),
-            ("rank", None, None),
+            "baseUniMask",
+            "trdMask",
+            "dropNewStock:120",
+            "MAD:3",
+            "decay:5",
+            "rank",
         ],
     },
     {
@@ -69,11 +74,12 @@ FACTOR_CONFIGS = [
         "category": "量价背离低波动 (10日衰减先于MAD)",
         "expr_type": "vp2",
         "postprocess_steps": [
-            ("trdMask", None, None),
-            ("dropNewStock", 120.0, "listed_days"),
-            ("decay", 10.0, None),
-            ("MAD", 3.0, None),
-            ("rank", None, None),
+            "baseUniMask",
+            "trdMask",
+            "dropNewStock:120",
+            "decay:10",
+            "MAD:3",
+            "rank",
         ],
     },
     {
@@ -83,8 +89,9 @@ FACTOR_CONFIGS = [
         "category": "原始量价表达式基准 (无平滑/去极值/排序)",
         "expr_type": "vp2",
         "postprocess_steps": [
-            ("trdMask", None, None),
-            ("dropNewStock", 120.0, "listed_days"),
+            "baseUniMask",
+            "trdMask",
+            "dropNewStock:120",
         ],
     },
     {
@@ -95,11 +102,12 @@ FACTOR_CONFIGS = [
         "expr_type": "tech_trend",
         "use_adj_high_low": True,
         "postprocess_steps": [
-            ("trdMask", None, None),
-            ("dropNewStock", 60.0, "listed_days"),
-            ("MAD", 3.0, None),
-            ("zScore", None, None),
-            ("emadecay", 3.0, None),
+            "baseUniMask",
+            "trdMask",
+            "dropNewStock:60",
+            "MAD:3",
+            "zScore",
+            "emadecay:3",
         ],
     },
 ]
@@ -302,6 +310,7 @@ def evaluate_single_factor(
     start_eval_date: str = "20160104",
     end_eval_date: str = "20241231",
     bench_ret_series: np.ndarray | None = None,
+    stock_panel: Panel | None = None,
 ) -> dict[str, Any]:
     """执行单个因子的 Rust 求值、后处理流水线与回测评估。"""
     name = cfg["name"]
@@ -321,22 +330,18 @@ def evaluate_single_factor(
     else:
         raise ValueError(f"Unknown expr_type: {cfg['expr_type']}")
 
-    current_factor = np.asarray(engine.eval(expr))
+    raw_factor = np.asarray(engine.eval(expr))
 
-    # 2. 依次应用声明式后处理步骤 (注入 BaseUnivMask, LimitMask, StockListedDays)
-    for op_name, param, dep_name in cfg["postprocess_steps"]:
-        x2_arr = None
-        if op_name == "trdMask":
-            x2_arr = panel_data.limit_mask
-        elif op_name == "baseUniMask":
-            x2_arr = np.where(panel_data.base_univ_mask, 1.0, np.nan)
-        elif op_name == "dropNewStock":
-            x2_arr = panel_data.stock_listed_days
-        elif dep_name is not None:
-            x2_arr = panel_data[dep_name]
+    # 2. 复用统一声明式后处理管线 (P2-02: 确保 decay/emadecay 后自动重施在池/涨跌停/新股累积掩码)
+    panel_obj = stock_panel if stock_panel is not None else panel_data.to_panel()
+    current_factor = apply_postprocess_pipeline(raw_factor, cfg["postprocess_steps"], panel_obj)
 
-        current_factor = factorlib_core.apply_postprocess_op(
-            op_name, current_factor, x2=x2_arr, param=param
+    fin = np.isfinite(current_factor)
+    leak_lim = int(np.sum(fin & (~np.isfinite(panel_data.limit_mask))))
+    leak_univ = int(np.sum(fin & (~panel_data.base_univ_mask)))
+    if leak_lim > 0 or leak_univ > 0:
+        raise RuntimeError(
+            f"{name} 后处理后检测到掩码渗漏: leak_limit={leak_lim}, leak_base_univ={leak_univ}"
         )
 
     # 3. 回测评价
@@ -495,6 +500,7 @@ def print_ablation_insights(
     fwd_ret_vwap: dict[int, np.ndarray],
     dates: list[str],
     symbols: list[str],
+    stock_panel: Panel | None = None,
 ):
     """打印后处理消融实验、P0-11 执行价反转收益收复与多因子深度洞察。"""
     res_map = {r["name"]: r for r in local_results}
@@ -513,10 +519,15 @@ def print_ablation_insights(
         engine=engine,
         fwd_ret_matrices=fwd_ret_vwap,
         bench_ret_series=panel_data.bench_fwd_close_1,
+        stock_panel=stock_panel,
     )
     res_open = res_map.get("Volume_Price_2_H5_2")
     if res_open:
-        diff_pct = (res_open["ls_mean"] - res_vwap["ls_mean"]) / res_open["ls_mean"] * 100.0
+        diff_pct = (
+            (res_open["ls_mean"] - res_vwap["ls_mean"]) / abs(res_open["ls_mean"]) * 100.0
+            if abs(res_open["ls_mean"]) > 1e-12
+            else 0.0
+        )
         print("\n【实验一 (P0-11 验证)：早盘开盘价 open_adj 对比全天 VWAP 执行价】")
         print(
             f"  - 早盘执行价 (open_adj 早盘代理):   RankIC={res_open['rankic']:.4f}, 多空日收益={res_open['ls_mean'] * 100:.2f}%, 多空夏普={res_open['ls_sharpe']:.2f}"
@@ -525,8 +536,8 @@ def print_ablation_insights(
             f"  - 全天执行价 (vwap_adj 日内污染):  RankIC={res_vwap['rankic']:.4f}, 多空日收益={res_vwap['ls_mean'] * 100:.2f}%, 多空夏普={res_vwap['ls_sharpe']:.2f}"
         )
         print(
-            f"  => 实证结论: 全天 VWAP 混入 10:00~15:00 日内价格后，吞噬了日内均值回归的 {diff_pct:.1f}% 反转 Alpha！"
-            f"采用早盘 open_adj 执行价完全契合无前视实盘逻辑并彻底收复该收益！"
+            f"  => 实证结论: open_adj 相对 vwap_adj 多空日收益差为 {diff_pct:+.1f}% "
+            f"(不同因子的开盘/全天均价滑点与日内均值回归特征存在显著口径敏感性)。"
         )
 
     # 2. 行业中性化的威力
@@ -573,7 +584,8 @@ def print_ablation_insights(
             f"  - 标准后处理 (Volume_Price_2_H5 完整流水线):           RankIC={f_h5['rankic']:.4f}, IR={f_h5['rankic_ir']:.4f}"
         )
         print(
-            "  => 深度结论: 线上裸因子 RankIC=0.0017 属于未剔除异常股导致 Inf 污染截面方差的数值崩溃，本地 Rust 内核拦截 Inf 后求得其真实 RankIC 达 0.0503！"
+            f"  => 深度结论: 线上裸因子 RankIC=0.0017 属于未剔除异常股导致 Inf 污染截面方差的数值崩溃，"
+            f"本地 Rust 内核拦截 Inf 后实测裸因子真实 RankIC={f_gaussian['rankic']:.4f}！"
         )
 
     # 5. 技术趋势反转因子的异质性与复权双轨实测对比 (P1-07)
@@ -586,6 +598,7 @@ def print_ablation_insights(
             panel_data=panel_data,
             engine=engine,
             fwd_ret_matrices=fwd_ret_open,
+            stock_panel=stock_panel,
         )
         tech_raw = evaluate_single_factor(
             cfg={**tech_cfg, "use_adj_high_low": False},
@@ -594,6 +607,7 @@ def print_ablation_insights(
             panel_data=panel_data,
             engine=engine,
             fwd_ret_matrices=fwd_ret_open,
+            stock_panel=stock_panel,
         )
         print("\n【实验五：Tech_Trend_VP_1_Rev 复权双轨对照 (P1-07 修正 vs 线上原样混算)】")
         print(
@@ -629,6 +643,11 @@ def parse_args() -> argparse.Namespace:
         default="adj",
         help="Tech_Trend_VP_1_Rev 振幅项 high/low 口径: adj=修正全后复权 (默认), raw=线上原样不复权混合口径",
     )
+    parser.add_argument(
+        "--execution-simulation",
+        action="store_true",
+        help="启用分方向涨跌停实盘执行约束 (T+1 涨停不可买、T+1+h 跌停/停牌顺延退出)",
+    )
     return parser.parse_args()
 
 
@@ -647,20 +666,23 @@ def main():
         end_date=date(2024, 12, 31),
         exec_price_mode="open_adj",
     )
+    stock_panel = panel_data.to_panel()
     dates = panel_data.dates
     symbols = panel_data.symbols
 
     # 3. 预先构建远期收益率矩阵 (默认 open_adj 早盘代理)
-    print("[3/4] 正在预计算远期多周期收益率矩阵 (open_adj 早盘执行基准)...")
+    print(
+        f"[3/4] 正在预计算远期多周期收益率矩阵 (open_adj 早盘执行基准, 涨跌停模拟: {args.execution_simulation})..."
+    )
     fwd_ret_matrices = panel_data.compute_forward_returns(
         horizons=[1, 2, 5, 10],
         exec_price_mode="open_adj",
-        execution_simulation=False,
+        execution_simulation=args.execution_simulation,
     )
     fwd_ret_matrices_vwap = panel_data.compute_forward_returns(
         horizons=[1, 2, 5, 10],
         exec_price_mode="vwap_adj",
-        execution_simulation=False,
+        execution_simulation=args.execution_simulation,
     )
 
     # 构建 Rust 计算引擎 (绑定 BaseUnivMask 为主在池掩码)
@@ -703,6 +725,7 @@ def main():
             fwd_ret_matrices=fwd_ret_matrices,
             start_eval_date=args.start_date,
             end_eval_date=args.end_date,
+            stock_panel=stock_panel,
         )
         local_results.append(res)
         print(
@@ -721,6 +744,7 @@ def main():
         fwd_ret_vwap=fwd_ret_matrices_vwap,
         dates=dates,
         symbols=symbols,
+        stock_panel=stock_panel,
     )
 
 

@@ -1350,6 +1350,13 @@ class StockMarketAdapter(MarketAdapter):
   - 按自然年正向（`2010 -> 2026`）原子打包 `bar_1d`（`adjust_type='none'` 原始日线）、`trade_status`（逐日真实 ST 与停牌掩码）、`daily_basic`（换手率、总市值、流通市值、PE/PB/PS）、`industry_sw`（申万 2021 一/二/三级历史月度截面）及 `index_weights`（沪深300/中证500/中证1000历史成分权重）；
   - 内置 `get_quota()` 实测单股单日流量哨兵，当日剩余配额不足下一完整自然年时主动在上一整年年末安全停机，并通过 `_state/{export_tasks.json, watermarks.json}` 支持次日一键断点续传。
 
+### 17.4 A 股研究面板标准化加载器与分方向执行模拟（`markets/stocks/panel_loader.py`）
+
+- **全市场标准截面构建（[`StockPanelLoader`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/panel_loader.py#L222)）**：从 `data/raw/stocks/` 构建 `(T, N)` Fortran 列优先面板，标准化生成 `BaseUnivMask`（剔除 ST/`*ST`、停牌及非存续期）、双向 `LimitMask`（收盘涨跌停与一字板置 `NaN`）、自然日 `listed_days` 与申万一级行业 `sector`，并在 [`StockPanelData.to_panel()`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/panel_loader.py#L75) 中兼容暴露 `listed_days`/`sector`/`limit_mask` 别名，确保股票对账脚本直接复用 `core/probe.py` 的 `apply_postprocess_pipeline` 消除 `decay`/`emadecay` 后掩码渗漏。
+- **同钟基准对齐与分方向涨跌停执行约束（[`compute_forward_returns`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/panel_loader.py#L98)）**：
+  - `open_adj` 主口径与 `000985.XSHG` 开盘基准 `bench_fwd_open_1` 同钟对齐 `[T+1, T+1+h]`；`vwap_adj` 对照口径在缺乏指数日内均价时配对 `bench_fwd_close_1` 并显式提示跨时钟追踪误差。
+  - 当开启 `execution_simulation=True` 时，采用分方向布尔掩码 `can_buy_mask`（仅在 $T+1$ 拦截开盘涨停、一字涨停、停牌或零成交）与 `can_sell_mask`（仅拦截收盘跌停、一字跌停、停牌或零成交）：一方面避免误删退出日 $T+1+h$ 涨停盈利标的（消除右删失偏差），另一方面若 $T+1+h$ 遇跌停或停牌无法平仓，通过向量化后向索引顺延至首个 `can_sell_mask=True` 的可卖出交易日结算真实平仓回报。
+
 ---
 
 ## 结语
@@ -1360,7 +1367,7 @@ class StockMarketAdapter(MarketAdapter):
 
 ---
 
-## 17. FactorLab 6 阶段因子研发工作流与 12 算子声明式后处理扩展
+## 18. FactorLab 6 阶段因子研发工作流与 12 算子声明式后处理扩展
 
 为支持标准化的「因子目录检索 $\to$ 双模态编写 $\to$ 静态探针校验 $\to$ 声明式后处理与物化 $\to$ 双层回测归因」闭环，平台在 Rust 计算内核与 Python 核心层扩展了以下模块：
 
@@ -1379,7 +1386,7 @@ class StockMarketAdapter(MarketAdapter):
 
 ---
 
-## 18. 现代化 6 阶段量化因子研发 Web 工作台与可视化系统
+## 19. 现代化 6 阶段量化因子研发 Web 工作台与可视化系统
 
 为将后端的 6 阶段全生命周期能力转化为直观高效的投研生产力，平台构建了零构建依赖的现代量化因子单页工作台（SPA）：
 

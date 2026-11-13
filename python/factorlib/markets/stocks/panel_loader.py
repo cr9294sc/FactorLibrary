@@ -55,6 +55,8 @@ class StockPanelData:
     bench_fwd_open_1: np.ndarray
     bench_fwd_close_1: np.ndarray
     bench_ret: np.ndarray
+    can_buy_mask: np.ndarray | None = None
+    can_sell_mask: np.ndarray | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -74,8 +76,12 @@ class StockPanelData:
         """导出为统一的 core.Panel 标准内存容器。"""
         # 将 base_univ_mask 作为主在池掩码
         panel_fields = dict(self.fields)
-        panel_fields["stock_listed_days"] = np.asfortranarray(self.stock_listed_days)
-        panel_fields["industry_code"] = np.asfortranarray(self.industry_code)
+        listed_arr = np.asfortranarray(self.stock_listed_days)
+        ind_arr = np.asfortranarray(self.industry_code)
+        panel_fields["stock_listed_days"] = listed_arr
+        panel_fields["listed_days"] = listed_arr
+        panel_fields["industry_code"] = ind_arr
+        panel_fields["sector"] = ind_arr
         panel_fields["limit_mask"] = np.asfortranarray(self.limit_mask)
 
         # 构造日期 numpy 数组
@@ -117,7 +123,31 @@ class StockPanelData:
 
         T, N = self.shape
         fwd_returns: dict[int, np.ndarray] = {}
+        vol_mat = self.fields.get("volume")
 
+        next_exit_idx: np.ndarray | None = None
+        entry_tradable: np.ndarray | None = None
+        if execution_simulation:
+            buy_ok = (
+                self.can_buy_mask if self.can_buy_mask is not None else np.isfinite(self.limit_mask)
+            )
+            sell_ok = (
+                self.can_sell_mask
+                if self.can_sell_mask is not None
+                else np.isfinite(self.limit_mask)
+            )
+            vol_ok = (vol_mat > 0.0) if vol_mat is not None else np.ones((T, N), dtype=bool)
+            price_ok = np.isfinite(price_mat) & (price_mat > 0.0)
+            entry_tradable = buy_ok & (~self.is_suspended) & vol_ok & price_ok
+            exit_tradable = sell_ok & (~self.is_suspended) & vol_ok & price_ok
+
+            next_exit_idx = np.full((T, N), -1, dtype=np.int32)
+            nxt = np.full(N, -1, dtype=np.int32)
+            for tau in range(T - 1, -1, -1):
+                nxt = np.where(exit_tradable[tau], tau, nxt)
+                next_exit_idx[tau] = nxt
+
+        col_idx = np.arange(N)
         for h in horizons:
             fwd = np.full((T, N), np.nan, dtype=np.float64, order="F")
             max_t = T - 1 - h
@@ -127,27 +157,25 @@ class StockPanelData:
 
             for t in range(max_t):
                 p_in = price_mat[t + 1]
-                p_out = price_mat[t + 1 + h]
-
-                # 基本有效性: 价格存在且大于 0，且入场日非停牌且有成交
-                valid = (
-                    np.isfinite(p_in)
-                    & np.isfinite(p_out)
-                    & (p_in > 0.0)
-                    & (p_out > 0.0)
-                    & (~self.is_suspended[t + 1])
-                    & (self.fields["volume"][t + 1] > 0.0)
-                )
 
                 if execution_simulation:
-                    # T+1 日不可买入条件: T+1 日触及涨停 (limit_mask 为 NaN 且收盘/开盘为涨停)
-                    # 此处 limit_mask 为 NaN 且开盘触及涨停不可建仓
-                    can_buy = np.isfinite(self.limit_mask[t + 1])
-                    # T+1+h 日不可卖出条件: T+1+h 停牌或跌停
-                    can_sell = (~self.is_suspended[t + 1 + h]) & np.isfinite(
-                        self.limit_mask[t + 1 + h]
+                    assert entry_tradable is not None and next_exit_idx is not None
+                    out_indices = next_exit_idx[t + 1 + h]
+                    has_exit = out_indices >= 0
+                    safe_out = np.where(has_exit, out_indices, 0)
+                    p_out = price_mat[safe_out, col_idx]
+                    valid = entry_tradable[t + 1] & has_exit & np.isfinite(p_out) & (p_out > 0.0)
+                else:
+                    p_out = price_mat[t + 1 + h]
+                    vol_entry_ok = (vol_mat[t + 1] > 0.0) if vol_mat is not None else True
+                    valid = (
+                        np.isfinite(p_in)
+                        & np.isfinite(p_out)
+                        & (p_in > 0.0)
+                        & (p_out > 0.0)
+                        & (~self.is_suspended[t + 1])
+                        & vol_entry_ok
                     )
-                    valid = valid & can_buy & can_sell
 
                 ret = np.full(N, np.nan, dtype=np.float64)
                 ret[valid] = (p_out[valid] / p_in[valid]) - 1.0
@@ -452,27 +480,47 @@ class StockPanelLoader:
             & np.isfinite(log_amount)
         )
 
-        # 11. 构造 LimitMask (涨跌停与一字板不可交易掩码)
-        # 规则: 剔除收盘封死涨跌停与一字板 (high == low 触及限价)
-        # 可交易处输出 1.0，封死/一字板处输出 NaN (适配 trdMask 逐元素相乘契约)
+        # 11. 构造 LimitMask (涨跌停与一字板不可交易掩码) 与分方向买卖可执行掩码
+        # 规则:
+        # - limit_mask: 信号日 T 的双边风控过滤掩码，可交易处为 1.0，收盘涨跌停/一字板处为 NaN (适配 trdMask)
+        # - can_buy_mask: 买入端掩码，拦截开盘涨停 / 一字涨停 / 停牌 / 无成交 (不再误拦截可买入的跌停股)
+        # - can_sell_mask: 卖出端掩码，拦截收盘跌停 / 一字跌停 / 停牌 / 无成交 (不再误删涨停盈利股)
         eps = 1e-4
         is_limit_up = np.isfinite(limit_up_mat) & (close_mat >= limit_up_mat - eps)
+        is_open_limit_up = (
+            np.isfinite(limit_up_mat) & np.isfinite(open_mat) & (open_mat >= limit_up_mat - eps)
+        )
         is_limit_down = np.isfinite(limit_down_mat) & (close_mat <= limit_down_mat + eps)
-        is_unopened_board = (
+        is_unopened_limit_up = (
             np.isfinite(high_mat)
             & np.isfinite(low_mat)
+            & np.isfinite(limit_up_mat)
             & (np.abs(high_mat - low_mat) < eps)
-            & (
-                (np.isfinite(limit_up_mat) & (high_mat >= limit_up_mat - eps))
-                | (np.isfinite(limit_down_mat) & (low_mat <= limit_down_mat + eps))
-            )
+            & (high_mat >= limit_up_mat - eps)
         )
+        is_unopened_limit_down = (
+            np.isfinite(high_mat)
+            & np.isfinite(low_mat)
+            & np.isfinite(limit_down_mat)
+            & (np.abs(high_mat - low_mat) < eps)
+            & (low_mat <= limit_down_mat + eps)
+        )
+        is_unopened_board = is_unopened_limit_up | is_unopened_limit_down
         is_locked_limit = is_limit_up | is_limit_down | is_unopened_board
 
         limit_mask = np.full((T, N), np.nan, dtype=np.float64, order="F")
         # 非锁板且基础数据有效的位置赋 1.0
         tradeable_limit = (~is_locked_limit) & (~is_susp_mat) & (vol_mat > 0.0)
         limit_mask[tradeable_limit] = 1.0
+
+        can_buy_mask = np.asfortranarray(
+            (~is_open_limit_up) & (~is_unopened_limit_up) & (~is_susp_mat) & (vol_mat > 0.0),
+            dtype=bool,
+        )
+        can_sell_mask = np.asfortranarray(
+            (~is_limit_down) & (~is_unopened_limit_down) & (~is_susp_mat) & (vol_mat > 0.0),
+            dtype=bool,
+        )
 
         # 12. 读取基准指数收益率 (000985.XSHG)
         bench_file = self.raw_dir / "benchmark" / "index_bar_1d.parquet"
@@ -489,8 +537,11 @@ class StockPanelLoader:
                 )
                 .sort("trading_date")
             )
-            bench_open_dict = {row[1]: row[2] for row in df_bench.iter_rows()}
-            bench_close_dict = {row[1]: row[5] for row in df_bench.iter_rows()}
+            bench_open_dict: dict[Any, float] = {}
+            bench_close_dict: dict[Any, float] = {}
+            for td, op, cl in df_bench.select(["trading_date", "open", "close"]).iter_rows():
+                bench_open_dict[td] = op
+                bench_close_dict[td] = cl
 
             b_open = np.array([bench_open_dict.get(d, np.nan) for d in dates], dtype=np.float64)
             b_close = np.array([bench_close_dict.get(d, np.nan) for d in dates], dtype=np.float64)
@@ -546,5 +597,7 @@ class StockPanelLoader:
             bench_fwd_open_1=bench_fwd_open_1,
             bench_fwd_close_1=bench_fwd_close_1,
             bench_ret=bench_ret,
+            can_buy_mask=can_buy_mask,
+            can_sell_mask=can_sell_mask,
             meta=meta,
         )

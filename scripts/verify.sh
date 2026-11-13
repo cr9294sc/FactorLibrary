@@ -131,6 +131,11 @@ EOF
     # 运行配置语义单元测试 (包括 rule=3 校验、VWAP 计算方法等)
     pytest -q tests/python/test_config.py > /dev/null
     log_pass "YAML/TOML 格式与业务语义校验全部通过"
+
+    # Gate 9: 校验 pyproject.toml 与 uv.lock 锁文件一致性
+    log_info "  -> 正在执行 uv lock --check 依赖锁一致性校验..."
+    uv lock --check > /dev/null
+    log_pass "  uv.lock 依赖锁文件与 pyproject.toml 完全一致"
 }
 
 # ------------------------------------------------------------------------------
@@ -168,8 +173,11 @@ check_rust() {
     # 5. cargo test (含 proptest 性质测试)
     if [[ "${MODE}" != "--fast" ]]; then
         log_info "  -> 正在执行 cargo test (含 proptest 算子性质验证)..."
-        cargo test --manifest-path "${manifest}" --quiet
-        log_pass "  cargo test (7 项单元与性质测试) 100% 通过"
+        local cargo_out
+        cargo_out=$(cargo test --manifest-path "${manifest}" --quiet)
+        local total_passed
+        total_passed=$(echo "${cargo_out}" | grep -oE '[0-9]+ passed' | awk '{s += $1} END {print s+0}')
+        log_pass "  cargo test (${total_passed} 项单元与性质测试) 100% 通过"
     fi
 }
 

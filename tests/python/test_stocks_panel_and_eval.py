@@ -205,3 +205,141 @@ def test_real_data_subset_loader_and_mask_semantics() -> None:
     valid_days = panel_data.stock_listed_days[np.isfinite(panel_data.stock_listed_days)]
     assert np.all(valid_days >= 0.0)
     assert np.max(valid_days) > 365.0  # 全市场必然包含上市超过 1 年的股票
+
+
+def test_to_panel_aliases_and_postprocess_zero_leak_after_decay() -> None:
+    """验证 to_panel() 暴露 listed_days/sector 且经 decay 后重施掩码零渗漏。"""
+    from factorlib.core.probe import apply_postprocess_pipeline
+
+    T, N = 5, 6
+    dates = [f"2024010{i + 2}" for i in range(T)]
+    symbols = ["S1", "S2", "S3", "S4", "S5", "S6"]
+
+    close_hfq = np.full((T, N), 10.0, dtype=np.float64, order="F")
+    vol = np.full((T, N), 1000.0, dtype=np.float64, order="F")
+    base_mask = np.ones((T, N), dtype=bool, order="F")
+    limit_mask = np.full((T, N), 1.0, dtype=np.float64, order="F")
+    listed_days = np.full((T, N), 200.0, dtype=np.float64, order="F")
+    ind = np.array([[1.0, 1.0, 2.0, 2.0, 1.0, 2.0]] * T, dtype=np.float64, order="F")
+
+    # T=2 时 S1 不在池、S2 锁板、S3 未满 120 天，保留 S4/S5/S6 具有有效截面方差
+    base_mask[2, 0] = False
+    limit_mask[2, 1] = np.nan
+    listed_days[2, 2] = 60.0
+
+    panel_data = StockPanelData(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "close_hfq": close_hfq,
+            "open_adj": close_hfq.copy(),
+            "vwap_adj": close_hfq.copy(),
+            "volume": vol,
+            "amount": vol * 10.0,
+        },
+        base_univ_mask=base_mask,
+        limit_mask=limit_mask,
+        is_suspended=np.zeros((T, N), dtype=bool, order="F"),
+        is_st=np.zeros((T, N), dtype=bool, order="F"),
+        stock_listed_days=listed_days,
+        industry_code=ind,
+        bench_fwd_open_1=np.zeros(T),
+        bench_fwd_close_1=np.zeros(T),
+        bench_ret=np.zeros(T),
+    )
+
+    panel = panel_data.to_panel()
+    assert "listed_days" in panel.fields and "sector" in panel.fields
+
+    raw = np.asfortranarray(np.tile([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], (T, 1)), dtype=np.float64)
+    res = apply_postprocess_pipeline(
+        raw,
+        [
+            "baseUniMask",
+            "trdMask",
+            "dropNewStock:120",
+            "MAD:3",
+            "zScore",
+            "indNeut:sector",
+            "decay:3",
+            "rank",
+        ],
+        panel,
+    )
+    assert np.isnan(res[2, 0])
+    assert np.isnan(res[2, 1])
+    assert np.isnan(res[2, 2])
+    assert np.all(np.isfinite(res[2, 3:]))
+
+
+def test_execution_simulation_directional_masks_and_exit_deferral() -> None:
+    """验证分方向买卖掩码：t+1+h 涨停不误删盈利、跌停/停牌顺延至首个可卖出日平仓。"""
+    T, N = 6, 4
+    dates = [f"2024010{i + 2}" for i in range(T)]
+    symbols = ["S_BUY_BLK", "S_EXIT_LU", "S_EXIT_DEFER", "S_FOREVER_HALT"]
+
+    open_adj = np.array(
+        [
+            [10.0, 10.0, 10.0, 10.0],  # t=0 (signal)
+            [11.0, 10.0, 10.0, 10.0],  # t=1 (entry)
+            [11.0, 12.0, 9.0, 10.0],  # t=2 (target exit for h=1)
+            [11.0, 12.0, 8.1, 10.0],  # t=3 (still locked down for S_EXIT_DEFER)
+            [11.0, 12.0, 8.5, 10.0],  # t=4 (tradable recovery for S_EXIT_DEFER)
+            [11.0, 12.0, 8.5, 10.0],  # t=5
+        ],
+        dtype=np.float64,
+        order="F",
+    )
+    vol = np.full((T, N), 1000.0, dtype=np.float64, order="F")
+    base_mask = np.ones((T, N), dtype=bool, order="F")
+    limit_mask = np.ones((T, N), dtype=np.float64, order="F")
+    can_buy_mask = np.ones((T, N), dtype=bool, order="F")
+    can_sell_mask = np.ones((T, N), dtype=bool, order="F")
+    is_susp = np.zeros((T, N), dtype=bool, order="F")
+
+    # S_BUY_BLK 在 t=1 开盘涨停不可买入
+    can_buy_mask[1, 0] = False
+    limit_mask[1, 0] = np.nan
+
+    # S_EXIT_LU 在 t=2 收盘涨停：双向 limit_mask 为 NaN，但卖出端 can_sell_mask 为 True（应正常兑现盈利）
+    limit_mask[2, 1] = np.nan
+    can_sell_mask[2, 1] = True
+
+    # S_EXIT_DEFER 在 t=2, t=3 跌停不可卖出，t=4 恢复可卖（应顺延至 t=4 按 8.5/10.0 - 1 平仓）
+    limit_mask[2:4, 2] = np.nan
+    can_sell_mask[2:4, 2] = False
+
+    # S_FOREVER_HALT 从 t=2 起连续停牌至样本末尾（无样本内平仓日 -> NaN）
+    is_susp[2:, 3] = True
+    can_sell_mask[2:, 3] = False
+
+    panel_data = StockPanelData(
+        dates=dates,
+        symbols=symbols,
+        fields={
+            "open_adj": open_adj,
+            "vwap_adj": open_adj.copy(),
+            "close_hfq": open_adj.copy(),
+            "volume": vol,
+            "amount": vol * open_adj,
+        },
+        base_univ_mask=base_mask,
+        limit_mask=limit_mask,
+        is_suspended=is_susp,
+        is_st=np.zeros((T, N), dtype=bool, order="F"),
+        stock_listed_days=np.full((T, N), 500.0, dtype=np.float64, order="F"),
+        industry_code=np.ones((T, N), dtype=np.float64, order="F"),
+        bench_fwd_open_1=np.zeros(T),
+        bench_fwd_close_1=np.zeros(T),
+        bench_ret=np.zeros(T),
+        can_buy_mask=can_buy_mask,
+        can_sell_mask=can_sell_mask,
+    )
+
+    fwd_sim = panel_data.compute_forward_returns(
+        horizons=[1], exec_price_mode="open_adj", execution_simulation=True
+    )[1]
+    assert np.isnan(fwd_sim[0, 0])
+    assert pytest.approx(fwd_sim[0, 1], rel=1e-12) == 12.0 / 10.0 - 1.0
+    assert pytest.approx(fwd_sim[0, 2], rel=1e-12) == 8.5 / 10.0 - 1.0
+    assert np.isnan(fwd_sim[0, 3])

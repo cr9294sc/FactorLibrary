@@ -282,3 +282,47 @@ def test_compute_style_exposures_tie_aware_spearman() -> None:
     res = compute_style_exposures(factor, {"SIZE": style}, mask=mask, n_quantiles=4, sign=1)
     expected = float(spearmanr(factor[0], style[0]).statistic)
     assert math.isclose(res["rank_corr"]["SIZE"], expected, rel_tol=1e-12, abs_tol=1e-12)
+
+
+def test_evaluate_v4_stats_excludes_post_warmup_inactive_days() -> None:
+    """验证预热期后出现无效截面日时，group_summary 不被前导/中段 0.0 稀释波动率与年化年限。"""
+    dates = np.array([f"2024-01-{d:02d}" for d in range(1, 7)])
+    symbols = [f"S{i}" for i in range(6)]
+    T, N = 6, 6
+
+    factor_mat = np.tile(np.arange(1.0, 7.0), (T, 1))
+    ret_mat = np.tile(np.array([-0.02, -0.01, 0.0, 0.01, 0.02, 0.04]), (T, 1))
+    # 让第 3 天 (t=2) 仅剩 2 个有效标的 (< min_names=5)，成为预热期后的无效日
+    mask = np.ones((T, N), dtype=bool)
+    mask[2, 2:] = False
+
+    panel = Panel(
+        dates=dates,
+        symbols=symbols,
+        fields={"close": np.ones((T, N))},
+        mask=mask,
+        labels={"y_1": ret_mat, "y_5": ret_mat},
+    )
+    stats_with_gap = evaluate_factor_v4_stats(factor_mat, panel, n_quantiles=3, min_names=5)
+
+    # 对照仅保留活跃日的面板：分组波动率与年化收益必须完全一致
+    active_idx = [0, 1, 3, 4, 5]
+    active_panel = Panel(
+        dates=dates[active_idx],
+        symbols=symbols,
+        fields={"close": np.ones((len(active_idx), N))},
+        mask=mask[active_idx],
+        labels={"y_1": ret_mat[active_idx], "y_5": ret_mat[active_idx]},
+    )
+    stats_active_only = evaluate_factor_v4_stats(
+        factor_mat[active_idx], active_panel, n_quantiles=3, min_names=5
+    )
+
+    for g_key in ("G1", "G2", "G3"):
+        for metric_key in ("total_return", "annual_return", "annual_volatility", "sharpe"):
+            assert math.isclose(
+                stats_with_gap["group_analysis"]["summary"][g_key][metric_key],
+                stats_active_only["group_analysis"]["summary"][g_key][metric_key],
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )

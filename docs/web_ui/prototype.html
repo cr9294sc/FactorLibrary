@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FactorLibrary 量化平台原型</title>
+<script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+<style>
+  .app { --mk:#2563eb; --mk-soft:color-mix(in srgb,var(--mk) 12%,transparent); }
+  .app[data-market="stocks"] { --mk:#dc2626; }
+  .app { font-size:13px; }
+  .mk-bg{background:var(--mk);color:#fff}
+  .mk-text{color:var(--mk)}
+  .mk-soft{background:var(--mk-soft)}
+  .nav-btn[aria-current="page"]{background:var(--mk-soft);color:var(--mk);font-weight:600;box-shadow:inset 3px 0 0 var(--mk)}
+  .tab[aria-selected="true"]{border-color:var(--mk);color:var(--mk);font-weight:600}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px}
+  .lbl{font-size:12px;color:var(--muted-foreground)}
+  .kpi b{font-size:18px;display:block;font-variant-numeric:tabular-nums}
+  .inp{background:var(--background);border:1px solid var(--border);border-radius:6px;padding:5px 8px;width:100%;font-size:13px}
+  .btn{border:1px solid var(--border);border-radius:6px;padding:5px 12px;font-size:13px;background:var(--card)}
+  .btn:hover{background:var(--mk-soft)}
+  .btn-p{background:var(--mk);color:#fff;border-color:var(--mk)}
+  .btn-p:hover{background:var(--mk);filter:brightness(1.1)}
+  .chip{display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--border)}
+  .code{font-family:ui-monospace,monospace;font-size:13px;line-height:1.6}
+  table.t{width:100%;border-collapse:collapse}
+  table.t th{font-size:12px;text-align:left;color:var(--muted-foreground);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card)}
+  table.t td{padding:7px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
+  table.t tr:hover td{background:var(--mk-soft)}
+  .bar{height:6px;border-radius:3px;background:var(--border);overflow:hidden}
+  .bar>i{display:block;height:100%;background:var(--mk)}
+  .ok{color:#16a34a}.bad{color:#dc2626}.warn{color:#d97706}
+  .sec{font-size:13px;font-weight:600;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--mk-soft)}
+  .kcell{padding:10px 12px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+  .kcell b{font-size:17px;display:block;font-variant-numeric:tabular-nums}
+  table.t .num{text-align:right}
+  .pos{color:#dc2626}.neg{color:#16a34a}
+  .page[hidden]{display:none}
+  .seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .seg button{padding:5px 14px;font-size:13px}
+  .seg button[aria-pressed="true"]{background:var(--mk);color:#fff}
+  dialog{border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--foreground);padding:0;max-width:520px;width:92%}
+  dialog::backdrop{background:rgba(0,0,0,.4)}
+  .fold{display:flex;height:22px;border-radius:4px;overflow:hidden;font-size:12px}
+  .fold span{display:flex;align-items:center;justify-content:center;color:#fff;white-space:nowrap}
+</style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased">
+<div class="app h-screen flex flex-col" id="app" data-market="futures">
+
+<!-- ===== Global Context Bar ===== -->
+<header class="flex items-center gap-4 px-4 h-12 border-b border-[var(--border)] bg-[var(--card)] shrink-0">
+  <div class="flex items-center gap-2 font-semibold"><span class="mk-bg rounded w-6 h-6 inline-flex items-center justify-center text-xs">FL</span>FactorLibrary</div>
+  <div class="seg" role="group" aria-label="市场域切换">
+    <button aria-pressed="true" data-m="futures">期货 Futures</button>
+    <button aria-pressed="false" data-m="stocks">A 股 Stocks</button>
+  </div>
+  <div class="flex-1"></div>
+  <span class="chip" title="主面板版本"><span class="mk-text">●</span> panel <b id="dv">v0412·a3f9</b> · <span id="extc">+2 扩展包</span></span>
+  <button class="chip" id="runsChip">⟳ <span id="runN">3</span> 个运行中</button>
+  <span class="chip">◎ active <b id="actN">128</b> · candidate <b id="candN">12</b></span>
+</header>
+
+<div class="flex flex-1 min-h-0">
+<!-- ===== Left nav ===== -->
+<nav class="w-52 shrink-0 border-r border-[var(--border)] bg-[var(--sidebar)] p-2 flex flex-col gap-1" aria-label="域内页面">
+  <button class="nav-btn text-left px-3 py-2 rounded" data-p="data">① 数据与特征池</button>
+  <button class="nav-btn text-left px-3 py-2 rounded" data-p="lab">② 单因子实验室</button>
+  <button class="nav-btn text-left px-3 py-2 rounded" data-p="compare">③ 回测结果与对比</button>
+  <button class="nav-btn text-left px-3 py-2 rounded" data-p="mining">④ 挖掘 / DL 训练</button>
+  <button class="nav-btn text-left px-3 py-2 rounded" data-p="registry">⑤ 审核与注册库</button>
+  <div class="flex-1"></div>
+  <div class="card p-2 lbl">
+    <div class="mb-1">当前域：<b class="mk-text" id="mkName">期货</b></div>
+    <div>路由 <code id="route">#/futures/data</code></div>
+    <div class="mt-1">N = <span id="nCount">62</span> · 1d 主干</div>
+  </div>
+</nav>
+
+<main class="flex-1 overflow-auto p-4">
+
+<!-- ===== P1 ===== -->
+<section class="page space-y-4" id="p-data">
+  <div class="grid grid-cols-5 gap-3">
+    <div class="card p-3 kpi"><span class="lbl">data_version</span><b>a3f9c1</b></div>
+    <div class="card p-3 kpi"><span class="lbl">日期跨度</span><b id="span">2010-01 ~ 2026-11</b></div>
+    <div class="card p-3 kpi"><span class="lbl">有效标的 N</span><b class="nCount2">62</b></div>
+    <div class="card p-3 kpi"><span class="lbl">平均缺失率</span><b id="miss">3.1%</b></div>
+    <div class="card p-3 kpi"><span class="lbl">字段数 / 扩展</span><b>47 / 2</b></div>
+  </div>
+  <div class="card p-3">
+    <div class="flex justify-between mb-2"><b>样本 Split 预览</b><span class="lbl">purge ≥ h · lockbox 最近 2 年</span></div>
+    <div class="fold"><span style="width:55%;background:#64748b">train 2010–2020</span><span style="width:4%;background:#cbd5e1;color:#333">P</span><span style="width:14%;background:#d97706">valid</span><span style="width:4%;background:#cbd5e1;color:#333">P</span><span style="width:12%;background:var(--mk)">test</span><span style="width:11%;background:#111827">Lockbox</span></div>
+  </div>
+  <div class="card p-0 overflow-hidden">
+    <div class="flex items-center gap-3 px-3 py-2 border-b border-[var(--border)] flex-wrap">
+      <b>1d K 线浏览器</b><span class="chip" id="klSym">—</span><span class="lbl" id="klOhlc">鼠标悬停查看 OHLC</span>
+      <div class="flex-1"></div>
+      <div class="seg" id="klMode"><button aria-pressed="true" data-km="k">K 线</button><button aria-pressed="false" data-km="basket">组合归一化</button></div>
+      <div class="seg" id="klRange"><button aria-pressed="false" data-r="60">3M</button><button aria-pressed="true" data-r="120">6M</button><button aria-pressed="false" data-r="250">1Y</button><button aria-pressed="false" data-r="500">2Y</button></div>
+    </div>
+    <div class="grid grid-cols-[1fr_300px]">
+      <div class="p-2 min-w-0"><svg id="klSvg" viewBox="0 0 1300 460" class="w-full" role="img" aria-label="K线图"></svg></div>
+      <aside class="border-l border-[var(--border)] p-3 space-y-3 overflow-auto" aria-label="组合面板">
+        <b>组合面板</b>
+        <input class="inp" id="klQ" placeholder="搜索代码 / 名称 / 板块…" aria-label="搜索标的">
+        <div class="flex flex-wrap gap-1.5" id="klSec"></div>
+        <ul class="border border-[var(--border)] rounded max-h-40 overflow-auto" id="klList"></ul>
+        <div><span class="lbl">我的组合（点击切换 · × 移除）</span><div class="flex flex-wrap gap-1.5 mt-1" id="klBasket"></div></div>
+        <div><span class="lbl">叠加指标</span><div class="grid grid-cols-2 gap-1 mt-1" id="klInd"></div></div>
+        <div class="grid grid-cols-2 gap-2"><label class="lbl">复权<select class="inp mt-1" id="klAdj"></select></label><label class="lbl">副图<select class="inp mt-1" id="klSub"><option value="vol">成交量</option><option value="oi">持仓量 / 换手</option><option value="ret">日收益</option></select></label></div>
+      </aside>
+    </div>
+  </div>
+  <div class="grid grid-cols-[320px_1fr] gap-4">
+    <div class="space-y-4">
+      <div class="card p-3">
+        <b>1m 扩展特征包挂载台</b>
+        <div class="mt-2 space-y-2" id="extList"></div>
+      </div>
+      <div class="card p-3" id="mkSpecific"></div>
+    </div>
+    <div class="card p-4 space-y-3">
+      <div class="flex items-center justify-between"><b>FeatureSet 编辑器</b>
+        <select class="inp !w-44" aria-label="版本对比"><option>版本对比：v2 → v3</option><option>v1 → v3</option></select></div>
+      <div class="grid grid-cols-2 gap-3">
+        <label>名称<input class="inp mt-1" value="fs_dl_core_v3"></label>
+        <label>默认后处理 Preset<select class="inp mt-1" id="preset"></select></label>
+      </div>
+      <div><span class="lbl">基础 1d 字段</span><div class="flex flex-wrap gap-1.5 mt-1" id="baseFields"></div></div>
+      <div><span class="lbl">扩展特征 (来自已挂载 1m 包)</span><div class="flex flex-wrap gap-1.5 mt-1" id="extFields"></div></div>
+      <div><span class="lbl">GP 算子白名单</span><div class="flex flex-wrap gap-1.5 mt-1" id="opsWl"></div></div>
+      <div><span class="lbl">窗口白名单</span><div class="flex gap-1.5 mt-1" id="winWl"></div></div>
+      <div class="flex gap-2 pt-1"><button class="btn btn-p">保存</button><button class="btn">复制</button><button class="btn" data-goto="mining">→ 创建 Recipe</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== P2 ===== -->
+<section class="page" id="p-lab" hidden>
+  <div class="grid grid-cols-[250px_1fr_330px] gap-4" style="height:calc(100vh - 110px)">
+    <aside class="card flex flex-col min-h-0">
+      <div class="p-2 border-b border-[var(--border)]"><input class="inp" id="catQ" placeholder="搜索字段 / 算子…" aria-label="搜索目录"></div>
+      <div class="flex text-xs border-b border-[var(--border)]" id="catTabs" role="tablist"></div>
+      <ul class="flex-1 overflow-auto" id="catList"></ul>
+    </aside>
+    <div class="card p-4 overflow-auto space-y-3">
+      <div class="grid grid-cols-4 gap-3">
+        <label>唯一名称<input class="inp mt-1" value="quality_close"></label>
+        <label>显示名<input class="inp mt-1" value="收盘质量"></label>
+        <label>模板<select class="inp mt-1" id="tplSel"></select></label>
+        <label>Horizon<select class="inp mt-1"><option>1d</option><option>5d</option><option>10d</option></select></label>
+      </div>
+      <div class="flex gap-4 border-b border-[var(--border)]" role="tablist">
+        <button class="tab py-1.5 border-b-2 border-transparent" role="tab" aria-selected="true">Expression (Rust DSL)</button>
+        <button class="tab py-1.5 border-b-2 border-transparent" role="tab" aria-selected="false">Code (compute(context))</button>
+      </div>
+      <textarea id="expr" class="inp code" rows="6" spellcheck="false" aria-label="表达式">ts_zscore(close, 20) - ts_zscore(vwap_dev, 5)</textarea>
+      <div>
+        <div class="flex justify-between"><b>后处理链</b><span class="lbl">声明式 · 顺序敏感</span></div>
+        <div class="flex flex-wrap items-center gap-2 mt-2" id="chain"></div>
+      </div>
+      <div>
+        <b>组合回测参数 <span class="lbl font-normal">(市场专属)</span></b>
+        <div class="grid grid-cols-4 gap-3 mt-2" id="btParams"></div>
+      </div>
+    </div>
+    <aside class="card p-4 overflow-auto space-y-3">
+      <div class="flex justify-between"><b>实时探针</b><span class="chip" id="probeBadge">待检查</span></div>
+      <div id="probeBody" class="space-y-2 lbl">编辑表达式后自动静态审计。</div>
+      <button class="btn btn-p w-full" id="probeBtn">检查因子 (Probe)</button>
+      <hr class="border-[var(--border)]">
+      <button class="btn w-full" data-goto="compare">快速双层评估 →</button>
+      <button class="btn w-full" id="saveCand">保存为 candidate</button>
+    </aside>
+  </div>
+</section>
+
+<!-- ===== P3 ===== -->
+<section class="page space-y-4" id="p-compare" hidden>
+  <div class="flex items-center gap-3 flex-wrap">
+    <h2 class="font-semibold text-base">回测结果</h2>
+    <div class="seg"><button aria-pressed="true" data-cm="single">单因子</button><button aria-pressed="false" data-cm="ab">多因子 A/B</button></div>
+    <div class="flex gap-2 flex-wrap" id="cmpChips"></div>
+    <span class="lbl ml-auto" id="runTime"></span>
+  </div>
+  <div class="grid grid-cols-4 gap-3" id="btMeta"></div>
+  <div class="card"><div class="grid grid-cols-4" id="btKpi"></div></div>
+  <div class="grid grid-cols-2 gap-4">
+    <div class="card"><h3 class="sec">全市场指标</h3><div id="tAll"></div></div>
+    <div class="card"><h3 class="sec">分层表现</h3><div id="tGrp"></div></div>
+  </div>
+  <div class="card"><h3 class="sec">多空组合指标</h3><div id="tLS"></div></div>
+  <div class="card"><h3 class="sec">分年表现</h3><div id="tYear" class="overflow-auto"></div></div>
+  <div class="card"><h3 class="sec">分月表现（最近 12 个月）</h3><div id="tMonth" class="overflow-auto"></div></div>
+  <div class="grid grid-cols-2 gap-4">
+    <div class="card"><h3 class="sec">日 RankIC 序列 <span class="lbl font-normal" id="icSum"></span></h3><div class="p-2"><svg id="icChart" viewBox="0 0 520 190" class="w-full"></svg></div></div>
+    <div class="card"><h3 class="sec">分层累计收益</h3><div class="p-2"><svg id="grpChart" viewBox="0 0 520 190" class="w-full"></svg><div id="grpLeg" class="flex flex-wrap gap-2 lbl"></div></div></div>
+  </div>
+  <div class="card"><h3 class="sec">多空累计收益 <span class="lbl font-normal" id="lsSum"></span></h3><div class="p-2"><svg id="lsChart" viewBox="0 0 1000 260" class="w-full"></svg></div></div>
+  <div class="card"><h3 class="sec">多头相对基准累计超额 <span class="lbl font-normal" id="exSum"></span></h3><div class="p-2"><svg id="exChart" viewBox="0 0 1000 260" class="w-full"></svg></div></div>
+  <div class="grid grid-cols-2 gap-4" id="abBox">
+    <div class="card p-3"><b>两两截面 Rank 相关性</b><div id="heat" class="mt-2"></div></div>
+    <div class="card p-3"><b>正交残差累积 IC</b><svg id="resChart" viewBox="0 0 400 150" class="w-full"></svg></div>
+  </div>
+  <div class="card"><h3 class="sec" id="mkDiagTitle"></h3><div class="grid grid-cols-6 gap-4 p-3" id="mkDiag"></div></div>
+</section>
+
+<!-- ===== P4 ===== -->
+<section class="page space-y-4" id="p-mining" hidden>
+  <div class="flex gap-4 border-b border-[var(--border)]" role="tablist" id="minTabs">
+    <button class="tab py-1.5 border-b-2 border-transparent" role="tab" aria-selected="false" data-k="gp">STGP 批量挖掘</button>
+    <button class="tab py-1.5 border-b-2 border-transparent" role="tab" aria-selected="true" data-k="dl">DL Alpha 滚动训练</button>
+    <button class="tab py-1.5 border-b-2 border-transparent" role="tab" aria-selected="false" data-k="ml">二层合成与消融</button>
+  </div>
+  <div class="grid grid-cols-[420px_1fr] gap-4">
+    <div class="card p-4 space-y-3" id="recipeForm"></div>
+    <div class="space-y-4">
+      <div class="card p-3"><b>Walk-Forward Fold 预览</b><div id="folds" class="mt-2 space-y-1"></div></div>
+      <div class="card p-3 flex items-center gap-3">
+        <span class="lbl">recipe_id</span><code class="mk-text" id="rid">rcp_9f3a2c</code>
+        <span class="lbl">sha256 内容冻结</span><div class="flex-1"></div>
+        <button class="btn btn-p" id="launch">▶ 后台独立启动</button>
+        <button class="btn" id="copyCli">⧉ 复制 CLI 命令</button>
+      </div>
+      <code class="card p-2 block code lbl" id="cli"></code>
+    </div>
+  </div>
+  <div class="card p-3">
+    <b>Run 监控</b>
+    <table class="t mt-2"><thead><tr><th>run_id</th><th>kind</th><th>recipe</th><th style="width:28%">进度</th><th>Valid ICIR</th><th>PID</th><th>状态</th><th></th></tr></thead><tbody id="runs"></tbody></table>
+    <pre id="logDrawer" class="code card p-2 mt-2 overflow-auto max-h-40" hidden></pre>
+  </div>
+</section>
+
+<!-- ===== P5 ===== -->
+<section class="page space-y-3" id="p-registry" hidden>
+  <div class="flex items-center gap-3 flex-wrap">
+    <div class="seg"><button aria-pressed="true" data-rv="cand">待审候选 candidate</button><button aria-pressed="false" data-rv="ledger">资产台账</button></div>
+    <select class="inp !w-32" id="fSrc"><option value="">source: 全部</option><option>seed</option><option>manual</option><option>gp</option><option>dl_alpha</option></select>
+    <label class="flex items-center gap-1 lbl">ICIR ≥ <input id="fIc" type="number" step="0.1" value="0" class="inp !w-20"></label>
+    <div class="flex-1"></div>
+    <button class="btn btn-p" id="audit">批量三关准入审计 ▶</button>
+  </div>
+  <div class="grid grid-cols-[1fr_340px] gap-4">
+    <div class="card overflow-auto" style="max-height:calc(100vh - 180px)">
+      <table class="t"><thead><tr><th><input type="checkbox" id="selAll" aria-label="全选"></th><th>名称</th><th>source</th><th>type</th><th>OOS ICIR</th><th>换手</th><th>max|ρ|</th><th>关1</th><th>关2</th><th>关3</th><th>状态</th></tr></thead><tbody id="regRows"></tbody></table>
+    </div>
+    <aside class="card p-4 space-y-3" id="detail"><span class="lbl">点击行查看详情</span></aside>
+  </div>
+  <div class="card p-3 lbl">三关：① |ICIR| + 年度方向 + 换手 + max|ρ|&lt;0.60 → ② Spanning 正交残差 ICIR / t-stat → ③ 二层合成消融 (Base vs Base+DL) 费后 ΔSharpe</div>
+</section>
+
+</main>
+</div>
+</div>
+
+<dialog id="dlg"><div class="p-5 space-y-3"><b id="dlgT"></b><div id="dlgB" class="lbl"></div><form method="dialog" class="text-right"><button class="btn btn-p">确定</button></form></div></dialog>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const app=$('#app');
+let market='futures', page='data';
+
+/* ---- market config ---- */
+const MK={
+  futures:{name:'期货',n:62,span:'2010-01 ~ 2026-11',miss:'3.1%',
+    ext:[['micro_futures','rv, ret_last30, vwap_dev','2018-03 ~ 2026-11',true],['intraday_bins (预留)','(T,N,K,C) 张量','未构建',false]],
+    base:['open','high','low','close','volume','oi','settle','ry_ann','wh_z60','mr_net_ratio_chg5'],
+    extF:['rv','ret_last30','vwap_dev'],
+    presets:['indNeut + 期货 6 风格','板块去均值','无'],
+    tpl:['动量 mom_N','展期收益 roll_yield','仓单 wh_z','席位 mr_net'],
+    bt:[['手数离散化','开'],['保证金率','10%'],['换月双边费','开'],['撮合','T+1 前30m VWAP']],
+    specific:`<b>期货专属</b><div class="lbl mt-2">主力映射 rule=3 · alt_data_lag_days=1</div>
+      ${[['展期 roll_yield',96],['仓单 warehouse',71],['席位 member_rank',64]].map(([k,v])=>`<div class="mt-2"><div class="flex justify-between lbl"><span>${k}</span><span>${v}%</span></div><div class="bar"><i style="width:${v}%"></i></div></div>`).join('')}`,
+    diagT:'期货专属：板块盈亏 · 换月损耗 · 保证金',
+    diag:[['能化','+18.2%'],['黑色','+11.4%'],['农产品','-2.1%'],['换月双边费占比','6.3%'],['峰值保证金占用','47%'],['涨跌停阻断日','31']],
+    dlHint:'小容量模板：GRU hidden 32 · dropout 0.4 · weight_decay 1e-3 · 严禁深层 Transformer', model:'GRU(1层,32)'},
+  stocks:{name:'A 股',n:4812,span:'2012-01 ~ 2026-11',miss:'1.4%',
+    ext:[['micro_stocks (规划中)','vwap_dev, ret_last30','未构建',false],['intraday_bins (预留)','(T,N,K,C) 张量','未构建',false]],
+    base:['open','high','low','close','volume','turnover','mkt_cap','pe','pb','vol_20'],
+    extF:[], presets:['dropNewStock + 申万行业 + 市值/波动中性','申万行业中性','无'],
+    tpl:['反转 rev_N','换手率 turn_z','波动 vol_N','流动性 amihud'],
+    bt:[['基准','中证 1000'],['T+1 持仓约束','开'],['一字板阻断','开'],['成本 双边','0.25%']],
+    specific:`<b>A 股专属</b><div class="lbl mt-2">基准池 全A / 沪深300 / 中证500 / 中证1000</div>
+      ${[['ST/停牌/新股剔除',100],['申万行业映射',99],['Barra 风格基准',88]].map(([k,v])=>`<div class="mt-2"><div class="flex justify-between lbl"><span>${k}</span><span>${v}%</span></div><div class="bar"><i style="width:${v}%"></i></div></div>`).join('')}`,
+    diagT:'A 股专属：超额净值 · 行业偏离 · 涨跌停阻断',
+    diag:[['超额 vs 中证1000','+9.7%'],['纯多头年化','14.2%'],['多空年化','11.8%'],['行业最大偏离','2.3%'],['一字板阻断','1.8%'],['T+1 约束失败单','0.4%']],
+    dlHint:'大截面模板：时空解耦 GRU+Cross-Attn · 按日打包 Batch · 参数量需受控', model:'GRU + Cross-Sec Attention'}
+};
+const OPS=['ts_mean','ts_std','ts_zscore','ts_rank','ts_corr','ts_delta','ts_decay_linear','rank','zscore','abs','sign','log','where','emadecay'];
+const POST=['baseUniMask','trdMask','MAD','indNeut','styleNeut','zScore'];
+
+/* ---- helpers ---- */
+function rng(seed){let s=seed;return()=>{s=(s*16807)%2147483647;return s/2147483647}}
+function series(seed,n,drift,vol){const r=rng(seed);let v=0;return Array.from({length:n},()=>(v+=drift+(r()-.5)*vol))}
+const COLORS=['var(--mk)','#16a34a','#d97706','#7c3aed','#0891b2','#db2777'];
+function lines(svg,data,w,h,pad=28,labels){
+  const all=data.flat(),mn=Math.min(...all),mx=Math.max(...all),n=data[0].length;
+  const X=i=>pad+i*(w-pad-6)/(n-1),Y=v=>h-pad/1.5-(v-mn)/(mx-mn||1)*(h-pad*1.3);
+  let g='';for(let i=0;i<=4;i++){const y=h-pad/1.5-i*(h-pad*1.3)/4;g+=`<line x1="${pad}" x2="${w}" y1="${y}" y2="${y}" stroke="var(--border)"/><text x="2" y="${y+4}" font-size="12" fill="var(--muted-foreground)">${(mn+(mx-mn)*i/4).toFixed(0)}</text>`}
+  const yrs=labels||['2021','2022','2023','2024','2025','2026'];yrs.forEach((t,i)=>g+=`<text x="${pad+i*(w-pad)/yrs.length}" y="${h-4}" font-size="12" fill="var(--muted-foreground)">${t}</text>`);
+  data.forEach((d,k)=>g+=`<polyline fill="none" stroke="${COLORS[k%6]}" stroke-width="1.6" points="${d.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}"/>`);
+  svg.innerHTML=g;
+}
+
+/* ---- routing / theme ---- */
+function render(){
+  const m=MK[market];
+  app.dataset.market=market;
+  $$('[data-m]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.m===market));
+  $$('.nav-btn').forEach(b=>b.toggleAttribute('aria-current',false)||(b.dataset.p===page&&b.setAttribute('aria-current','page')));
+  $$('.page').forEach(p=>p.hidden=p.id!=='p-'+page);
+  $('#route').textContent=`#/${market}/${page}`;location.hash=`/${market}/${page}`;
+  $('#mkName').textContent=m.name;$('#nCount').textContent=m.n;$$('.nCount2').forEach(e=>e.textContent=m.n);
+  $('#span').textContent=m.span;$('#miss').textContent=m.miss;
+  $('#extc').textContent='+'+m.ext.filter(e=>e[3]).length+' 扩展包';
+  $('#actN').textContent=market==='futures'?128:342;
+  if(page==='data'){renderData();renderKline()}if(page==='lab')renderLab();if(page==='compare')renderCompare();
+  if(page==='mining')renderMining();if(page==='registry')renderRegistry();
+}
+$$('[data-m]').forEach(b=>b.onclick=()=>{market=b.dataset.m;render()});
+$$('.nav-btn').forEach(b=>b.onclick=()=>{page=b.dataset.p;render()});
+$$('[data-goto]').forEach(b=>b.onclick=()=>{page=b.dataset.goto;render()});
+$('#runsChip').onclick=()=>{page='mining';render();$('#runs').scrollIntoView({behavior:'smooth'})};
+
+/* ---- P1 ---- */
+function chip(t,on,cls=''){return `<button class="chip ${cls}" aria-pressed="${on}" style="${on?'background:var(--mk-soft);border-color:var(--mk);color:var(--mk)':''}">${t}</button>`}
+function toggler(el,html){el.innerHTML=html;el.querySelectorAll('button').forEach(b=>b.onclick=()=>{const on=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',on);b.style.cssText=on?'background:var(--mk-soft);border-color:var(--mk);color:var(--mk)':''})}
+function renderData(){
+  const m=MK[market];
+  $('#extList').innerHTML=m.ext.map(([n,f,r,on],i)=>`<div class="border border-[var(--border)] rounded p-2"><div class="flex justify-between"><b>${n}</b><label class="flex gap-1 items-center lbl"><input type="checkbox" ${on?'checked':''} ${r==='未构建'?'disabled':''} data-ext="${i}">挂载</label></div><div class="lbl">${f}</div><div class="lbl">覆盖 ${r}</div></div>`).join('');
+  $$('[data-ext]').forEach(c=>c.onchange=()=>{const k=$$('[data-ext]:checked').length;$('#extc').textContent='+'+k+' 扩展包'});
+  $('#mkSpecific').innerHTML=m.specific;
+  $('#preset').innerHTML=m.presets.map(p=>`<option>${p}</option>`).join('');
+  toggler($('#baseFields'),m.base.map((f,i)=>chip(f,i<6)).join(''));
+  $('#extFields').innerHTML=m.extF.length?'':'<span class="lbl">暂无已挂载扩展特征</span>';
+  if(m.extF.length)toggler($('#extFields'),m.extF.map(f=>chip(f,true)).join(''));
+  toggler($('#opsWl'),OPS.map((o,i)=>chip(o,i<9)).join(''));
+  toggler($('#winWl'),[3,5,10,20,40,60].map((w,i)=>chip(w,i>0&&i<5)).join(''));
+}
+
+/* ---- P2 ---- */
+let catTab='字段';
+function renderLab(){
+  const m=MK[market];
+  $('#tplSel').innerHTML=m.tpl.map(t=>`<option>${t}</option>`).join('');
+  const tabs=['字段','扩展','算子','后处理'];
+  $('#catTabs').innerHTML=tabs.map(t=>`<button class="flex-1 py-2 tab border-b-2 border-transparent" role="tab" aria-selected="${t===catTab}">${t}</button>`).join('');
+  $$('#catTabs button').forEach(b=>b.onclick=()=>{catTab=b.textContent;renderLab()});
+  const src={字段:m.base,扩展:m.extF,算子:OPS,后处理:POST}[catTab], q=$('#catQ').value.toLowerCase();
+  $('#catList').innerHTML=src.filter(x=>x.includes(q)).map(x=>`<li><button class="w-full text-left px-3 py-2 border-b border-[var(--border)] hover:bg-[var(--mk-soft)]" data-ins="${x}"><b>${x}</b><div class="lbl">${catTab==='算子'?'op · 点击插入':'点击插入'}</div></button></li>`).join('')||'<li class="p-3 lbl">无条目</li>';
+  $$('[data-ins]').forEach(b=>b.onclick=()=>{const t=$('#expr');t.value+=(catTab==='算子'?` ${b.dataset.ins}(x, 20)`:` ${b.dataset.ins}`);probe()});
+  $('#chain').innerHTML=POST.map((p,i)=>(i?'<span class="lbl">→</span>':'')+chip(p,market==='futures'?i!==1||true:i!==4)).join('')+' <button class="chip">＋</button>';
+  $('#btParams').innerHTML=m.bt.map(([k,v])=>`<label class="lbl">${k}<input class="inp mt-1" value="${v}"></label>`).join('');
+  probe(true);
+}
+$('#catQ').oninput=renderLab;
+function probe(quiet){
+  const e=$('#expr').value, bad=/shift\(\s*-|forward|lead\(/.test(e);
+  const b=$('#probeBadge');
+  if(quiet&&!$('#probeBody').dataset.ran){return}
+  b.textContent=bad?'✘ 未来函数':'✔ 通过';b.className='chip '+(bad?'bad':'ok');
+  const r=rng(e.length*7+3);
+  $('#probeBody').dataset.ran=1;
+  $('#probeBody').innerHTML=bad?`<div class="bad">typecheck.rs 拦截：检测到前向算子，禁止入库。</div>`:`
+   <div class="grid grid-cols-3 gap-2 kpi"><div><span class="lbl">耗时</span><b>${(20+r()*40|0)}ms</b></div><div><span class="lbl">覆盖率</span><b>${(95+r()*4).toFixed(1)}%</b></div><div><span class="lbl">NaN 率</span><b>${(r()*3).toFixed(1)}%</b></div></div>
+   <div>✔ AST 合法 · ✔ 未知变量 0 · ✔ 未来函数 0</div>
+   <svg viewBox="0 0 200 50" class="w-full">${Array.from({length:20},(_,i)=>{const h=Math.exp(-((i-10)**2)/18)*44;return `<rect x="${i*10+1}" y="${48-h}" width="8" height="${h}" fill="var(--mk)" opacity=".75"/>`}).join('')}</svg><div class="lbl">截面分位数分布</div>`;
+}
+$('#probeBtn').onclick=()=>probe();$('#expr').oninput=()=>{if($('#probeBody').dataset.ran)probe()};
+$('#saveCand').onclick=()=>{$('#candN').textContent=+$('#candN').textContent+1;dlg('已保存','因子以 status=candidate 入库，可在「审核与注册库」查看。')};
+function dlg(t,b){$('#dlgT').textContent=t;$('#dlgB').textContent=b;$('#dlg').showModal()}
+
+/* ---- P3 backtest result ---- */
+const FACS=[['dl_alpha_01','dl_alpha'],['gp_0713','gp'],['mom_20','manual'],['roll_yield_z','seed'],['wh_z60','seed'],['turn_z','manual']];
+let sel=[0,1,2],cmode='single';
+const f3=(v,d=4)=>(v>=0?'':'')+v.toFixed(d), pc=v=>(v*100).toFixed(2)+'%';
+const cls=v=>v>=0?'pos':'neg';
+function tbl(h,rows){return `<table class="t"><thead><tr>${h.map((x,i)=>`<th class="${i?'num':''}">${x}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map((c,i)=>`<td class="${i?'num':''}">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`}
+function num(v,d=4,p=false){const t=p?pc(v):v.toFixed(d);return `<span class="${cls(v)}">${t}</span>`}
+function renderCompare(){
+  const m=MK[market];
+  $('#cmpChips').innerHTML=FACS.map((f,i)=>`<button class="chip" data-f="${i}" style="${sel.includes(i)?'background:var(--mk-soft);border-color:var(--mk);color:var(--mk)':''}">${f[0]} <span class="lbl">${f[1]}</span></button>`).join('');
+  $$('[data-f]').forEach(b=>b.onclick=()=>{const i=+b.dataset.f;if(cmode==='single')sel=[i];else sel=sel.includes(i)?sel.filter(x=>x!==i):sel.length<6?[...sel,i]:sel;if(!sel.length)sel=[i];renderCompare()});
+  $('#abBox').hidden=cmode==='single';
+  const act=cmode==='single'?[sel[0]]:sel, id=act[0], r=rng(id*13+(market==='futures'?1:2));
+  const rr=(a,b)=>a+r()*(b-a);
+  $('#runTime').textContent='2016-03-04 ~ 2026-10-30 · 生成于 2026-11-14 23:30';
+  const meta=[['回测区间','2016-03-04 ~ 2026-10-30'],['样本与标的','1d · '+m.name+' · N='+m.n],['因子',FACS[id][0]+' ('+FACS[id][1]+')'],['后处理',market==='futures'?'indNeut + 6 风格 + zScore':'dropNew + 申万行业 + 市值中性']];
+  $('#btMeta').innerHTML=meta.map(([k,v])=>`<div class="card p-3"><span class="lbl">${k}</span><div class="font-semibold mt-1">${v}</div></div>`).join('');
+  const ic=rr(.02,.05),icir=rr(.25,.5),ret=rr(.08,.2),sh=rr(1.2,2.4),dd=rr(.06,.15),tv=rr(.15,.4);
+  const K=[['IC',ic.toFixed(4)],['ICIR',icir.toFixed(4)],['RankIC',(ic*1.1).toFixed(4)],['RankICIR',(icir*1.15).toFixed(4)],['多空年化',pc(ret)],['夏普',sh.toFixed(3)],['最大回撤',pc(-dd)],['换手率',pc(tv)],['胜率',pc(rr(.52,.6))],['IC>0 占比',pc(rr(.52,.62))],['覆盖率',pc(rr(.95,.99))],['有效交易日',(2500+r()*100|0)+' 天']];
+  $('#btKpi').innerHTML=K.map(([k,v])=>`<div class="kcell"><span class="lbl">${k}</span><b>${v}</b></div>`).join('');
+  $('#tAll').innerHTML=tbl(['指标','数值','t 值','p 值'],['IC','RankIC','多空收益','多头超额'].map((k,i)=>[k,num(rr(.01,.06)),rr(2,6).toFixed(2),rr(0,.03).toFixed(4)]));
+  $('#tGrp').innerHTML=tbl(['分组','年化收益','最大回撤','夏普'],[1,2,3,4,5,6,7,8,9,10].map(g=>[ 'G'+g,num((g-5.5)*.012+rr(-.01,.01),2,true),num(-rr(.05,.25),2,true),rr(-.5,1.5).toFixed(2)]));
+  $('#tLS').innerHTML=tbl(['组合','年化收益','夏普','Calmar','最大回撤','日胜率','换手率','超额年化'],['多头','空头','多空','多头-基准'].map(k=>[k,num(rr(-.05,.2),2,true),rr(.3,2.5).toFixed(2),rr(.5,3).toFixed(2),num(-rr(.05,.2),2,true),pc(rr(.5,.58)),pc(rr(.1,.4)),num(rr(-.02,.1),2,true)]));
+  $('#tYear').innerHTML=tbl(['年份','IC','ICIR','RankIC','多空收益','夏普','最大回撤','换手','覆盖率'],[2016,2017,2018,2019,2020,2021,2022,2023,2024,2025,2026].map(y=>[y,num(rr(-.01,.06)),rr(-.2,.7).toFixed(3),num(rr(-.01,.06)),num(rr(-.08,.3),2,true),rr(-.5,3).toFixed(2),num(-rr(.02,.12),2,true),pc(rr(.15,.4)),pc(rr(.94,.99))]));
+  const mo=['2025-12','2026-01','2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08','2026-09','2026-10','2026-11'];
+  $('#tMonth').innerHTML=tbl(['月份','IC','RankIC','多空收益','多头收益','基准收益','超额','回撤'],mo.map(y=>[y,num(rr(-.02,.07)),num(rr(-.02,.07)),num(rr(-.05,.08),2,true),num(rr(-.06,.09),2,true),num(rr(-.05,.06),2,true),num(rr(-.03,.04),2,true),num(-rr(.0,.06),2,true)]));
+  const N=500,yl=['2016','2018','2020','2022','2024','2026'];
+  const icS=series(id*11+3,N,0.003,0.5).map((v,i,a)=>i?a[i]-a[i-1]:v);
+  $('#icSum').textContent='均值 '+ic.toFixed(4);
+  lines($('#icChart'),[icS.map(v=>v*.1+ic)],520,190,34,yl);
+  const grp=Array.from({length:10},(_,g)=>series(g*5+id,N,(g-4.5)*.02,.5));
+  grp.forEach(a=>{const z=a[0];a.forEach((v,i)=>a[i]=(v-z)*0.2)});
+  const gC=['#7f1d1d','#b91c1c','#dc2626','#ea580c','#d97706','#65a30d','#16a34a','#0891b2','#2563eb','#4338ca'];
+  const gs=$('#grpChart');lines(gs,grp,520,190,34,yl);
+  gs.querySelectorAll('polyline').forEach((e,i)=>e.setAttribute('stroke',gC[i]));
+  $('#grpLeg').innerHTML=gC.map((c,i)=>`<span><i style="display:inline-block;width:10px;height:3px;background:${c};vertical-align:middle"></i> G${i+1}</span>`).join('');
+  const ls=series(id*7+1,N,.9,2.4).map(v=>v*0.6);$('#lsSum').textContent='累计 '+pc(ls[N-1]/100*1.2)+' · 回撤 '+pc(-dd);
+  lines($('#lsChart'),[ls],1000,260,38,yl);
+  const ex=series(id*19+4,N,.3,3.2).map(v=>v*.5);$('#exSum').textContent='相对 '+(market==='futures'?'等权基准':'中证1000')+' 累计 '+pc(ex[N-1]/100);
+  lines($('#exChart'),[ex],1000,260,38,yl);
+  $$('#lsChart polyline').forEach(e=>e.setAttribute('stroke','#dc2626'));$$('#exChart polyline').forEach(e=>e.setAttribute('stroke','#0f766e'));
+  const names=act.map(i=>FACS[i][0]);
+  $('#heat').innerHTML=act.length<2?'<span class="lbl">选择 ≥2 个因子</span>':`<table class="t"><tr><th></th>${names.map(n=>`<th>${n.slice(0,8)}</th>`).join('')}</tr>${act.map((a,i)=>`<tr><td class="lbl">${names[i].slice(0,8)}</td>${act.map((b,j)=>{const v=i===j?1:Math.abs(Math.sin(a*3+b*5))*.8;return `<td style="background:color-mix(in srgb,var(--mk) ${v*80}%,transparent);text-align:center${v>.6&&i!==j?';font-weight:700':''}">${v.toFixed(2)}</td>`}).join('')}</tr>`).join('')}</table><div class="lbl mt-1">加粗 = 超过 0.60 去重红线 · 窗口取严格交集 OOS</div>`;
+  lines($('#resChart'),[series(41,200,.1,1),series(43,200,.03,1)],400,150,24,['','','','','']);
+  $('#mkDiagTitle').textContent=m.diagT;
+  $('#mkDiag').innerHTML=m.diag.map(([k,v])=>`<div class="kpi"><span class="lbl">${k}</span><b>${v}</b></div>`).join('');
+}
+$$('[data-cm]').forEach(b=>b.onclick=()=>{cmode=b.dataset.cm;$$('[data-cm]').forEach(x=>x.setAttribute('aria-pressed',x===b));if(cmode==='single')sel=[sel[0]];else if(sel.length<2)sel=[0,1,2];renderCompare()});
+
+/* ---- P1 K-line explorer ---- */
+const SYMS={
+ futures:[['RB','螺纹钢','黑色',3500],['HC','热卷','黑色',3700],['I','铁矿石','黑色',820],['J','焦炭','黑色',2100],['CU','沪铜','有色',74000],['AL','沪铝','有色',19500],['ZN','沪锌','有色',22000],['SC','原油','能化',560],['TA','PTA','能化',5600],['MA','甲醇','能化',2500],['M','豆粕','农产品',3200],['P','棕榈油','农产品',8000],['CF','棉花','农产品',14500],['AU','黄金','贵金属',560],['IF','沪深300','金融',3900]],
+ stocks:[['600519','贵州茅台','食品饮料',1700],['000858','五粮液','食品饮料',140],['300750','宁德时代','电力设备',210],['601318','中国平安','非银金融',48],['600036','招商银行','银行',36],['000333','美的集团','家用电器',68],['002594','比亚迪','汽车',250],['600900','长江电力','公用事业',27],['688981','中芯国际','电子',52],['601899','紫金矿业','有色金属',17]]};
+let kl={sym:null,basket:[],sec:'全部',ind:{MA5:true,MA20:true,MA60:false,BOLL:false},mode:'k',range:120,q:''};
+function ohlc(sym,base,n=600){const r=rng([...sym].reduce((a,c)=>a*31+c.charCodeAt(0),7)%2147483000+1);let c=base;const out=[];
+  for(let i=0;i<n;i++){const o=c*(1+(r()-.5)*.01),cl=o*(1+(r()-.48)*.03),hi=Math.max(o,cl)*(1+r()*.012),lo=Math.min(o,cl)*(1-r()*.012);out.push({o,h:hi,l:lo,c:cl,v:(r()*.8+.4)*1e5*(1+Math.abs(cl/o-1)*30),oi:(1+Math.sin(i/40))*5e4+r()*1e4});c=cl}return out}
+function ma(a,n){return a.map((_,i)=>i<n-1?null:a.slice(i-n+1,i+1).reduce((s,x)=>s+x.c,0)/n)}
+function renderKline(){
+  const list=SYMS[market];
+  if(!kl.sym||!list.some(x=>x[0]===kl.sym)){kl.sym=list[0][0];kl.basket=[list[0][0],list[Math.min(4,list.length-1)][0]];kl.sec='全部'}
+  const secs=['全部',...new Set(list.map(x=>x[2]))];
+  $('#klSec').innerHTML=secs.map(x=>`<button class="chip" data-sec="${x}" style="${x===kl.sec?'background:var(--mk-soft);border-color:var(--mk);color:var(--mk)':''}">${x}</button>`).join('');
+  $$('[data-sec]').forEach(b=>b.onclick=()=>{kl.sec=b.dataset.sec;renderKline()});
+  const q=kl.q.toLowerCase();
+  const rows=list.filter(x=>(kl.sec==='全部'||x[2]===kl.sec)&&(x[0]+x[1]+x[2]).toLowerCase().includes(q));
+  $('#klList').innerHTML=rows.map(x=>`<li class="flex items-center border-b border-[var(--border)] ${x[0]===kl.sym?'mk-soft':''}"><button class="flex-1 text-left px-2 py-1.5" data-pick="${x[0]}"><b>${x[0]}</b> <span class="lbl">${x[1]} · ${x[2]}</span></button><button class="px-2 mk-text" title="加入组合" data-add="${x[0]}" aria-label="加入组合 ${x[0]}">＋</button></li>`).join('')||'<li class="p-2 lbl">无匹配</li>';
+  $$('[data-pick]').forEach(b=>b.onclick=()=>{kl.sym=b.dataset.pick;renderKline()});
+  $$('[data-add]').forEach(b=>b.onclick=()=>{if(!kl.basket.includes(b.dataset.add))kl.basket.push(b.dataset.add);renderKline()});
+  $('#klBasket').innerHTML=kl.basket.map(x=>`<span class="chip" style="${x===kl.sym?'border-color:var(--mk);color:var(--mk)':''}"><button data-pick="${x}">${x}</button><button data-rm="${x}" aria-label="移除 ${x}">×</button></span>`).join('')||'<span class="lbl">空</span>';
+  $$('#klBasket [data-pick]').forEach(b=>b.onclick=()=>{kl.sym=b.dataset.pick;renderKline()});
+  $$('[data-rm]').forEach(b=>b.onclick=()=>{kl.basket=kl.basket.filter(x=>x!==b.dataset.rm);renderKline()});
+  $('#klInd').innerHTML=Object.keys(kl.ind).map(k=>`<label class="flex items-center gap-1.5"><input type="checkbox" data-ind="${k}" ${kl.ind[k]?'checked':''}>${k}</label>`).join('');
+  $$('[data-ind]').forEach(c=>c.onchange=()=>{kl.ind[c.dataset.ind]=c.checked;drawK()});
+  $('#klAdj').innerHTML=market==='futures'?'<option>主力连续(rule=3)·后复权</option><option>不复权</option>':'<option>后复权</option><option>前复权</option><option>不复权</option>';
+  drawK();
+}
+function drawK(){
+  const list=SYMS[market],svg=$('#klSvg'),W=1300,H=460;
+  const cur=list.find(x=>x[0]===kl.sym);$('#klSym').textContent=cur[0]+' '+cur[1]+' · 1d';
+  const sub=$('#klSub').value;
+  if(kl.mode==='basket'){
+    const data=kl.basket.map(sy=>{const x=list.find(z=>z[0]===sy);const d=ohlc(sy,x[3]).slice(-kl.range);return d.map(k=>k.c/d[0].c*100)});
+    lines(svg,data,W,H,40,['T-'+kl.range,'','','','','今日']);
+    svg.querySelectorAll('polyline').forEach((e,i)=>e.setAttribute('stroke',COLORS[i%6]));
+    svg.insertAdjacentHTML('beforeend',kl.basket.map((sy,i)=>`<text x="${60+i*80}" y="16" font-size="12" fill="${COLORS[i%6]}">● ${sy}</text>`).join(''));
+    $('#klOhlc').textContent='组合内各标的起点归一=100 · 用于对比因子候选标的走势';return}
+  const d=ohlc(kl.sym,cur[3]).slice(-kl.range),n=d.length,all=ohlc(kl.sym,cur[3]);
+  const pad={l:56,r:10,t:14,b:22},mainH=320,subTop=mainH+pad.t+10,subH=H-subTop-pad.b;
+  const hi=Math.max(...d.map(k=>k.h)),lo=Math.min(...d.map(k=>k.l)),cw=(W-pad.l-pad.r)/n;
+  const X=i=>pad.l+(i+.5)*cw,Y=v=>pad.t+(hi-v)/(hi-lo)*(mainH-pad.t);
+  let g='';
+  for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4,y=Y(v);g+=`<line x1="${pad.l}" x2="${W-pad.r}" y1="${y}" y2="${y}" stroke="var(--border)"/><text x="2" y="${y+4}" font-size="12" fill="var(--muted-foreground)">${v.toFixed(v>1000?0:2)}</text>`}
+  d.forEach((k,i)=>{const up=k.c>=k.o,col=up?'#dc2626':'#16a34a';g+=`<line x1="${X(i)}" x2="${X(i)}" y1="${Y(k.h)}" y2="${Y(k.l)}" stroke="${col}"/><rect x="${X(i)-cw*.35}" y="${Y(Math.max(k.o,k.c))}" width="${cw*.7}" height="${Math.max(1,Math.abs(Y(k.o)-Y(k.c)))}" fill="${up?'#dc2626':'#16a34a'}"/>`});
+  const line=(arr,c)=>{const pts=arr.slice(-n).map((v,i)=>v==null?null:X(i).toFixed(1)+','+Y(v).toFixed(1)).filter(Boolean);g+=`<polyline fill="none" stroke="${c}" stroke-width="1.3" points="${pts.join(' ')}"/>`};
+  if(kl.ind.MA5)line(ma(all,5),'#d97706');if(kl.ind.MA20)line(ma(all,20),'#2563eb');if(kl.ind.MA60)line(ma(all,60),'#7c3aed');
+  if(kl.ind.BOLL){const m20=ma(all,20);const sd=all.map((_,i)=>i<19?null:Math.sqrt(all.slice(i-19,i+1).reduce((s,x)=>s+(x.c-m20[i])**2,0)/20));line(m20.map((v,i)=>v==null?null:v+2*sd[i]),'#94a3b8');line(m20.map((v,i)=>v==null?null:v-2*sd[i]),'#94a3b8')}
+  const sv=d.map(k=>sub==='vol'?k.v:sub==='oi'?k.oi:(k.c/k.o-1)),smx=Math.max(...sv.map(Math.abs)),smn=sub==='ret'?-smx:0;
+  const SY=v=>subTop+(1-(v-smn)/(smx-smn))*subH;
+  sv.forEach((v,i)=>{const up=d[i].c>=d[i].o;g+=sub==='oi'?'':`<rect x="${X(i)-cw*.35}" y="${Math.min(SY(v),SY(0))}" width="${cw*.7}" height="${Math.abs(SY(v)-SY(0))||1}" fill="${up?'#dc2626':'#16a34a'}" opacity=".6"/>`});
+  if(sub==='oi')g+=`<polyline fill="none" stroke="var(--mk)" points="${sv.map((v,i)=>X(i).toFixed(1)+','+SY(v).toFixed(1)).join(' ')}"/>`;
+  g+=`<text x="2" y="${subTop+12}" font-size="12" fill="var(--muted-foreground)">${{vol:'成交量',oi:market==='futures'?'持仓量':'换手',ret:'日收益'}[sub]}</text>`;
+  g+=`<text x="${pad.l}" y="${H-4}" font-size="12" fill="var(--muted-foreground)">T-${n}</text><text x="${W-40}" y="${H-4}" font-size="12" fill="var(--muted-foreground)">今日</text>`;
+  g+='<line id="klX" y1="14" y2="'+(H-22)+'" stroke="var(--muted-foreground)" stroke-dasharray="3" style="display:none"/><rect id="klHit" x="'+pad.l+'" y="0" width="'+(W-pad.l)+'" height="'+H+'" fill="transparent"/>';
+  svg.innerHTML=g;
+  $('#klOhlc').textContent='鼠标悬停查看 OHLC';const hit=$('#klHit');
+  hit.onmousemove=e=>{const bb=svg.getBoundingClientRect(),x=(e.clientX-bb.left)/bb.width*W,i=Math.max(0,Math.min(n-1,Math.floor((x-pad.l)/cw))),k=d[i];
+    const cx=$('#klX');cx.style.display='';cx.setAttribute('x1',X(i));cx.setAttribute('x2',X(i));
+    $('#klOhlc').innerHTML=`T-${n-1-i} · O <b>${k.o.toFixed(2)}</b> H <b>${k.h.toFixed(2)}</b> L <b>${k.l.toFixed(2)}</b> C <b class="${k.c>=k.o?'pos':'neg'}">${k.c.toFixed(2)}</b> V ${(k.v/1e4).toFixed(1)}万`};
+  hit.onmouseleave=()=>{$('#klX').style.display='none'};
+}
+$('#klQ').oninput=e=>{kl.q=e.target.value;renderKline()};
+$('#klSub').onchange=drawK;
+$$('[data-km]').forEach(b=>b.onclick=()=>{kl.mode=b.dataset.km;$$('[data-km]').forEach(x=>x.setAttribute('aria-pressed',x===b));drawK()});
+$$('[data-r]').forEach(b=>b.onclick=()=>{kl.range=+b.dataset.r;$$('[data-r]').forEach(x=>x.setAttribute('aria-pressed',x===b));drawK()});
+
+/* ---- P4 ---- */
+let mkind='dl';
+const RUNS=[['run_0412_a','dl','rcp_7c1e44',.6,'Fold 3/5 · Seed 2/5','0.071',48211,'running'],['run_0412_b','gp','rcp_21ab90',.48,'Gen 24/50','0.053',48377,'running'],['run_0411_c','ml','rcp_55d0f2',1,'完成','0.064','—','completed'],['run_0410_d','dl','rcp_03aa19',.32,'Fold 2/5 (OOM)','—','—','failed']];
+function renderMining(){
+  $$('#minTabs button').forEach(b=>{b.setAttribute('aria-selected',b.dataset.k===mkind);b.onclick=()=>{mkind=b.dataset.k;renderMining()}});
+  const m=MK[market];
+  const f={
+   dl:`<b>DL Alpha 配方</b><label class="block">FeatureSet<select class="inp mt-1"><option>fs_dl_core_v3</option><option>fs_dl_core_v2</option></select></label>
+     <div class="grid grid-cols-2 gap-3"><label>标签 y_h<select class="inp mt-1"><option>y_5 (截面去均值)</option><option>y_10</option></select></label><label>模型<select class="inp mt-1"><option>${m.model}</option><option>Gated-MLP (基线)</option><option>TCN</option></select></label>
+     <label>Seeds<input class="inp mt-1" type="number" value="5"></label><label>Purge ≥ h<input class="inp mt-1" value="5"></label>
+     <label>Dropout<input class="inp mt-1" value="0.4"></label><label>Loss<select class="inp mt-1"><option>RankIC Loss</option><option>Pearson IC</option></select></label></div>
+     <div class="mk-soft rounded p-2 lbl">💡 ${m.dlHint}</div>`,
+   gp:`<b>STGP 挖掘配方</b><label class="block">FeatureSet<select class="inp mt-1"><option>fs_dl_core_v3</option></select></label>
+     <div class="grid grid-cols-2 gap-3"><label>种群<input class="inp mt-1" value="2000"></label><label>代数<input class="inp mt-1" value="50"></label><label>岛屿数<input class="inp mt-1" value="4"></label><label>标签<select class="inp mt-1"><option>y_5</option></select></label></div>`,
+   ml:`<b>二层合成与消融</b><label class="block">Base Pool<select class="inp mt-1"><option>active × ${market==='futures'?128:342}</option></select></label>
+     <div class="grid grid-cols-2 gap-3"><label>合成器<select class="inp mt-1"><option>Ridge</option><option>LightGBM(受限)</option></select></label><label>对比<select class="inp mt-1"><option>Base vs Base+DL</option></select></label></div>`}[mkind];
+  $('#recipeForm').innerHTML=f;
+  const rid='rcp_'+(Math.abs([...mkind+market].reduce((a,c)=>a*31+c.charCodeAt(0),7))%0xffffff).toString(16).padStart(6,'0');
+  $('#rid').textContent=rid;$('#cli').textContent=`python scripts/run_${mkind==='dl'?'dl':mkind==='gp'?'gp':'ml'}.py --recipe ${rid} --market ${market}`;
+  const fo=[['#64748b',45],['#d97706',12],['var(--mk)',8]];
+  $('#folds').innerHTML=[2018,2019,2020,2021,2022].map((y,i)=>`<div class="flex items-center gap-2"><span class="lbl w-16">Fold ${i+1}</span><div class="fold flex-1"><span style="width:${30+i*8}%;background:#64748b">train</span><span style="width:3%;background:#cbd5e1"></span><span style="width:10%;background:#d97706">valid</span><span style="width:3%;background:#cbd5e1"></span><span style="width:12%;background:var(--mk)">test ${y}</span><span style="flex:1;background:transparent"></span></div></div>`).join('')+`<div class="fold mt-1"><span style="width:88%;background:var(--border);color:var(--muted-foreground)">选型期 Selection</span><span style="flex:1;background:#111827">Lockbox</span></div>`;
+  $('#runs').innerHTML=RUNS.map((r,i)=>`<tr><td>${r[0]}</td><td><span class="chip">${r[1]}</span></td><td><code>${r[2]}</code></td><td><div class="bar"><i style="width:${r[3]*100}%;${r[7]==='failed'?'background:#dc2626':''}"></i></div><div class="lbl">${r[4]}</div></td><td>${r[5]}</td><td>${r[6]}</td><td class="${r[7]==='running'?'warn':r[7]==='completed'?'ok':'bad'}">${r[7]}</td><td class="whitespace-nowrap"><button class="btn" data-log="${i}">日志</button> ${r[7]==='running'?'<button class="btn" data-stop="'+i+'">中止</button>':r[7]==='completed'?'<button class="btn" data-goto2="registry">候选 →</button>':''}</td></tr>`).join('');
+  $$('[data-log]').forEach(b=>b.onclick=()=>{const d=$('#logDrawer');d.hidden=false;const r=RUNS[b.dataset.log];d.textContent=`[${r[0]}] heartbeat ok\n${r[4]}\nvalid daily RankICIR=${r[5]}\n${r[7]==='failed'?'ERROR: CUDA out of memory, batch=64 days':'epoch 18 loss=-0.0512 · early-stop patience 3/8'}`});
+  $$('[data-stop]').forEach(b=>b.onclick=()=>{RUNS[b.dataset.stop][7]='cancelled';$('#runN').textContent=RUNS.filter(r=>r[7]==='running').length;renderMining()});
+  $$('[data-goto2]').forEach(b=>b.onclick=()=>{page='registry';render()});
+}
+$('#launch').onclick=()=>{RUNS.unshift(['run_new_'+Date.now()%1000,mkind,$('#rid').textContent,.02,'Fold 1/5 · Seed 1/5','—',49000+Date.now()%900,'running']);$('#runN').textContent=RUNS.filter(r=>r[7]==='running').length;renderMining()};
+$('#copyCli').onclick=()=>{navigator.clipboard?.writeText($('#cli').textContent).catch(()=>{});dlg('已复制 CLI 命令',$('#cli').textContent)};
+
+/* ---- P5 ---- */
+const CAND=[['dl_alpha_01','dl_alpha','dl_alpha',.62,.21,.41,[1,1,0],'candidate'],['dl_alpha_02','dl_alpha','dl_alpha',.55,.44,.78,[0,0,0],'candidate'],['gp_0713','gp','expression',.48,.35,.33,[1,1,1],'candidate'],['gp_0722','gp','expression',.41,.30,.72,[0,0,0],'candidate'],['manual_q1','manual','code',.37,.18,.29,[1,0,0],'candidate'],['mom_20','seed','expression',.52,.15,.20,[1,1,1],'active'],['roll_yield_z','seed','expression',.44,.12,.18,[1,1,1],'active'],['old_vol','manual','expression',.12,.50,.60,[0,0,0],'deprecated']];
+let rview='cand';
+function renderRegistry(){
+  $$('[data-rv]').forEach(b=>b.onclick=()=>{rview=b.dataset.rv;$$('[data-rv]').forEach(x=>x.setAttribute('aria-pressed',x===b));renderRegistry()});
+  const s=$('#fSrc').value,ic=+$('#fIc').value;
+  const rows=CAND.filter(r=>(rview==='cand'?r[7]==='candidate':r[7]!=='candidate')&&(!s||r[1]===s)&&r[3]>=ic);
+  const g=v=>v?'<span class="ok">✔</span>':'<span class="bad">✘</span>';
+  $('#regRows').innerHTML=rows.map(r=>`<tr class="cursor-pointer" data-n="${r[0]}"><td><input type="checkbox" class="rowSel" aria-label="选择 ${r[0]}"></td><td><b>${r[0]}</b></td><td><span class="chip">${r[1]}</span></td><td>${r[2]}</td><td>${r[3].toFixed(2)}</td><td>${r[4].toFixed(2)}</td><td class="${r[5]>=.6?'bad':''}">${r[5].toFixed(2)}</td><td>${g(r[6][0])}</td><td>${g(r[6][1])}</td><td>${g(r[6][2])}</td><td>${r[7]}</td></tr>`).join('')||'<tr><td colspan="11" class="lbl">无匹配项</td></tr>';
+  $$('#regRows tr[data-n]').forEach(tr=>tr.onclick=e=>{if(e.target.type==='checkbox')return;const r=CAND.find(x=>x[0]===tr.dataset.n);
+    $('#detail').innerHTML=`<div class="flex justify-between"><b>${r[0]}</b><span class="chip">${r[7]}</span></div>
+     <svg id="dChart" viewBox="0 0 300 100" class="w-full"></svg>
+     <div class="lbl space-y-1"><div>source_run：run_0412_a</div><div>recipe：<code>rcp_7c1e44</code></div><div>factor_version：v1</div><div>.npz：data/factors/${r[0]}.npz (T×N)</div></div>
+     <div class="flex gap-2"><button class="btn btn-p flex-1" data-prom="${r[0]}">晋升 active</button><button class="btn flex-1">驳回</button></div>`;
+    lines($('#dChart'),[series(r[3]*100,150,.2,1)],300,100,22);
+    $('[data-prom]').onclick=()=>{if(r[6].every(Boolean)){r[7]='active';$('#candN').textContent=+$('#candN').textContent-1;renderRegistry()}else dlg('无法晋升','三关未全部通过，请先运行「批量三关准入审计」或检查失败项。')}});
+}
+$('#fSrc').onchange=renderRegistry;$('#fIc').oninput=renderRegistry;
+$('#selAll').onchange=e=>$$('.rowSel').forEach(c=>c.checked=e.target.checked);
+$('#audit').onclick=()=>{const n=$$('.rowSel:checked').length;if(!n)return dlg('请先勾选候选因子','批量审计将对所选因子依次执行：两两相关性 → Spanning Test → 二层合成消融。');dlg('审计已派发','已为 '+n+' 个候选因子创建 admission 任务，进度见「挖掘 / DL 训练」Run 监控。')};
+
+/* ---- boot ---- */
+const h=location.hash.match(/^#\/(futures|stocks)\/(\w+)/);if(h){market=h[1];if($('#p-'+h[2]))page=h[2]}
+render();
+</script>
+</body>
+</html>

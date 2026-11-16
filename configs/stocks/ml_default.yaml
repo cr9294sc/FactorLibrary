@@ -1,0 +1,32 @@
+target_label: "y_5"
+features_status: ["accepted", "active"]
+
+walk_forward:
+  start_predict_year: 2023
+  end_predict_year: 2024
+  train_window: "expanding"
+  min_train_years: 4
+  purge_window: 5
+  validation_size_days: 252
+  embargo_window: 0
+
+lightgbm:
+  objective: "regression_l2"
+  metric: "rmse"
+  boosting_type: "gbdt"
+  max_depth: 4
+  num_leaves: 15
+  learning_rate: 0.03
+  n_estimators: 1000
+  min_child_samples: 200
+  feature_fraction: 0.70
+  bagging_fraction: 0.80
+  bagging_freq: 1
+  early_stopping_rounds: 50
+  seed: 42
+
+models:
+  - "equal_weight"
+  - "rolling_icir"
+  - "ridge"
+  - "lightgbm"

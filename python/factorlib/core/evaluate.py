@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import factorlib_core
 import numpy as np
 
+from factorlib.core._hooks import resolve_panel_market, resolve_profile
 from factorlib.core.panel import Panel
 from factorlib.core.probe import (
     FactorDefinition,
@@ -33,13 +34,11 @@ from factorlib.core.registry import FactorMetricsRecord, FactorRecord, FactorReg
 from factorlib.core.styles import (
     _pearson_corr_1d,
     _spearman_corr_1d,
-    compute_futures_styles,
     compute_style_exposures,
 )
 
 if TYPE_CHECKING:
     from factorlib.core.backtest import BacktestResult
-    from factorlib.core.config import BacktestConfig, PortfolioConfig
 
 # 白皮书 Q6 与 13.4 节规定的标准样本切分区间
 DEFAULT_SPLITS: dict[str, tuple[str, str]] = {
@@ -122,6 +121,7 @@ def evaluate_factor(
     n_quantiles: int = 5,
     force_sign: int | None = None,
     postprocess: PostprocessSpec | None = None,
+    profile: Any | None = None,
 ) -> FactorEvaluationResult:
     """对单个 DSL 因子表达式或 FactorDefinition 执行全时段多预测期数综合评价。"""
     engine, dates, _ = _resolve_engine_and_panel(engine_or_panel)
@@ -139,7 +139,9 @@ def evaluate_factor(
                 postprocess=parse_postprocess_pipeline(postprocess),
             )
         if panel_obj is not None:
-            factor_mat, probe_rep = evaluate_factor_definition(defn, panel_obj, engine=engine)
+            factor_mat, probe_rep = evaluate_factor_definition(
+                defn, panel_obj, engine=engine, profile=profile
+            )
             canon_expr = probe_rep["canon_expr"]
             canon_hash = probe_rep["canon_hash"]
             n_nodes = int(probe_rep["n_nodes"])
@@ -494,6 +496,7 @@ def evaluate_factor_v4_stats(
     min_names: int = 5,
     benchmark_rets: np.ndarray | None = None,
     trading_days_per_year: float = 250.0,
+    profile: Any | None = None,
 ) -> dict[str, Any]:
     """执行 FactorLab Schema v4 标准统计分布评价 (Layer 1 Statistical Evaluation)。"""
     T, N = factor_matrix.shape
@@ -653,8 +656,11 @@ def evaluate_factor_v4_stats(
         y_to = top_turnover[y_idx][np.isfinite(top_turnover[y_idx])]
         y_dict["daily_turnover"] = float(np.mean(y_to)) if len(y_to) > 0 else 0.0
 
-    # 6 大期货风格暴露归因
-    styles_dict = compute_futures_styles(panel)
+    # 按市场 Profile 计算风格暴露归因
+    resolved_profile = (
+        profile if profile is not None else resolve_profile(resolve_panel_market(panel))
+    )
+    styles_dict = resolved_profile.style_factors(panel)
     style_exp = compute_style_exposures(
         factor_matrix,
         styles_dict,
@@ -730,22 +736,26 @@ def run_factor_workflow(
     panel: Panel,
     definition: FactorDefinition | dict[str, Any] | str,
     postprocess: PostprocessSpec | None = None,
-    portfolio_config: PortfolioConfig | None = None,
-    backtest_config: BacktestConfig | None = None,
+    portfolio_config: Any | None = None,
+    backtest_config: Any | None = None,
     registry: FactorRegistry | None = None,
     materialize: bool = True,
     lock_version: bool = True,
     force_sign: int | None = None,
     n_quantiles: int = 5,
+    profile: Any | None = None,
 ) -> DualLayerWorkflowResult:
     """一键运行完整 6 阶段因子工作流：
     Stage 2/3 (定义与静态探针) -> Stage 4 (Rust 求值、后处理与物化) -> Stage 5 (Layer 1 统计评价 + Layer 2 实盘回测)。
     """
     from factorlib.core.backtest import run_backtest
-    from factorlib.core.config import BacktestConfig
     from factorlib.core.portfolio import (
         build_portfolio_weights,
         compute_daily_returns_from_prices,
+    )
+
+    resolved_profile = (
+        profile if profile is not None else resolve_profile(resolve_panel_market(panel))
     )
 
     if isinstance(definition, FactorDefinition):
@@ -766,9 +776,17 @@ def run_factor_workflow(
 
     # Stage 3 & Stage 4: 静态探针校验 + 主因子求值 + 12 算子声明式后处理
     engine = panel.to_rust_engine()
-    factor_mat, probe_rep = evaluate_factor_definition(defn, panel, engine=engine)
+    factor_mat, probe_rep = evaluate_factor_definition(
+        defn, panel, engine=engine, profile=resolved_profile
+    )
 
     # Stage 5 Layer 1 (Part A): 多样本切分、多预测窗口评价并推断方向 sign
+    avail_horizons = tuple(
+        int(lbl[2:])
+        for lbl in sorted(engine.label_names)
+        if lbl.startswith("y_") and lbl[2:].isdigit()
+    )
+    eval_horizons = tuple(h for h in DEFAULT_HORIZONS if h in avail_horizons) or avail_horizons
     eval_res = _evaluate_factor_matrix_core(
         engine=engine,
         dates=np.array([str(d) for d in panel.dates]),
@@ -777,33 +795,55 @@ def run_factor_workflow(
         canon_hash=probe_rep["canon_hash"],
         n_nodes=int(probe_rep["n_nodes"]),
         depth=int(probe_rep["depth"]),
+        horizons=eval_horizons,
         n_quantiles=n_quantiles,
         force_sign=force_sign,
         probe_report=probe_rep,
     )
 
-    # Stage 5 Layer 1 (Part B): FactorLab Schema v4 统计分布评估与 6 大风格暴露归因
+    # Stage 5 Layer 1 (Part B): FactorLab Schema v4 统计分布评估与风格暴露归因
+    bench_rets = None
+    if "bench_ret" in panel.aux_fields:
+        candidate_bench = panel.aux_fields["bench_ret"][:, 0]
+        if np.any(np.isfinite(candidate_bench)):
+            bench_rets = candidate_bench
+
     v4_stats = evaluate_factor_v4_stats(
         factor_matrix=factor_mat,
         panel=panel,
         n_quantiles=n_quantiles,
         sign=eval_res.sign,
+        benchmark_rets=bench_rets,
+        profile=resolved_profile,
     )
     eval_res.v4_stats = v4_stats
 
-    # Stage 5 Layer 2: 连续组合优化 + Rust 期货实盘逐日盯市回测
-    bt_cfg = backtest_config if backtest_config is not None else BacktestConfig()
-    port_cfg = portfolio_config if portfolio_config is not None else bt_cfg.portfolio
+    # Stage 5 Layer 2: 市场组合优化 + Rust 实盘持仓级回测
+    bt_cfg = backtest_config
+    port_cfg = (
+        portfolio_config
+        if portfolio_config is not None
+        else (bt_cfg.portfolio if bt_cfg is not None else None)
+    )
 
     directed_scores = np.asfortranarray(factor_mat * float(eval_res.sign), dtype=np.float64)
-    hist_returns = compute_daily_returns_from_prices(panel.get_field("close"))
+    close_field = (
+        panel.fields.get("close")
+        if "close" in panel.fields
+        else panel.fields.get("close_hfq", panel.fields.get("open_adj"))
+    )
+    if close_field is None:
+        raise KeyError("面板中未找到收盘价字段 ('close' / 'close_hfq' / 'open_adj')")
+    hist_returns = compute_daily_returns_from_prices(close_field)
     weights = build_portfolio_weights(
         scores=directed_scores,
         returns=hist_returns,
         mask=panel.valid_mask,
         cfg=port_cfg,
+        profile=resolved_profile,
+        panel=panel,
     )
-    bt_res = run_backtest(panel=panel, weights=weights, config=bt_cfg)
+    bt_res = run_backtest(panel=panel, weights=weights, config=bt_cfg, profile=resolved_profile)
 
     # 可选注册表入库、物化与不可变版本锁定
     fid: int | None = None

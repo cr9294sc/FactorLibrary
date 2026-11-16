@@ -664,3 +664,244 @@ def load_backtest_config(path: Path) -> BacktestConfig:
         portfolio=PortfolioConfig(**port_sec),
         execution=ExecutionConfig(**exec_sec),
     )
+
+
+# ==============================================================================
+# M1.4: A 股市场配置定义与校验
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class StockUniverseFilterConfig:
+    exclude_suspended: bool = True
+    exclude_st: bool = True
+    min_listed_days: int = 120
+
+    def __post_init__(self) -> None:
+        if self.min_listed_days < 0:
+            raise ConfigError(
+                f"universe_filters.min_listed_days 不得为负, 实际 {self.min_listed_days}"
+            )
+
+
+@dataclass(frozen=True)
+class StockDataConfig:
+    raw_dir: Path
+    derived_dir: Path
+    panel_version: str = "v1"
+    benchmark_id: str = "000985.XSHG"
+    price_basis: str = "hfq"  # hfq | raw
+    entry_window: str = "open"  # open | vwap_open_30m
+    exec_price_mode: str = "open_adj"  # open_adj | vwap_adj
+    start_date: date = date(2015, 11, 1)
+    end_date: date = date(2024, 12, 31)
+    universe_filters: StockUniverseFilterConfig = field(default_factory=StockUniverseFilterConfig)
+    label_horizons: tuple[int, ...] = (1, 2, 5, 10)
+
+    def __post_init__(self) -> None:
+        if self.start_date > self.end_date:
+            raise ConfigError("timeline.start_date 不得晚于 end_date")
+        if self.price_basis not in ("hfq", "raw"):
+            raise ConfigError(
+                f"stocks data.price_basis 必须为 'hfq' 或 'raw', 实际 {self.price_basis!r}"
+            )
+        if self.entry_window not in ("open", "vwap_open_30m"):
+            raise ConfigError(
+                f"stocks data.entry_window 必须为 'open' 或 'vwap_open_30m', 实际 {self.entry_window!r}"
+            )
+        if self.exec_price_mode not in ("open_adj", "vwap_adj"):
+            raise ConfigError(
+                f"stocks data.exec_price_mode 必须为 'open_adj' 或 'vwap_adj', 实际 {self.exec_price_mode!r}"
+            )
+        if not self.benchmark_id:
+            raise ConfigError("stocks data.benchmark_id 不能为空")
+        if not self.label_horizons or any(h <= 0 for h in self.label_horizons):
+            raise ConfigError("labels.horizons 必须为正整数列表")
+
+    @property
+    def panel_dir(self) -> Path:
+        return self.derived_dir / self.panel_version
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["raw_dir"] = str(self.raw_dir)
+        out["derived_dir"] = str(self.derived_dir)
+        out["start_date"] = self.start_date.isoformat()
+        out["end_date"] = self.end_date.isoformat()
+        out["label_horizons"] = list(self.label_horizons)
+        return out
+
+    def hash(self) -> str:
+        payload = self.to_dict()
+        payload.pop("raw_dir", None)
+        payload.pop("derived_dir", None)
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class StockFeesConfig:
+    market: str = "stocks"
+    lot_size: int = 100
+    tick_size: float = 0.01
+    commission_rate: float = 0.0001
+    min_commission: float = 5.0
+    stamp_duty_rate: float = 0.0005
+    transfer_fee_rate: float = 0.00001
+    slip_ticks: float = 1.0
+    slip_bps: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.lot_size != 100:
+            raise ConfigError(f"A 股交易单位 lot_size 必须严格等于 100, 实际 {self.lot_size}")
+        if self.tick_size <= 0.0:
+            raise ConfigError(f"stocks fees.tick_size 必须 > 0, 实际 {self.tick_size}")
+        if self.min_commission < 0.0:
+            raise ConfigError(f"stocks fees.min_commission 不得为负, 实际 {self.min_commission}")
+        for attr in (
+            "commission_rate",
+            "stamp_duty_rate",
+            "transfer_fee_rate",
+            "slip_ticks",
+            "slip_bps",
+        ):
+            val = float(getattr(self, attr))
+            if val < 0.0:
+                raise ConfigError(f"stocks fees.{attr} 不得为负, 实际 {val}")
+
+
+@dataclass(frozen=True)
+class StockPortfolioConfig:
+    top_quantile: float = 0.10
+    industry_neutral: bool = False
+    max_single_weight: float = 0.05
+    max_gross_leverage: float = 1.0
+    rebalance_buffer: float = 0.005
+    long_only: bool = True
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.top_quantile <= 1.0):
+            raise ConfigError("stocks portfolio.top_quantile 必须在 (0, 1] 内")
+        if not (0.0 < self.max_single_weight <= 1.0):
+            raise ConfigError("stocks portfolio.max_single_weight 必须在 (0, 1] 内")
+        if self.max_gross_leverage <= 0.0:
+            raise ConfigError("stocks portfolio.max_gross_leverage 必须 > 0")
+        if not (0.0 <= self.rebalance_buffer < 1.0):
+            raise ConfigError("stocks portfolio.rebalance_buffer 必须在 [0, 1) 内")
+
+
+@dataclass(frozen=True)
+class StockExecutionConfig:
+    lot_size: int = 100
+    t_plus_one: bool = True
+    allow_short: bool = False
+    entry_window: str = "open"
+    price_basis: str = "hfq"
+
+    def __post_init__(self) -> None:
+        if self.lot_size != 100:
+            raise ConfigError(f"stocks execution.lot_size 必须 == 100, 实际 {self.lot_size}")
+        if self.entry_window not in ("open", "vwap_open_30m"):
+            raise ConfigError(
+                f"stocks execution.entry_window 必须为 'open' 或 'vwap_open_30m', 实际 {self.entry_window!r}"
+            )
+        if self.price_basis not in ("hfq", "raw"):
+            raise ConfigError(
+                f"stocks execution.price_basis 必须为 'hfq' 或 'raw', 实际 {self.price_basis!r}"
+            )
+
+
+@dataclass(frozen=True)
+class StockBacktestConfig:
+    capital: CapitalConfig = field(default_factory=CapitalConfig)
+    portfolio: StockPortfolioConfig = field(default_factory=StockPortfolioConfig)
+    execution: StockExecutionConfig = field(default_factory=StockExecutionConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def load_stock_data_config(path: Path, root: Path | None = None) -> StockDataConfig:
+    """加载并校验 ``configs/stocks/data.yaml``。"""
+    root = Path(root) if root is not None else Path.cwd()
+    raw = _load_yaml(path)
+
+    for key in ("raw_dir", "derived_dir"):
+        if key not in raw:
+            raise ConfigError(f"stocks data.yaml 缺少必填项 {key}")
+
+    tl = _section(raw, "timeline")
+    uf = _section(raw, "universe_filters")
+    lab = _section(raw, "labels")
+
+    kwargs: dict[str, Any] = {
+        "raw_dir": _resolve(raw["raw_dir"], root),
+        "derived_dir": _resolve(raw["derived_dir"], root),
+        "panel_version": str(raw.get("panel_version", "v1")),
+        "benchmark_id": str(raw.get("benchmark_id", "000985.XSHG")),
+        "price_basis": str(raw.get("price_basis", "hfq")),
+        "entry_window": str(raw.get("entry_window", "open")),
+        "exec_price_mode": str(raw.get("exec_price_mode", "open_adj")),
+        "universe_filters": StockUniverseFilterConfig(**uf),
+    }
+    if "start_date" in tl:
+        kwargs["start_date"] = _parse_date(tl["start_date"], "timeline.start_date")
+    if "end_date" in tl:
+        kwargs["end_date"] = _parse_date(tl["end_date"], "timeline.end_date")
+    if "horizons" in lab:
+        kwargs["label_horizons"] = tuple(int(h) for h in lab["horizons"])
+    return StockDataConfig(**kwargs)
+
+
+def load_stock_fees_config(path: Path) -> StockFeesConfig:
+    """加载并校验 ``configs/stocks/fees.yaml``。"""
+    raw = _load_yaml(path)
+    fees = _section(raw, "fees")
+    return StockFeesConfig(
+        market=str(raw.get("market", "stocks")),
+        lot_size=int(raw.get("lot_size", 100)),
+        tick_size=float(raw.get("tick_size", 0.01)),
+        commission_rate=float(fees.get("commission_rate", 0.0001)),
+        min_commission=float(fees.get("min_commission", 5.0)),
+        stamp_duty_rate=float(fees.get("stamp_duty_rate", 0.0005)),
+        transfer_fee_rate=float(fees.get("transfer_fee_rate", 0.00001)),
+        slip_ticks=float(fees.get("slip_ticks", 1.0)),
+        slip_bps=float(fees.get("slip_bps", 0.0)),
+    )
+
+
+def load_stock_backtest_config(path: Path) -> StockBacktestConfig:
+    """加载并校验 ``configs/stocks/backtest.yaml``。"""
+    raw = _load_yaml(path)
+    cap_sec = _section(raw, "capital")
+    port_sec = _section(raw, "portfolio")
+    exec_sec = _section(raw, "execution")
+    return StockBacktestConfig(
+        capital=CapitalConfig(**cap_sec),
+        portfolio=StockPortfolioConfig(**port_sec),
+        execution=StockExecutionConfig(**exec_sec),
+    )
+
+
+def validate_profile_configs(market: str, config_dir: Path | None = None) -> dict[str, Any]:
+    """按市场 profile 校验整套配置文件（data / universe / fees / backtest / gp / ml）。"""
+    m = str(market).strip().lower()
+    cfg_root = Path(config_dir) if config_dir is not None else Path("configs") / m
+    if m == "futures":
+        return {
+            "data": load_data_config(cfg_root / "data.yaml"),
+            "universe": load_universe_config(cfg_root / "universe.yaml"),
+            "backtest": load_backtest_config(cfg_root / "backtest.yaml"),
+            "gp": load_gp_config(cfg_root / "gp_default.yaml"),
+            "ml": load_ml_config(cfg_root / "ml_default.yaml"),
+        }
+    if m == "stocks":
+        return {
+            "data": load_stock_data_config(cfg_root / "data.yaml"),
+            "universe": load_universe_config(cfg_root / "universe.yaml"),
+            "fees": load_stock_fees_config(cfg_root / "fees.yaml"),
+            "backtest": load_stock_backtest_config(cfg_root / "backtest.yaml"),
+            "gp": load_gp_config(cfg_root / "gp_default.yaml"),
+            "ml": load_ml_config(cfg_root / "ml_default.yaml"),
+        }
+    raise ConfigError(f"不支持的市场配置校验: {market!r}")

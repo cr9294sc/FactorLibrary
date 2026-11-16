@@ -3,6 +3,7 @@
 from .factorlib_core import (
     Engine,
     apply_postprocess_op,
+    build_forward_labels,
     calc_correlation_matrix,
     calc_ic,
     calc_pairwise_correlation,
@@ -10,16 +11,20 @@ from .factorlib_core import (
     calc_top_quantile_turnover,
     calc_turnover,
     check_expr,
+    compound_forward_labels,
     list_operators,
     parse_and_canonicalize,
     run_fast_backtest,
     run_futures_backtest,
+    run_stock_backtest,
 )
 
 __all__ = [
     "Engine",
     "apply_postprocess_op",
+    "build_forward_labels",
     "check_expr",
+    "compound_forward_labels",
     "list_operators",
     "parse_and_canonicalize",
     "calc_ic",
@@ -30,4 +35,5 @@ __all__ = [
     "calc_correlation_matrix",
     "run_fast_backtest",
     "run_futures_backtest",
+    "run_stock_backtest",
 ]

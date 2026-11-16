@@ -1,0 +1,17 @@
+capital:
+  init_cash: 10000000.0
+
+portfolio:
+  top_quantile: 0.10                 # 多头等权分位比例 (默认 Top 10%)
+  industry_neutral: false            # 是否按申万一级行业内等选
+  max_single_weight: 0.05            # 单只个股最大权重上限 5%
+  max_gross_leverage: 1.0            # 纯多头现货最大总仓位 100%
+  rebalance_buffer: 0.005            # 0.5% 换手缓冲带
+  long_only: true
+
+execution:
+  lot_size: 100
+  t_plus_one: true
+  allow_short: false
+  entry_window: "open"
+  price_basis: "hfq"

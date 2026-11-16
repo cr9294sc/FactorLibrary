@@ -1,0 +1,20 @@
+raw_dir: "./data/raw/stocks"
+derived_dir: "./data/derived/stocks"
+panel_version: "v1"
+
+benchmark_id: "000985.XSHG"          # 中证全指基准指数
+price_basis: "hfq"                   # 复权口径: "hfq" | "raw"
+entry_window: "open"                 # 执行价窗口: "open" | "vwap_open_30m"
+exec_price_mode: "open_adj"          # StockPanelLoader 执行价字段 ("open_adj" | "vwap_adj")
+
+timeline:
+  start_date: "2015-11-01"
+  end_date: "2024-12-31"
+
+universe_filters:
+  exclude_suspended: true            # 剔除停牌日
+  exclude_st: true                   # 剔除 ST / *ST 标的
+  min_listed_days: 120               # 新股剔除自然日天数阈值
+
+labels:
+  horizons: [1, 2, 5, 10]

@@ -1861,3 +1861,96 @@ def pp_emadecay_ref(x1: np.ndarray, window: int = 5) -> np.ndarray:
             if den > 0.0:
                 out[t, s] = num / den
     return out
+
+
+# ============================================================================
+# 10. 统一 T+1 前向预测标签参考实现 (M1.3)
+# ============================================================================
+
+
+def forward_returns_ref(
+    entry_price: np.ndarray,
+    exit_price: np.ndarray,
+    entry_ok: np.ndarray,
+    exit_ok: np.ndarray,
+    horizons: list[int] | tuple[int, ...],
+    strict: bool = True,
+) -> dict[int, np.ndarray]:
+    """点对点 T+1 前向收益率标签参考实现，用于与 Rust `build_forward_labels` 对账。"""
+    ep = _clean(entry_price)
+    xp = _clean(exit_price)
+    eok = np.asarray(entry_ok, dtype=bool)
+    xok = np.asarray(exit_ok, dtype=bool)
+    t_len, n_cols = ep.shape
+
+    next_exit: np.ndarray | None = None
+    if not strict and t_len > 0:
+        next_exit = np.full((t_len, n_cols), -1, dtype=np.int64)
+        for j in range(n_cols):
+            nxt = -1
+            for tau in range(t_len - 1, -1, -1):
+                if xok[tau, j] and np.isfinite(xp[tau, j]) and xp[tau, j] > 0.0:
+                    nxt = tau
+                next_exit[tau, j] = nxt
+
+    out: dict[int, np.ndarray] = {}
+    for h in horizons:
+        h_int = int(h)
+        mat = np.full((t_len, n_cols), np.nan, dtype=np.float64, order="F")
+        if h_int <= 0 or t_len <= 1 + h_int:
+            out[h_int] = mat
+            continue
+        max_rows = t_len - 1 - h_int
+        for j in range(n_cols):
+            for t in range(max_rows):
+                t_in = t + 1
+                if not eok[t_in, j]:
+                    continue
+                p_in = ep[t_in, j]
+                if not (np.isfinite(p_in) and p_in > 0.0):
+                    continue
+                t_exit = t + 1 + h_int
+                if strict:
+                    if not xok[t_exit, j]:
+                        continue
+                    p_out = xp[t_exit, j]
+                    if np.isfinite(p_out) and p_out > 0.0:
+                        mat[t, j] = p_out / p_in - 1.0
+                else:
+                    assert next_exit is not None
+                    out_idx = int(next_exit[t_exit, j])
+                    if out_idx >= 0:
+                        p_out = xp[out_idx, j]
+                        if np.isfinite(p_out) and p_out > 0.0:
+                            mat[t, j] = p_out / p_in - 1.0
+        out[h_int] = mat
+    return out
+
+
+def compound_forward_labels_ref(
+    step_returns: np.ndarray,
+    horizons: list[int] | tuple[int, ...],
+) -> dict[str, np.ndarray]:
+    """链式单步执行收益的多期复合参考实现，用于与 Rust `compound_forward_labels` 对账。"""
+    sr = _clean(step_returns)
+    t_len, n_cols = sr.shape
+    out: dict[str, np.ndarray] = {}
+
+    r_exec_next = np.full((t_len, n_cols), np.nan, dtype=np.float64, order="F")
+    if t_len >= 2:
+        r_exec_next[:-1, :] = sr[1:, :]
+    out["r_exec_next"] = r_exec_next
+
+    for h in horizons:
+        h_int = int(h)
+        mat = np.full((t_len, n_cols), np.nan, dtype=np.float64, order="F")
+        if h_int <= 0 or t_len <= h_int:
+            out[f"y_{h_int}"] = mat
+            continue
+        for j in range(n_cols):
+            for t in range(t_len - h_int):
+                seg = sr[t + 1 : t + 1 + h_int, j]
+                if np.all(np.isfinite(seg)):
+                    mat[t, j] = float(np.prod(1.0 + seg) - 1.0)
+        out[f"y_{h_int}"] = mat
+    return out

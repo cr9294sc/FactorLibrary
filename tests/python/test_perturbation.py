@@ -472,3 +472,164 @@ def test_perturbation_real_data(tmp_path: Path):
     y1_t0_pert = p_pert.labels["y_1"][cutoff_idx - 1, :]
     y1_t0_diff = np.nanmax(np.abs(y1_t0_base - y1_t0_pert))
     assert y1_t0_diff > 0.001, f"T0 处的 y_1 预测标签预期受未来扰动影响，实际差异仅 {y1_t0_diff}"
+
+
+def _generate_synthetic_stock_raw(
+    raw_dir: Path,
+    dates: list[date],
+    perturb_from: date | None = None,
+) -> None:
+    """生成微型 A 股原始 Parquet 数据集（含 bar_1d / trade_status / ex_factor / industry_sw / instruments_info / benchmark）。"""
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    symbols = ["000001.XSHE", "000002.XSHE", "600519.XSHG"]
+
+    bar_rows = []
+    ts_rows = []
+    for d_idx, d in enumerate(dates):
+        is_pert = perturb_from is not None and d > perturb_from
+        for s_idx, sym in enumerate(symbols):
+            base_p = 10.0 * (s_idx + 1) + d_idx * 0.2
+            p = base_p * ((1.8 + 0.3 * d_idx) if is_pert else 1.0)
+            susp = bool(is_pert and s_idx == 1)
+            st_flag = bool(is_pert and s_idx == 2)
+            bar_rows.append(
+                {
+                    "trading_date": d,
+                    "order_book_id": sym,
+                    "open": p * 0.99,
+                    "high": p * 1.02,
+                    "low": p * 0.98,
+                    "close": p,
+                    "prev_close": base_p,
+                    "limit_up": p * 1.10,
+                    "limit_down": p * 0.90,
+                    "volume": 0.0 if susp else 100000.0 * (s_idx + 1),
+                    "total_turnover": 0.0 if susp else 100000.0 * (s_idx + 1) * p,
+                }
+            )
+            ts_rows.append(
+                {
+                    "trading_date": d,
+                    "order_book_id": sym,
+                    "is_st": st_flag,
+                    "is_suspended": susp,
+                }
+            )
+
+    (raw_dir / "bar_1d").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(bar_rows).write_parquet(raw_dir / "bar_1d" / "bar_1d_2024.parquet")
+
+    (raw_dir / "trade_status").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(ts_rows).write_parquet(raw_dir / "trade_status" / "trade_status_2024.parquet")
+
+    (raw_dir / "ex_factor").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "order_book_id": symbols,
+            "ex_date": [dates[0]] * len(symbols),
+            "ex_cum_factor": [1.0, 1.0, 1.0],
+        }
+    ).write_parquet(raw_dir / "ex_factor" / "ex_factor.parquet")
+
+    (raw_dir / "industry_sw").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "snapshot_date": [dates[0]] * len(symbols),
+            "order_book_id": symbols,
+            "first_industry_name": ["Bank", "RealEstate", "Food"],
+        }
+    ).write_parquet(raw_dir / "industry_sw" / "industry_sw_2024.parquet")
+
+    (raw_dir / "instruments_info").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "order_book_id": symbols,
+            "listed_date": ["2010-01-01", "2010-01-01", "2010-01-01"],
+            "de_listed_date": ["0000-00-00", "0000-00-00", "0000-00-00"],
+        }
+    ).write_parquet(raw_dir / "instruments_info" / "instruments_info.parquet")
+
+    bench_rows = []
+    for d_idx, d in enumerate(dates):
+        is_pert = perturb_from is not None and d > perturb_from
+        bp = 4000.0 + d_idx * 10.0 + (800.0 if is_pert else 0.0)
+        bench_rows.append(
+            {
+                "order_book_id": "000985.XSHG",
+                "trading_date": d,
+                "open": bp,
+                "close": bp + 5.0,
+            }
+        )
+    (raw_dir / "benchmark").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(bench_rows).write_parquet(raw_dir / "benchmark" / "index_bar_1d.parquet")
+
+
+def test_stock_perturbation_causality(tmp_path: Path):
+    """M1.5 股票因果摄动测试：篡改 T > T_perturb 的行情、停牌、ST 与基准，T <= T_perturb 必须 bit 等价。"""
+    from factorlib.core.probe import apply_postprocess_pipeline
+    from factorlib.markets.stocks.panel_loader import StockPanelLoader
+    from factorlib.markets.stocks.profile import StocksProfile
+
+    dates = [date(2024, 1, i) for i in range(2, 12)]
+    cutoff_date = dates[4]
+    cutoff_idx = 5
+
+    raw_base = tmp_path / "stock_raw_base"
+    raw_pert = tmp_path / "stock_raw_pert"
+    _generate_synthetic_stock_raw(raw_base, dates, perturb_from=None)
+    _generate_synthetic_stock_raw(raw_pert, dates, perturb_from=cutoff_date)
+
+    p_base = StockPanelLoader(raw_base).load(start_date=dates[0], end_date=dates[-1]).to_panel()
+    p_pert = StockPanelLoader(raw_pert).load(start_date=dates[0], end_date=dates[-1]).to_panel()
+
+    # 1. T <= T_perturb 特征矩阵与掩码严格 bit 等价
+    for fname, base_mat in p_base.fields.items():
+        np.testing.assert_array_equal(
+            base_mat[:cutoff_idx, :],
+            p_pert.fields[fname][:cutoff_idx, :],
+            err_msg=f"股票特征 {fname!r} 在 T <= {cutoff_date} 存在未来泄露!",
+        )
+    np.testing.assert_array_equal(p_base.mask[:cutoff_idx, :], p_pert.mask[:cutoff_idx, :])
+
+    # 除前向基准收益与未来标签外，T <= T_perturb 的状态/价格 aux_fields 亦必须 bit 等价
+    for aname in (
+        "open_raw",
+        "close_raw",
+        "is_suspended",
+        "is_st",
+        "can_buy_mask",
+        "can_sell_mask",
+    ):
+        np.testing.assert_array_equal(
+            p_base.aux_fields[aname][:cutoff_idx, :],
+            p_pert.aux_fields[aname][:cutoff_idx, :],
+            err_msg=f"股票辅助字段 {aname!r} 在 T <= {cutoff_date} 存在未来泄露!",
+        )
+
+    # 2. T <= T_perturb 的因果因子与后处理输出严格 bit 等价
+    prof = StocksProfile()
+    raw_f_base = np.asarray(p_base.to_rust_engine().eval("ts_mean(close_hfq, 3)"))
+    raw_f_pert = np.asarray(p_pert.to_rust_engine().eval("ts_mean(close_hfq, 3)"))
+    pp_base = apply_postprocess_pipeline(
+        raw_f_base, prof.default_postprocess(), p_base, profile=prof
+    )
+    pp_pert = apply_postprocess_pipeline(
+        raw_f_pert, prof.default_postprocess(), p_pert, profile=prof
+    )
+    np.testing.assert_array_equal(pp_base[:cutoff_idx, :], pp_pert[:cutoff_idx, :])
+
+    # 3. 标签因果性断言: y_1[T] 仅依赖 [T+1, T+2]，因此 T <= cutoff_idx - 3 不受 > cutoff_date 扰动影响，
+    #    而 T = cutoff_idx - 2 跨入 cutoff_idx (T0+1) 扰动期必然改变
+    np.testing.assert_array_equal(
+        p_base.labels["y_1"][: cutoff_idx - 2, :],
+        p_pert.labels["y_1"][: cutoff_idx - 2, :],
+    )
+    assert (
+        np.nanmax(
+            np.abs(
+                p_base.labels["y_1"][cutoff_idx - 2, :] - p_pert.labels["y_1"][cutoff_idx - 2, :]
+            )
+        )
+        > 0.1
+    )

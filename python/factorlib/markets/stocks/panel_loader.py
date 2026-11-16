@@ -11,16 +11,46 @@
 from __future__ import annotations
 
 import glob
+import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+import factorlib_core
 import numpy as np
 import polars as pl
 
+from factorlib.core.config import StockDataConfig
 from factorlib.core.panel import Panel
+
+STOCK_AUX_BACKTEST_FIELDS: frozenset[str] = frozenset(
+    {
+        "open_raw",
+        "close_raw",
+        "high_raw",
+        "low_raw",
+        "ex_cum_factor",
+        "limit_up",
+        "limit_down",
+        "is_suspended",
+        "is_st",
+        "can_buy_mask",
+        "can_sell_mask",
+        "bench_fwd_open_1",
+        "bench_fwd_close_1",
+        "bench_ret",
+    }
+)
+
+_RAW_TO_AUX_ALIAS: dict[str, str] = {
+    "open": "open_raw",
+    "close": "close_raw",
+    "high": "high_raw",
+    "low": "low_raw",
+}
 
 
 @dataclass
@@ -72,27 +102,87 @@ class StockPanelData:
     def N(self) -> int:
         return len(self.symbols)
 
-    def to_panel(self) -> Panel:
-        """导出为统一的 core.Panel 标准内存容器。"""
-        # 将 base_univ_mask 作为主在池掩码
-        panel_fields = dict(self.fields)
-        listed_arr = np.asfortranarray(self.stock_listed_days)
-        ind_arr = np.asfortranarray(self.industry_code)
+    def to_panel(self, horizons: Sequence[int] = (1, 2, 5, 10)) -> Panel:
+        """导出为统一的 core.Panel 标准内存容器（含 Rust labels 与物理隔离 aux_fields）。"""
+        T, N = self.shape
+        panel_fields: dict[str, np.ndarray] = {}
+        aux_fields: dict[str, np.ndarray] = {}
+
+        for k, v in self.fields.items():
+            if k in _RAW_TO_AUX_ALIAS:
+                aux_fields[_RAW_TO_AUX_ALIAS[k]] = np.asfortranarray(v, dtype=np.float64)
+            elif k in STOCK_AUX_BACKTEST_FIELDS:
+                aux_fields[k] = np.asfortranarray(v, dtype=np.float64)
+            else:
+                panel_fields[k] = np.asfortranarray(v, dtype=np.float64)
+
+        listed_arr = np.asfortranarray(self.stock_listed_days, dtype=np.float64)
+        ind_arr = np.asfortranarray(self.industry_code, dtype=np.float64)
         panel_fields["stock_listed_days"] = listed_arr
         panel_fields["listed_days"] = listed_arr
         panel_fields["industry_code"] = ind_arr
         panel_fields["sector"] = ind_arr
-        panel_fields["limit_mask"] = np.asfortranarray(self.limit_mask)
+        panel_fields["limit_mask"] = np.asfortranarray(self.limit_mask, dtype=np.float64)
+        panel_fields["in_universe_mask"] = np.asfortranarray(
+            np.where(self.base_univ_mask, 1.0, np.nan), dtype=np.float64
+        )
 
-        # 构造日期 numpy 数组
+        # 回测与基准辅助字段隔离至 aux_fields，严禁进入 fields
+        aux_fields["is_suspended"] = np.asfortranarray(self.is_suspended, dtype=np.float64)
+        aux_fields["is_st"] = np.asfortranarray(self.is_st, dtype=np.float64)
+        if self.can_buy_mask is not None:
+            aux_fields["can_buy_mask"] = np.asfortranarray(self.can_buy_mask, dtype=np.float64)
+        else:
+            aux_fields["can_buy_mask"] = np.asfortranarray(
+                np.isfinite(self.limit_mask), dtype=np.float64
+            )
+        if self.can_sell_mask is not None:
+            aux_fields["can_sell_mask"] = np.asfortranarray(self.can_sell_mask, dtype=np.float64)
+        else:
+            aux_fields["can_sell_mask"] = np.asfortranarray(
+                np.isfinite(self.limit_mask), dtype=np.float64
+            )
+
+        for b_name, b_vec in (
+            ("bench_fwd_open_1", self.bench_fwd_open_1),
+            ("bench_fwd_close_1", self.bench_fwd_close_1),
+            ("bench_ret", self.bench_ret),
+        ):
+            vec = np.asarray(b_vec, dtype=np.float64).reshape(T, 1)
+            aux_fields[b_name] = np.asfortranarray(np.broadcast_to(vec, (T, N)).copy())
+
+        # 调用 Rust 统一标签引擎构造预测标签
+        labels: dict[str, np.ndarray] = {}
+        pref_mode = str(self.meta.get("exec_price_mode", "open_adj"))
+        price_mode = next(
+            (
+                m
+                for m in (pref_mode, "open_adj", "vwap_adj", "close_hfq", "close")
+                if m in self.fields
+            ),
+            None,
+        )
+        if price_mode is not None and len(horizons) > 0:
+            fwd_map = self.compute_forward_returns(
+                horizons=list(horizons), exec_price_mode=price_mode
+            )
+            for h, mat in fwd_map.items():
+                labels[f"y_{h}"] = np.asfortranarray(mat, dtype=np.float64)
+            if 1 in fwd_map:
+                labels["r_exec_next"] = np.asfortranarray(fwd_map[1], dtype=np.float64)
+
         dates_arr = np.array(self.dates)
+        meta = dict(self.meta)
+        meta["market"] = "stocks"
 
         return Panel(
             dates=dates_arr,
             symbols=list(self.symbols),
             fields=panel_fields,
-            mask=np.asfortranarray(self.base_univ_mask),
-            meta=dict(self.meta),
+            mask=np.asfortranarray(self.base_univ_mask, dtype=bool),
+            labels=labels,
+            aux_fields=aux_fields,
+            meta=meta,
         )
 
     def compute_forward_returns(
@@ -101,32 +191,23 @@ class StockPanelData:
         exec_price_mode: str = "open_adj",
         execution_simulation: bool = False,
     ) -> dict[int, np.ndarray]:
-        """计算各预测周期的远期收益率矩阵 (T x N)。
+        """调用 Rust `build_forward_labels` 统一计算各预测周期的远期收益率矩阵 (T x N)。
 
         对齐语义:
         - 信号生成时点: T 日 15:00 收盘
         - 入场价格: T+1 日早盘执行基准 (如 open_adj)
         - 出场价格: T+1+h 日早盘执行基准 (如 open_adj)
         - 远期收益: R_{T, h} = price[T + 1 + h] / price[T + 1] - 1.0
-
-        Args:
-            horizons: 预测周期列表 (如 [1, 2, 5, 10])
-            exec_price_mode: "open_adj" (默认, 贴近早盘 VwapBegin30 且无日内前视) | "vwap_adj" (全天均价)
-            execution_simulation: 若为 True，施加 T+1 涨停无法买入、T+1+h 跌停/停牌无法平仓的实盘约束
-
-        Returns:
-            {h: (T x N) 收益率矩阵}
         """
         price_mat = self.fields.get(exec_price_mode)
         if price_mat is None:
             raise KeyError(f"未找到指定的执行价矩阵: {exec_price_mode!r}")
 
         T, N = self.shape
-        fwd_returns: dict[int, np.ndarray] = {}
         vol_mat = self.fields.get("volume")
+        vol_ok = (vol_mat > 0.0) if vol_mat is not None else np.ones((T, N), dtype=bool)
+        price_ok = np.isfinite(price_mat) & (price_mat > 0.0)
 
-        next_exit_idx: np.ndarray | None = None
-        entry_tradable: np.ndarray | None = None
         if execution_simulation:
             buy_ok = (
                 self.can_buy_mask if self.can_buy_mask is not None else np.isfinite(self.limit_mask)
@@ -136,54 +217,27 @@ class StockPanelData:
                 if self.can_sell_mask is not None
                 else np.isfinite(self.limit_mask)
             )
-            vol_ok = (vol_mat > 0.0) if vol_mat is not None else np.ones((T, N), dtype=bool)
-            price_ok = np.isfinite(price_mat) & (price_mat > 0.0)
-            entry_tradable = buy_ok & (~self.is_suspended) & vol_ok & price_ok
-            exit_tradable = sell_ok & (~self.is_suspended) & vol_ok & price_ok
+            entry_ok = np.asfortranarray(
+                buy_ok & (~self.is_suspended) & vol_ok & price_ok, dtype=bool
+            )
+            exit_ok = np.asfortranarray(
+                sell_ok & (~self.is_suspended) & vol_ok & price_ok, dtype=bool
+            )
+        else:
+            entry_ok = np.asfortranarray((~self.is_suspended) & vol_ok & price_ok, dtype=bool)
+            exit_ok = np.asfortranarray(price_ok, dtype=bool)
 
-            next_exit_idx = np.full((T, N), -1, dtype=np.int32)
-            nxt = np.full(N, -1, dtype=np.int32)
-            for tau in range(T - 1, -1, -1):
-                nxt = np.where(exit_tradable[tau], tau, nxt)
-                next_exit_idx[tau] = nxt
-
-        col_idx = np.arange(N)
-        for h in horizons:
-            fwd = np.full((T, N), np.nan, dtype=np.float64, order="F")
-            max_t = T - 1 - h
-            if max_t <= 0:
-                fwd_returns[h] = fwd
-                continue
-
-            for t in range(max_t):
-                p_in = price_mat[t + 1]
-
-                if execution_simulation:
-                    assert entry_tradable is not None and next_exit_idx is not None
-                    out_indices = next_exit_idx[t + 1 + h]
-                    has_exit = out_indices >= 0
-                    safe_out = np.where(has_exit, out_indices, 0)
-                    p_out = price_mat[safe_out, col_idx]
-                    valid = entry_tradable[t + 1] & has_exit & np.isfinite(p_out) & (p_out > 0.0)
-                else:
-                    p_out = price_mat[t + 1 + h]
-                    vol_entry_ok = (vol_mat[t + 1] > 0.0) if vol_mat is not None else True
-                    valid = (
-                        np.isfinite(p_in)
-                        & np.isfinite(p_out)
-                        & (p_in > 0.0)
-                        & (p_out > 0.0)
-                        & (~self.is_suspended[t + 1])
-                        & vol_entry_ok
-                    )
-
-                ret = np.full(N, np.nan, dtype=np.float64)
-                ret[valid] = (p_out[valid] / p_in[valid]) - 1.0
-                fwd[t] = ret
-
-            fwd_returns[h] = fwd
-
-        return fwd_returns
+        f_price = np.asfortranarray(price_mat, dtype=np.float64)
+        h_list = [int(h) for h in horizons]
+        rust_out = factorlib_core.build_forward_labels(
+            f_price,
+            f_price,
+            entry_ok,
+            exit_ok,
+            h_list,
+            strict=not execution_simulation,
+        )
+        return {h: np.asarray(rust_out[h]) for h in h_list}
 
     # 字典兼容接口，确保现有回测脚本直接适配
     def __getitem__(self, key: str) -> Any:
@@ -601,3 +655,105 @@ class StockPanelLoader:
             can_sell_mask=can_sell_mask,
             meta=meta,
         )
+
+
+def build_stock_panel(
+    cfg: StockDataConfig,
+    show_progress: bool = True,
+) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, Any]]:
+    """构建 A 股标准研究面板并持久化至 `cfg.panel_dir`（panel_daily.parquet / labels.parquet / meta.json）。"""
+    del show_progress
+    t0 = time.time()
+    output_dir = cfg.panel_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    loader = StockPanelLoader(cfg.raw_dir)
+    sdata = loader.load(
+        start_date=cfg.start_date,
+        end_date=cfg.end_date,
+        benchmark_id=cfg.benchmark_id,
+        exec_price_mode=cfg.exec_price_mode,
+    )
+
+    # 按配置施加股票池过滤
+    uf = cfg.universe_filters
+    if uf.min_listed_days > 0:
+        sdata.base_univ_mask = sdata.base_univ_mask & (
+            np.nan_to_num(sdata.stock_listed_days, nan=-1.0) >= float(uf.min_listed_days)
+        )
+    if not uf.exclude_st:
+        # 若不过滤 ST，仍保留行情完整条件
+        pass
+
+    panel = sdata.to_panel(horizons=cfg.label_horizons)
+    T, N = panel.shape
+    parsed_dates = [datetime.strptime(str(d), "%Y%m%d").date() for d in panel.dates]
+
+    date_col = pl.Series(
+        "trading_date",
+        np.repeat(np.array(parsed_dates, dtype="datetime64[D]"), N),
+        dtype=pl.Date,
+    )
+    sym_col = pl.Series("symbol", np.tile(np.array(panel.symbols), T), dtype=pl.String)
+
+    panel_cols: dict[str, Any] = {
+        "trading_date": date_col,
+        "symbol": sym_col,
+        "in_universe": panel.mask.reshape(-1, order="C"),
+    }
+    for fname, mat in panel.fields.items():
+        if fname in ("in_universe_mask", "limit_mask"):
+            continue
+        panel_cols[fname] = mat.reshape(-1, order="C")
+    for aname, mat in panel.aux_fields.items():
+        panel_cols[aname] = mat.reshape(-1, order="C")
+
+    panel_df = pl.DataFrame(panel_cols).sort(["trading_date", "symbol"])
+
+    label_cols: dict[str, Any] = {
+        "trading_date": date_col,
+        "symbol": sym_col,
+    }
+    for lname, mat in panel.labels.items():
+        label_cols[lname] = mat.reshape(-1, order="C")
+    labels_df = pl.DataFrame(label_cols).sort(["trading_date", "symbol"])
+
+    panel_path = output_dir / "panel_daily.parquet"
+    labels_path = output_dir / "labels.parquet"
+    fields_path = output_dir / "fields.json"
+    meta_path = output_dir / "meta.json"
+
+    panel_df.write_parquet(panel_path, compression="zstd")
+    labels_df.write_parquet(labels_path, compression="zstd")
+
+    fields_doc = {
+        "market": "stocks",
+        "panel_version": cfg.panel_version,
+        "generated_at": datetime.now().isoformat(),
+        "fields": [
+            {"name": k, "role": "dsl"}
+            for k in panel.fields
+            if k not in ("sector", "listed_days", "in_universe_mask", "limit_mask")
+        ]
+        + [{"name": k, "role": "aux"} for k in panel.aux_fields],
+    }
+    with fields_path.open("w", encoding="utf-8") as fh:
+        json.dump(fields_doc, fh, indent=2, ensure_ascii=False)
+
+    meta_doc: dict[str, Any] = {
+        "market": "stocks",
+        "panel_version": cfg.panel_version,
+        "generated_at": datetime.now().isoformat(),
+        "build_duration_seconds": round(time.time() - t0, 2),
+        "config_hash": cfg.hash(),
+        "date_range": [str(cfg.start_date), str(cfg.end_date)],
+        "total_trading_days": T,
+        "total_symbols": N,
+        "total_records": len(panel_df),
+        "in_universe_records": int(np.sum(panel.mask)),
+        "config": cfg.to_dict(),
+    }
+    with meta_path.open("w", encoding="utf-8") as fh:
+        json.dump(meta_doc, fh, indent=2, ensure_ascii=False)
+
+    return panel_df, labels_df, meta_doc

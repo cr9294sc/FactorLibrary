@@ -23,7 +23,11 @@ from factorlib.core.config import (
     load_data_config,
     load_gp_config,
     load_ml_config,
+    load_stock_backtest_config,
+    load_stock_data_config,
+    load_stock_fees_config,
     load_universe_config,
+    validate_profile_configs,
 )
 
 
@@ -288,3 +292,46 @@ timeline:
     p2.write_text(base_yaml.format(lag=2), encoding="utf-8")
     with pytest.raises(ConfigError, match="alt_data_lag_days"):
         load_data_config(p2, root=tmp_path)
+
+
+def test_stocks_configs_and_profile_validation(tmp_path: Path):
+    """验证 M1.4 A 股整套配置文件加载及费率非负/min_commission>=0/lot_size==100 校验。"""
+    res_f = validate_profile_configs("futures")
+    res_s = validate_profile_configs("stocks")
+    assert res_f["data"].panel_version == "v1"
+    assert res_s["data"].price_basis == "hfq"
+    assert res_s["fees"].lot_size == 100
+    assert res_s["fees"].min_commission >= 0.0
+    assert res_s["backtest"].execution.lot_size == 100
+
+    # lot_size != 100 必须报错
+    bad_fees = tmp_path / "bad_fees.yaml"
+    bad_fees.write_text("lot_size: 1\nfees:\n  commission_rate: 0.0001\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="lot_size"):
+        load_stock_fees_config(bad_fees)
+
+    # 负费率或负 min_commission 必须报错
+    bad_comm = tmp_path / "bad_comm.yaml"
+    bad_comm.write_text("lot_size: 100\nfees:\n  min_commission: -1.0\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="min_commission"):
+        load_stock_fees_config(bad_comm)
+
+    bad_stamp = tmp_path / "bad_stamp.yaml"
+    bad_stamp.write_text("lot_size: 100\nfees:\n  stamp_duty_rate: -0.001\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="stamp_duty_rate"):
+        load_stock_fees_config(bad_stamp)
+
+    # 非法 price_basis 必须报错
+    bad_data = tmp_path / "bad_data.yaml"
+    bad_data.write_text(
+        'raw_dir: "./data/raw/stocks"\nderived_dir: "./data/derived/stocks"\nprice_basis: "qfq"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="price_basis"):
+        load_stock_data_config(bad_data, root=tmp_path)
+
+    # 非法 execution.lot_size 必须报错
+    bad_bt = tmp_path / "bad_bt.yaml"
+    bad_bt.write_text("execution:\n  lot_size: 50\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="lot_size"):
+        load_stock_backtest_config(bad_bt)

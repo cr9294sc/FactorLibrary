@@ -1403,3 +1403,39 @@ class StockMarketAdapter(MarketAdapter):
 4. **SQLite 因子资产与版本中心**：
    - 集中展示因子的全周期生命周期状态（`candidate -> accepted -> active -> deprecated`）；
    - 提供不可变历史版本快照抽屉，支持随时载入任意历史版本。
+
+---
+
+## 20. 市场抽象 (`MarketProfile`) 与股票持仓级回测语义 (M1)
+
+为消除核心计算层对期货市场的隐式硬编码耦合与双市场 T+1 标签逻辑重复，平台在 M1 阶段完成了多市场架构隔离与 A 股持仓级回测内核建设：
+
+### 20.1 市场抽象 (`MarketProfile` 与核心层解耦)
+
+1. **`MarketProfile` 协议与注册中心 (`markets/profile.py`, `markets/registry.py`)**：
+   - 定义不可变 `ExecutionRules`（`t_plus_one`, `allow_short`, `lot_size`, `price_limit_aware`, `entry_window`, `price_basis`）、`ResearchPaths`、`PanelSpec`、`CostModelSpec` 与 `Backtester` 协议；
+   - `PROFILES` 注册中心通过 `get_profile("futures" | "stocks")` 统一提供各市场实现（`FuturesProfile` 与 `StocksProfile`）。
+2. **`core/` 零市场依赖边界 (`tests/python/test_import_boundaries.py`)**：
+   - `core/panel.py`：`Panel.load(path, aux_field_names=...)` 由所属 `MarketProfile` 传入辅助字段集（缺省回退读取 `fields.json` 与通用集合），彻底移除对 `markets.futures` 的导入；
+   - `core/backtest.py`：`BacktestResult` 扩展 `extras: dict[str, Any]`（承载股票 `tax`、`blocked_orders`、基准收益序列等市场扩展输出），`run_backtest(panel, weights, config, profile)` 仅作分发，期货实现迁至 `markets/futures/backtest.py`；
+   - `core/styles.py` / `core/portfolio.py`：仅保留通用风格暴露归因与通用截断/缓冲带原语；期货 `compute_futures_styles` 与 `LedoitWolf` 协方差定标分别迁入 `markets/futures/{styles,portfolio}.py`，股票新增 `markets/stocks/{styles,portfolio}.py`（分位等权多头、可选申万行业中性、个股上限与换手缓冲带，**不使用全协方差矩阵**）。
+3. **统一 Rust T+1 标签内核 (`rust/factorlib_core/src/labels.rs`)**：
+   - 导出 `build_forward_labels`（支持 `strict=true` 严格置 NaN 与 `strict=false` 顺延至下一可平仓日）与 `compound_forward_labels`（承接期货换月链式单步收益的 `h` 期复合）；
+   - 所有跨 FFI 导出的标签矩阵严格调用 `make_nonwriteable()` 锁定只读，并在 `ops_ref.py` 与 `proptest_ops.rs` 完成高精度与因果性验证；
+   - `StockPanelData.to_panel()` 写入标准 `Panel.labels`（`y_1, y_2, y_5, y_10` 等），并将基准前向收益 `bench_fwd_*`、原始价格与涨跌停/停牌/ST 掩码物理隔离至 `Panel.aux_fields`。
+
+### 20.2 股票回测语义 (`rust/factorlib_core/src/backtest/stocks.rs`)
+
+1. **执行与持仓约束**：
+   - **执行价**：按 `entry_window` 与 `price_basis` 选取 `T+1` 日开盘价（`open_adj` / `open_raw`）或 `vwap_adj`；
+   - **整手与零股**：买入向下取整为 `lot_size = 100` 股整数倍；全额清仓卖出允许零股；
+   - **T+1 交收**：当日买入股份次日方可卖出；
+   - **涨跌停与停牌**：通过 `can_buy_mask` / `can_sell_mask` 阻断不可成交订单并记录每日 `blocked_orders`；停牌期间禁止买卖且持仓严格按最后有效收盘价盯市；
+   - **可用现金约束**：先计入当日卖出回笼资金，再对买入订单按可用现金做整手等比例约束，杜绝现金透支；
+   - **做空预留**：默认 `allow_short=false`；传入 `allow_short=true` 显式报错提示融券费率机制暂未实现（预留接口）。
+2. **非对称成本与账务守恒**：
+   - 买入收取券商佣金（含 `min_commission` 最低消费）与过户费；卖出加征单向印花税（`tax`）；滑点支持按 `tick_size * slip_ticks` 与成交额比例 `slip_bps` 计提；
+   - 严格满足逐日盯市恒等式 $E_d - E_{d-1} = \text{net\_pnl}_d$，并通过纯 Python 逐日账本 `tests/python/oracles/stock_ledger_ref.py` 与 `proptest_backtest.rs` 完成 `|Δequity| < 1e-9` 对账认证。
+3. **配置校验与多市场构建入口**：
+   - 新增 `configs/stocks/{data,universe,fees,backtest,gp_default,ml_default}.yaml` 与 `core/config.py` 强校验（费率非负、`min_commission >= 0`、`lot_size == 100`）；
+   - `scripts/build_panel.py --market stocks` 支持独立构建 `data/derived/stocks/<version>/` 派生研究面板。

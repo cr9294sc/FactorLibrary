@@ -7,6 +7,7 @@
 //! 4. 换月日展期平旧开新，彻底杜绝跨合约虚假跳空 PnL (Roll accounting);
 //! 5. 逐日盯市结算损益与恒等式核验 ($E_d - E_{d-1} == \Delta E_d$)。
 
+use crate::backtest::common::compute_common_metrics;
 use ndarray::Array2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,128 +520,15 @@ pub fn run_futures_backtest(
     // -------------------------------------------------------------
     // Step 8: 多维评估统计指标结算 (P2-01: 剔除前导预热空仓日)
     // -------------------------------------------------------------
-    let total_ret = if cfg.init_cash > 0.0 {
-        equity.last().copied().unwrap_or(cfg.init_cash) / cfg.init_cash - 1.0
-    } else {
-        0.0
-    };
-
-    let stat_start = first_active_day.unwrap_or(t);
-    let n_days = t.saturating_sub(stat_start);
-    let annual_ret = if n_days > 0 {
-        // P0-06: 净值穿仓 1.0 + total_ret <= 0 时封底截断为 -1.0，防止负底数幂运算触发 IEEE-754 NaN
-        if 1.0 + total_ret <= 0.0 {
-            -1.0
-        } else {
-            (1.0 + total_ret).powf(252.0 / n_days as f64) - 1.0
-        }
-    } else {
-        0.0
-    };
-
-    let mut sum_r = 0.0;
-    let mut sum_sq_r = 0.0;
-    let mut win_count = 0;
-    let mut valid_days = 0;
-    let mut downside_sq = 0.0;
-    let mut sum_win = 0.0;
-    let mut sum_loss = 0.0;
-    let mut loss_count = 0;
-
-    for &r in returns.iter().skip(stat_start) {
-        sum_r += r;
-        sum_sq_r += r * r;
-        if r > 0.0 {
-            win_count += 1;
-            sum_win += r;
-        } else if r < 0.0 {
-            loss_count += 1;
-            sum_loss += r.abs();
-            downside_sq += r * r;
-        }
-        valid_days += 1;
-    }
-
-    let (ann_vol, sharpe, sortino, win_rate, pl_ratio) = if valid_days >= 2 {
-        let mean_r = sum_r / valid_days as f64;
-        let var_r = (sum_sq_r - valid_days as f64 * mean_r * mean_r) / (valid_days - 1) as f64;
-        let std_r = var_r.max(0.0).sqrt();
-        let ann_v = std_r * (252.0_f64).sqrt();
-        let sh = if ann_v > 1e-6 {
-            (mean_r * 252.0) / ann_v
-        } else {
-            0.0
-        };
-        let down_std = (downside_sq / valid_days as f64).sqrt() * (252.0_f64).sqrt();
-        let so = if down_std > 1e-6 {
-            (mean_r * 252.0) / down_std
-        } else {
-            0.0
-        };
-        let wr = win_count as f64 / valid_days as f64;
-        let avg_win = if win_count > 0 {
-            sum_win / win_count as f64
-        } else {
-            0.0
-        };
-        let avg_loss = if loss_count > 0 {
-            sum_loss / loss_count as f64
-        } else {
-            0.0
-        };
-        let plr = if avg_loss > 1e-8 {
-            avg_win / avg_loss
-        } else if avg_win > 0.0 {
-            999.0
-        } else {
-            0.0
-        };
-        (ann_v, sh, so, wr, plr)
-    } else {
-        (0.0, 0.0, 0.0, 0.0, 0.0)
-    };
-
-    let eq_anchor = stat_start.saturating_sub(1);
-    let mut peak = if stat_start < t {
-        equity[eq_anchor]
-    } else {
-        0.0
-    };
-    let mut max_dd = 0.0;
-    let mut max_dd_days = 0;
-    let mut current_dd_days = 0;
-
-    if stat_start < t {
-        for &e in equity.iter().skip(stat_start) {
-            if e > peak {
-                peak = e;
-                current_dd_days = 0;
-            } else {
-                current_dd_days += 1;
-                if peak > 0.0 {
-                    let dd = (peak - e) / peak;
-                    if dd > max_dd {
-                        max_dd = dd;
-                    }
-                }
-                if current_dd_days > max_dd_days {
-                    max_dd_days = current_dd_days;
-                }
-            }
-        }
-    }
-
-    let calmar = if max_dd > 1e-6 {
-        annual_ret / max_dd
-    } else {
-        0.0
-    };
-
-    let mean_turnover = if valid_days > 0 {
-        turnover.iter().skip(stat_start).sum::<f64>() / valid_days as f64
-    } else {
-        0.0
-    };
+    let common = compute_common_metrics(
+        &equity,
+        &returns,
+        &turnover,
+        &fee,
+        &slippage,
+        cfg.init_cash,
+        first_active_day,
+    );
 
     let mut max_margin_ratio_obs = 0.0f64;
     let mut max_lev_obs = 0.0f64;
@@ -659,20 +547,20 @@ pub fn run_futures_backtest(
     }
 
     let metrics = FuturesMetrics {
-        total_return: total_ret,
-        annual_return: annual_ret,
-        annual_volatility: ann_vol,
-        sharpe,
-        sortino,
-        calmar,
-        max_drawdown: max_dd,
-        max_drawdown_days: max_dd_days,
-        win_rate,
-        profit_loss_ratio: pl_ratio,
-        daily_turnover_mean: mean_turnover,
-        annual_turnover: mean_turnover * 252.0,
-        total_fees: fee.iter().sum(),
-        total_slippage: slippage.iter().sum(),
+        total_return: common.total_return,
+        annual_return: common.annual_return,
+        annual_volatility: common.annual_volatility,
+        sharpe: common.sharpe,
+        sortino: common.sortino,
+        calmar: common.calmar,
+        max_drawdown: common.max_drawdown,
+        max_drawdown_days: common.max_drawdown_days,
+        win_rate: common.win_rate,
+        profit_loss_ratio: common.profit_loss_ratio,
+        daily_turnover_mean: common.daily_turnover_mean,
+        annual_turnover: common.annual_turnover,
+        total_fees: common.total_fees,
+        total_slippage: common.total_slippage,
         total_roll_cost: roll_cost.iter().sum(),
         max_margin_utilization: max_margin_ratio_obs,
         max_leverage: max_lev_obs,

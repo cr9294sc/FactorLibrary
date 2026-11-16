@@ -22,9 +22,10 @@ from typing import Any
 import factorlib_core
 import numpy as np
 
+from factorlib.core._hooks import resolve_panel_market, resolve_profile
 from factorlib.core.catalog import POSTPROCESS_SPECS, RECOMMENDED_POSTPROCESS_PRESETS
 from factorlib.core.panel import Panel, compute_limit_mask
-from factorlib.core.styles import STYLE_DEFINITIONS, STYLE_NAMES, compute_futures_styles
+from factorlib.core.styles import STYLE_DEFINITIONS, STYLE_NAMES
 
 VALID_POSTPROCESS_OPS: dict[str, dict[str, Any]] = {
     spec["name"]: spec for spec in POSTPROCESS_SPECS
@@ -653,8 +654,9 @@ def _resolve_implicit_field(
     field_name: str,
     panel: Panel,
     styles_cache: dict[str, np.ndarray] | None,
+    profile: Any | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray] | None]:
-    """解析后处理隐式依赖矩阵（支持面板字段、隐式掩码与 6 大期货风格因子）。"""
+    """解析后处理隐式依赖矩阵（支持面板字段、隐式掩码与市场风格因子）。"""
     T, N = panel.shape
     if field_name in panel.fields:
         return np.asfortranarray(panel.fields[field_name], dtype=np.float64), styles_cache
@@ -677,10 +679,14 @@ def _resolve_implicit_field(
         # 若合成测试面板无 sector，默认赋同一板块编码 1.0
         return np.asfortranarray(np.ones((T, N), dtype=np.float64)), styles_cache
 
-    if field_name in STYLE_NAMES:
+    if field_name in STYLE_NAMES or (styles_cache is not None and field_name in styles_cache):
         if styles_cache is None:
-            styles_cache = compute_futures_styles(panel)
-        return np.asfortranarray(styles_cache[field_name], dtype=np.float64), styles_cache
+            resolved_profile = (
+                profile if profile is not None else resolve_profile(resolve_panel_market(panel))
+            )
+            styles_cache = resolved_profile.style_factors(panel)
+        if field_name in styles_cache:
+            return np.asfortranarray(styles_cache[field_name], dtype=np.float64), styles_cache
 
     raise KeyError(f"无法解析后处理依赖字段或风格因子: {field_name!r}")
 
@@ -689,6 +695,7 @@ def apply_postprocess_pipeline(
     raw_factor: np.ndarray,
     steps: PostprocessSpec | None,
     panel: Panel,
+    profile: Any | None = None,
 ) -> np.ndarray:
     """在 Rust 内核中按序执行声明式后处理算子链。"""
     parsed_steps = parse_postprocess_pipeline(steps)
@@ -705,21 +712,25 @@ def apply_postprocess_pipeline(
         op = step.op
         if op == "baseUniMask":
             mask_mat, styles_cache = _resolve_implicit_field(
-                "in_universe_mask", panel, styles_cache
+                "in_universe_mask", panel, styles_cache, profile=profile
             )
             active_mask &= np.isfinite(mask_mat) & (mask_mat > 0.0)
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("baseUniMask", curr, x2=mask_mat)
             )
         elif op == "trdMask":
-            mask_mat, styles_cache = _resolve_implicit_field("limit_mask", panel, styles_cache)
+            mask_mat, styles_cache = _resolve_implicit_field(
+                "limit_mask", panel, styles_cache, profile=profile
+            )
             active_mask &= np.isfinite(mask_mat) & (mask_mat > 0.0)
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("trdMask", curr, x2=mask_mat)
             )
         elif op == "dropNewStock":
             min_days = float(step.window or 60)
-            ld_mat, styles_cache = _resolve_implicit_field("listed_days", panel, styles_cache)
+            ld_mat, styles_cache = _resolve_implicit_field(
+                "listed_days", panel, styles_cache, profile=profile
+            )
             active_mask &= np.isfinite(ld_mat) & (ld_mat >= min_days)
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("dropNewStock", curr, x2=ld_mat, param=min_days)
@@ -730,20 +741,26 @@ def apply_postprocess_pipeline(
             )
         elif op == "indNeut":
             grp_col = step.group_by or "sector"
-            grp_mat, styles_cache = _resolve_implicit_field(grp_col, panel, styles_cache)
+            grp_mat, styles_cache = _resolve_implicit_field(
+                grp_col, panel, styles_cache, profile=profile
+            )
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("indNeut", curr, x2=grp_mat)
             )
         elif op == "riskNeut":
             r_col = step.field or "SIZE"
-            r_mat, styles_cache = _resolve_implicit_field(r_col, panel, styles_cache)
+            r_mat, styles_cache = _resolve_implicit_field(
+                r_col, panel, styles_cache, profile=profile
+            )
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("riskNeut", curr, x2=r_mat)
             )
         elif op == "riskNeutMulti":
             exp_list: list[np.ndarray] = []
             for r_col in step.fields or ["SIZE", "VOLATILITY", "CARRY"]:
-                r_mat, styles_cache = _resolve_implicit_field(r_col, panel, styles_cache)
+                r_mat, styles_cache = _resolve_implicit_field(
+                    r_col, panel, styles_cache, profile=profile
+                )
                 exp_list.append(r_mat)
             curr = np.asfortranarray(
                 factorlib_core.apply_postprocess_op("riskNeutMulti", curr, exposures=exp_list)
@@ -765,6 +782,7 @@ def evaluate_factor_definition(
     definition: FactorDefinition | dict[str, Any] | str,
     panel: Panel,
     engine: factorlib_core.Engine | None = None,
+    profile: Any | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """执行静态探针校验、主因子求值与声明式后处理管线，返回 `(factor_matrix, probe_report)`。"""
     if isinstance(definition, str):
@@ -785,5 +803,5 @@ def evaluate_factor_definition(
     else:
         raw_mat = _execute_python_factor(defn.code, panel)
 
-    final_mat = apply_postprocess_pipeline(raw_mat, defn.postprocess, panel)
+    final_mat = apply_postprocess_pipeline(raw_mat, defn.postprocess, panel, profile=profile)
     return final_mat, probe_rep

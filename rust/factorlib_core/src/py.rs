@@ -11,11 +11,13 @@ use crate::backtest::futures::{
     run_futures_backtest as run_futures_backtest_impl, FeeType, FuturesBacktestConfig,
     RoundingMode, SymbolSpec,
 };
+use crate::backtest::stocks::{run_stock_backtest as run_stock_backtest_impl, StockBacktestConfig};
 use crate::expr::cache::SubExprCache;
 use crate::expr::canon::{canonicalize, CanonResult};
 use crate::expr::eval::{eval_batch_str, eval_expr_str};
 use crate::expr::parser::parse_expr;
 use crate::expr::typecheck::{collect_type_warnings, infer_type, typecheck_factor_expr};
+use crate::labels::{compound_chained_returns, forward_returns};
 use crate::metrics::corr::{
     calc_daily_factor_correlation_with_scratch, cross_correlation_matrix,
     cross_correlation_pairwise, cross_correlation_prepared_seq, CorrScratch, PreparedCandidate,
@@ -34,7 +36,7 @@ use crate::ops::postprocess::{
 };
 use crate::panel::Panel;
 use ndarray::{s, Array2, ArrayView2, ShapeBuilder};
-use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -1790,4 +1792,208 @@ pub fn apply_postprocess_op<'py>(
 
     let out = res_mat.map_err(PyValueError::new_err)?;
     Ok(PyArray2::from_owned_array_bound(py, out))
+}
+
+/// 统一构建点对点 T+1 前向收益标签字典 (`{horizon: (T, N) readonly F-order ndarray}`)。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (entry_price, exit_price, entry_ok, exit_ok, horizons, strict=true))]
+pub fn build_forward_labels<'py>(
+    py: Python<'py>,
+    entry_price: PyReadonlyArray2<'_, f64>,
+    exit_price: PyReadonlyArray2<'_, f64>,
+    entry_ok: PyReadonlyArray2<'_, bool>,
+    exit_ok: PyReadonlyArray2<'_, bool>,
+    horizons: Vec<usize>,
+    strict: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let ep_view = entry_price.as_array();
+    let xp_view = exit_price.as_array();
+    let eok_view = entry_ok.as_array();
+    let xok_view = exit_ok.as_array();
+
+    let (t, n) = ep_view.dim();
+    if xp_view.dim() != (t, n) || eok_view.dim() != (t, n) || xok_view.dim() != (t, n) {
+        return Err(PyValueError::new_err(
+            "build_forward_labels 所有输入矩阵维度必须完全一致 (T, N)",
+        ));
+    }
+
+    let ep_mat = view_to_fortran_f64(ep_view);
+    let xp_mat = view_to_fortran_f64(xp_view);
+    let eok_mat = view_to_fortran_bool(eok_view);
+    let xok_mat = view_to_fortran_bool(xok_view);
+
+    let mats = py.allow_threads(|| {
+        forward_returns(
+            ep_mat.view(),
+            xp_mat.view(),
+            eok_mat.view(),
+            xok_mat.view(),
+            &horizons,
+            strict,
+        )
+    });
+
+    let out = PyDict::new_bound(py);
+    for (h, mat) in horizons.into_iter().zip(mats) {
+        let py_arr = arc_matrix_to_pyarray(py, Arc::new(mat))?;
+        out.set_item(h, py_arr)?;
+    }
+    Ok(out)
+}
+
+/// 基于链式单步收益计算 `r_exec_next` 与多期复合标签 (`{"r_exec_next": ..., "y_{h}": ...}`)。
+#[pyfunction]
+#[pyo3(signature = (step_returns, horizons))]
+pub fn compound_forward_labels<'py>(
+    py: Python<'py>,
+    step_returns: PyReadonlyArray2<'_, f64>,
+    horizons: Vec<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let step_mat = view_to_fortran_f64(step_returns.as_array());
+    let (r_exec_next, mats) =
+        py.allow_threads(|| compound_chained_returns(step_mat.view(), &horizons));
+
+    let out = PyDict::new_bound(py);
+    out.set_item(
+        "r_exec_next",
+        arc_matrix_to_pyarray(py, Arc::new(r_exec_next))?,
+    )?;
+    for (h, mat) in horizons.into_iter().zip(mats) {
+        out.set_item(format!("y_{h}"), arc_matrix_to_pyarray(py, Arc::new(mat))?)?;
+    }
+    Ok(out)
+}
+
+/// 执行 A 股持仓级向量化回测状态机（T+1、100 股整手买入/清仓零股、涨跌停阻断、停牌盯市、非对称税费）。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (
+    target_weights,
+    exec_price,
+    close_price,
+    can_buy_mask,
+    can_sell_mask,
+    is_suspended,
+    benchmark_returns=None,
+    init_cash=10000000.0,
+    lot_size=100,
+    t_plus_one=true,
+    allow_short=false,
+    commission_rate=0.0001,
+    min_commission=5.0,
+    stamp_duty_rate=0.0005,
+    transfer_fee_rate=0.00001,
+    slip_ticks=1.0,
+    tick_size=0.01,
+    slip_bps=0.0
+))]
+pub fn run_stock_backtest<'py>(
+    py: Python<'py>,
+    target_weights: PyReadonlyArray2<'_, f64>,
+    exec_price: PyReadonlyArray2<'_, f64>,
+    close_price: PyReadonlyArray2<'_, f64>,
+    can_buy_mask: PyReadonlyArray2<'_, bool>,
+    can_sell_mask: PyReadonlyArray2<'_, bool>,
+    is_suspended: PyReadonlyArray2<'_, bool>,
+    benchmark_returns: Option<PyReadonlyArray1<'_, f64>>,
+    init_cash: f64,
+    lot_size: i64,
+    t_plus_one: bool,
+    allow_short: bool,
+    commission_rate: f64,
+    min_commission: f64,
+    stamp_duty_rate: f64,
+    transfer_fee_rate: f64,
+    slip_ticks: f64,
+    tick_size: f64,
+    slip_bps: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let w_mat = view_to_fortran_f64(target_weights.as_array());
+    let ep_mat = view_to_fortran_f64(exec_price.as_array());
+    let cp_mat = view_to_fortran_f64(close_price.as_array());
+    let cb_mat = view_to_fortran_bool(can_buy_mask.as_array());
+    let cs_mat = view_to_fortran_bool(can_sell_mask.as_array());
+    let sp_mat = view_to_fortran_bool(is_suspended.as_array());
+    let bench_vec: Option<Vec<f64>> = benchmark_returns.map(|b| b.as_array().to_vec());
+
+    let cfg = StockBacktestConfig {
+        init_cash,
+        lot_size,
+        t_plus_one,
+        allow_short,
+        commission_rate,
+        min_commission,
+        stamp_duty_rate,
+        transfer_fee_rate,
+        slip_ticks,
+        tick_size,
+        slip_bps,
+    };
+
+    let res = py
+        .allow_threads(move || {
+            run_stock_backtest_impl(
+                &w_mat,
+                &ep_mat,
+                &cp_mat,
+                &cb_mat,
+                &cs_mat,
+                &sp_mat,
+                bench_vec.as_deref(),
+                &cfg,
+            )
+        })
+        .map_err(PyValueError::new_err)?;
+
+    let out = PyDict::new_bound(py);
+    out.set_item("equity", PyArray1::from_vec_bound(py, res.equity))?;
+    out.set_item("returns", PyArray1::from_vec_bound(py, res.returns))?;
+    out.set_item("cash", PyArray1::from_vec_bound(py, res.cash))?;
+    out.set_item("leverage", PyArray1::from_vec_bound(py, res.leverage))?;
+    out.set_item("gross_pnl", PyArray1::from_vec_bound(py, res.gross_pnl))?;
+    out.set_item("net_pnl", PyArray1::from_vec_bound(py, res.net_pnl))?;
+    out.set_item("fee", PyArray1::from_vec_bound(py, res.fee))?;
+    out.set_item("slippage", PyArray1::from_vec_bound(py, res.slippage))?;
+    out.set_item("tax", PyArray1::from_vec_bound(py, res.tax))?;
+    out.set_item("turnover", PyArray1::from_vec_bound(py, res.turnover))?;
+    out.set_item(
+        "blocked_orders",
+        PyArray1::from_vec_bound(py, res.blocked_orders),
+    )?;
+    out.set_item(
+        "excess_returns",
+        PyArray1::from_vec_bound(py, res.excess_returns),
+    )?;
+    out.set_item(
+        "positions",
+        PyArray2::from_owned_array_bound(py, res.positions),
+    )?;
+
+    let m = PyDict::new_bound(py);
+    m.set_item("total_return", res.metrics.total_return)?;
+    m.set_item("annual_return", res.metrics.annual_return)?;
+    m.set_item("annual_volatility", res.metrics.annual_volatility)?;
+    m.set_item("sharpe", res.metrics.sharpe)?;
+    m.set_item("sortino", res.metrics.sortino)?;
+    m.set_item("calmar", res.metrics.calmar)?;
+    m.set_item("max_drawdown", res.metrics.max_drawdown)?;
+    m.set_item("max_drawdown_days", res.metrics.max_drawdown_days)?;
+    m.set_item("win_rate", res.metrics.win_rate)?;
+    m.set_item("profit_loss_ratio", res.metrics.profit_loss_ratio)?;
+    m.set_item("daily_turnover_mean", res.metrics.daily_turnover_mean)?;
+    m.set_item("annual_turnover", res.metrics.annual_turnover)?;
+    m.set_item("total_fees", res.metrics.total_fees)?;
+    m.set_item("total_slippage", res.metrics.total_slippage)?;
+    m.set_item("total_tax", res.metrics.total_tax)?;
+    m.set_item("total_blocked_orders", res.metrics.total_blocked_orders)?;
+    m.set_item("max_leverage", res.metrics.max_leverage)?;
+    m.set_item("bench_total_return", res.metrics.bench_total_return)?;
+    m.set_item("bench_annual_return", res.metrics.bench_annual_return)?;
+    m.set_item("annual_excess_return", res.metrics.annual_excess_return)?;
+    m.set_item("excess_sharpe", res.metrics.excess_sharpe)?;
+    out.set_item("metrics", m)?;
+
+    Ok(out)
 }

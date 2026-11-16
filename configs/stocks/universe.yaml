@@ -1,0 +1,11 @@
+liquidity:
+  min_adv20_turnover: 20000000.0
+  min_listed_days: 120
+  min_names_per_day: 20
+
+filters:
+  exclude_suspended: true
+  exclude_st: true
+
+evaluation:
+  min_names_per_day: 20

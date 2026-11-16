@@ -704,3 +704,62 @@ def test_elem_ops_small_and_nonstandard_layout_parity():
         got_bin = np.asarray(eng.eval("div(add(a, b), mul(b, b))"))
         ref_bin = (a_c + b_c) / (b_c * b_c)
         np.testing.assert_allclose(got_bin, ref_bin, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_build_forward_labels_parity_and_extremes():
+    """验证 M1.3 Rust `build_forward_labels` 与 `ops_ref.forward_returns_ref` 全边界对账。"""
+    rng = np.random.default_rng(2026)
+    horizons = [1, 3, 5, 25]
+
+    # 1. 高密度 22% NaN + ±Inf + 零/负价格边界 + strict=True/False
+    T, N = 20, 8
+    entry_p = np.abs(_make_noisy_matrix(rng, T, N, nan_prob=0.22))
+    exit_p = np.abs(_make_noisy_matrix(rng, T, N, nan_prob=0.22))
+    # 注入零值和 ±Inf
+    entry_p[2, 1] = 0.0
+    exit_p[4, 2] = np.inf
+    entry_p[5, 3] = -np.inf
+    entry_ok = np.asfortranarray(rng.random((T, N)) > 0.15, dtype=bool)
+    exit_ok = np.asfortranarray(rng.random((T, N)) > 0.15, dtype=bool)
+
+    for strict in (True, False):
+        rust_res = factorlib_core.build_forward_labels(
+            entry_p, exit_p, entry_ok, exit_ok, horizons, strict=strict
+        )
+        ref_res = ops_ref.forward_returns_ref(
+            entry_p, exit_p, entry_ok, exit_ok, horizons, strict=strict
+        )
+        for h in horizons:
+            arr = rust_res[h]
+            assert arr.flags.writeable is False, "Rust 导出标签矩阵必须不可写"
+            with pytest.raises(ValueError):
+                arr[0, 0] = 0.0
+            np.testing.assert_allclose(arr, ref_res[h], rtol=1e-12, atol=1e-12, equal_nan=True)
+
+    # 2. 极端场景: 全 NaN / 全常量 / 单点有效 / 窗口大于历史长度 (h=25 > T=20)
+    all_nan = np.full((6, 3), np.nan, dtype=np.float64, order="F")
+    all_const = np.full((6, 3), 10.0, dtype=np.float64, order="F")
+    single_valid = np.full((6, 3), np.nan, dtype=np.float64, order="F")
+    single_valid[2, 1] = 15.0
+    ok_all = np.ones((6, 3), dtype=bool, order="F")
+    for mat in (all_nan, all_const, single_valid):
+        rust_ext = factorlib_core.build_forward_labels(
+            mat, mat, ok_all, ok_all, [1, 10], strict=True
+        )
+        ref_ext = ops_ref.forward_returns_ref(mat, mat, ok_all, ok_all, [1, 10], strict=True)
+        for h in (1, 10):
+            np.testing.assert_allclose(
+                rust_ext[h], ref_ext[h], rtol=1e-12, atol=1e-12, equal_nan=True
+            )
+
+
+def test_compound_forward_labels_parity():
+    """验证 M1.3 Rust `compound_forward_labels` 与 `ops_ref.compound_forward_labels_ref` 对账。"""
+    rng = np.random.default_rng(777)
+    step = _make_noisy_matrix(rng, 25, 6, nan_prob=0.22) * 0.001
+    horizons = [1, 3, 5, 30]
+    rust_out = factorlib_core.compound_forward_labels(step, horizons)
+    ref_out = ops_ref.compound_forward_labels_ref(step, horizons)
+    for k in ["r_exec_next", *[f"y_{h}" for h in horizons]]:
+        assert rust_out[k].flags.writeable is False
+        np.testing.assert_allclose(rust_out[k], ref_out[k], rtol=1e-12, atol=1e-12, equal_nan=True)

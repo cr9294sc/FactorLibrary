@@ -581,3 +581,92 @@ fn test_canonicalization_value_equivalence() {
         "非零元素 inv(inv(x)) 保持数学数值等价"
     );
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(40))]
+
+    #[test]
+    fn prop_forward_returns_causality_and_strictness(
+        t in 6usize..24,
+        n in 2usize..8,
+        h in 1usize..5,
+        seed_prices in proptest::collection::vec(1.0f64..200.0, 24 * 8),
+        seed_flags in proptest::collection::vec(any::<bool>(), 24 * 8 * 2),
+    ) {
+        use factorlib_core::labels::forward_returns;
+        let mut price = Array2::<f64>::zeros((t, n).f());
+        let mut entry_ok = Array2::<bool>::from_elem((t, n).f(), true);
+        let mut exit_ok = Array2::<bool>::from_elem((t, n).f(), true);
+        for c in 0..n {
+            for r in 0..t {
+                price[[r, c]] = seed_prices[(r * n + c) % seed_prices.len()];
+                entry_ok[[r, c]] = seed_flags[(r * n + c) % seed_flags.len()];
+                exit_ok[[r, c]] = seed_flags[((r * n + c) + t * n) % seed_flags.len()];
+            }
+        }
+
+        let res_strict = forward_returns(
+            price.view(),
+            price.view(),
+            entry_ok.view(),
+            exit_ok.view(),
+            &[h],
+            true,
+        );
+        let res_defer = forward_returns(
+            price.view(),
+            price.view(),
+            entry_ok.view(),
+            exit_ok.view(),
+            &[h],
+            false,
+        );
+
+        // 1. 因果性：改变 T 及以前的价格，y_h[T] 不得变化 (y_h[T] 仅依赖 T+1 及以后)
+        let eval_t = 1usize;
+        if eval_t + 1 + h < t {
+            let mut price_pert = price.clone();
+            for c in 0..n {
+                for r in 0..=eval_t {
+                    price_pert[[r, c]] *= 2.5;
+                }
+            }
+            let res_pert = forward_returns(
+                price_pert.view(),
+                price_pert.view(),
+                entry_ok.view(),
+                exit_ok.view(),
+                &[h],
+                true,
+            );
+            for c in 0..n {
+                let a = res_strict[0][[eval_t, c]];
+                let b = res_pert[0][[eval_t, c]];
+                if a.is_nan() {
+                    prop_assert!(b.is_nan());
+                } else {
+                    prop_assert!((a - b).abs() < 1e-12);
+                }
+            }
+        }
+
+        // 2. 边界与尾部 NaN 约束: t + 1 + h >= t_len 必须全为 NaN
+        for row in t.saturating_sub(1 + h)..t {
+            for c in 0..n {
+                prop_assert!(res_strict[0][[row, c]].is_nan());
+                prop_assert!(res_defer[0][[row, c]].is_nan());
+            }
+        }
+
+        // 3. 若严格模式有效，顺延模式必与严格模式完全相等
+        for r in 0..t {
+            for c in 0..n {
+                let vs = res_strict[0][[r, c]];
+                let vd = res_defer[0][[r, c]];
+                if vs.is_finite() {
+                    prop_assert!((vs - vd).abs() < 1e-12);
+                }
+            }
+        }
+    }
+}

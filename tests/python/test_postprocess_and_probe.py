@@ -425,7 +425,7 @@ def test_futures_styles_universe_mask_isolation():
     """验证 compute_futures_styles 在非在池标的 (mask == False) 处完全隔离极端值，
     且非在池标的位置严格输出 NaN，在池标的结果不受污染。
     """
-    from factorlib.core.styles import compute_futures_styles
+    from factorlib.markets.futures.styles import compute_futures_styles
 
     panel_clean = _make_synthetic_panel(T=30, N=10, seed=42)
     panel_polluted = _make_synthetic_panel(T=30, N=10, seed=42)

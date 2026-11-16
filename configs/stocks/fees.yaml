@@ -1,0 +1,11 @@
+market: "stocks"
+lot_size: 100                        # A 股最小交易单位 1 手 = 100 股
+tick_size: 0.01                      # 最小报价单位 0.01 元
+
+fees:
+  commission_rate: 0.0001            # 券商佣金率 (万分之 1)
+  min_commission: 5.0                # 最低佣金 5 元
+  stamp_duty_rate: 0.0005            # 卖出单边印花税 (万分之 5)
+  transfer_fee_rate: 0.00001         # 过户费 (双边万分之 0.1)
+  slip_ticks: 1.0                    # 滑点跳数
+  slip_bps: 0.0                      # 按成交额比例滑点 (bps)

@@ -11,13 +11,75 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import polars as pl
+
+# 允许留在 panel.fields 中供分组与掩码算子使用的结构化辅助字段
+STRUCTURAL_PANEL_AUX_FIELDS: frozenset[str] = frozenset(
+    {"sector", "listed_days", "in_universe_mask", "limit_mask"}
+)
+
+# 未显式传入 aux_field_names 且无 fields.json 时的通用回测辅助字段默认集合
+DEFAULT_AUX_BACKTEST_FIELDS: frozenset[str] = frozenset(
+    {
+        "exec_vwap",
+        "exec_vwap_old",
+        "open_raw",
+        "close_raw",
+        "high_raw",
+        "low_raw",
+        "settle_raw",
+        "limit_up",
+        "limit_down",
+        "is_unilateral",
+        "adj_factor",
+        "ex_cum_factor",
+        "is_roll",
+        "traded",
+        "adv20_turnover",
+        "multiplier",
+        "margin_rate",
+        "days_to_expiry",
+        "is_suspended",
+        "is_st",
+        "can_buy_mask",
+        "can_sell_mask",
+        "bench_fwd_open_1",
+        "bench_fwd_close_1",
+        "bench_ret",
+    }
+)
+
+
+def _resolve_aux_field_names(
+    dir_path: Path,
+    aux_field_names: Collection[str] | None,
+) -> frozenset[str]:
+    """确定应隔离进 aux_fields 的列名集合（优先显式参数 -> fields.json -> 默认集合）。"""
+    if aux_field_names is not None:
+        return frozenset(aux_field_names)
+    fields_json = dir_path / "fields.json"
+    if fields_json.exists():
+        try:
+            with fields_json.open("r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+            parsed = {
+                str(spec["name"])
+                for spec in doc.get("fields", [])
+                if isinstance(spec, dict)
+                and spec.get("role") == "aux"
+                and str(spec.get("name")) not in STRUCTURAL_PANEL_AUX_FIELDS
+            }
+            if parsed:
+                return frozenset(parsed)
+        except Exception:
+            pass
+    return DEFAULT_AUX_BACKTEST_FIELDS
 
 
 def _lookup_panel_field(
@@ -165,6 +227,7 @@ class Panel:
         path: str | Path,
         fields_subset: Sequence[str] | None = None,
         load_labels: bool = True,
+        aux_field_names: Collection[str] | None = None,
     ) -> Panel:
         """从标准派生数据目录 (包含 panel_daily.parquet) 加载面板。
 
@@ -176,6 +239,8 @@ class Panel:
             可选, 仅加载指定特征字段子集以降低内存开销; 若为 None 则加载全部数值特征
         load_labels:
             是否同时加载 labels.parquet
+        aux_field_names:
+            可选, 需隔离至 ``aux_fields`` 的辅助字段名集合 (通常由 ``MarketProfile`` 传入)
         """
         dir_path = Path(path)
         panel_file = dir_path / "panel_daily.parquet"
@@ -206,7 +271,7 @@ class Panel:
             "in_universe",
         }
 
-        from factorlib.markets.futures.etl.fields import AUX_BACKTEST_FIELDS
+        aux_names_set = _resolve_aux_field_names(dir_path, aux_field_names)
 
         want_limit_mask = fields_subset is None or "limit_mask" in fields_subset
         unrequested_volume = False
@@ -273,7 +338,7 @@ class Panel:
                 arr[row_indices, col_indices] = vals
                 if col_name == "volume" and unrequested_volume:
                     limit_extra_fields[col_name] = arr
-                elif col_name in AUX_BACKTEST_FIELDS:
+                elif col_name in aux_names_set:
                     aux_fields_dict[col_name] = arr
                 else:
                     fields_dict[col_name] = arr

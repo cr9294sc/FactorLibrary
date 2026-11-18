@@ -162,8 +162,8 @@ source .venv/bin/activate
 python3.12 -m venv .venv
 source .venv/bin/activate
 
-# 3. Install Python dependencies in editable mode
-pip install -e ".[dev]"
+# 3. Install Python dependencies (including PyTorch DL Alpha extras)
+pip install -e ".[dev,dl]"
 
 # 4. Compile and install the Rust extension in release mode
 maturin develop --release --manifest-path rust/factorlib_core/Cargo.toml
@@ -177,6 +177,26 @@ bash scripts/verify.sh --fast
 
 # Full quality gate verification (Rust Clippy, Python Pytest, Proptests, Anti-Lookahead Audit)
 bash scripts/verify.sh --all
+```
+
+### 3. Launching the Dual-Market Web Workbench Service
+
+The platform provides a single-stack **FastAPI + Uvicorn** backend and zero-build ES module frontend (`python/factorlib/frontend/`) supporting top-level market switching (`futures` / `stocks`), 5 research pages (`#/{market}/{data|lab|compare|mining|registry}`), and detached background subprocess execution for GP, DL Alpha, and ML jobs:
+
+```bash
+# 1. Build standard derived panels for Futures and A-Shares
+python scripts/build_panel.py --market futures --version v1
+python scripts/build_panel.py --market stocks --version v1
+
+# 2. Start the Web Workbench service (http://127.0.0.1:8080, OpenAPI docs at /docs)
+python scripts/run_web.py --host 127.0.0.1 --port 8080
+
+# Or via the installed CLI entrypoint / Uvicorn directly
+factorlib-web --host 0.0.0.0 --port 8080 --market stocks
+uvicorn factorlib.workbench_server:app --host 127.0.0.1 --port 8080
+
+# 3. Run in synthetic demo mode (zero local parquet files required)
+python scripts/run_web.py --synthetic --port 8080
 ```
 
 ---
@@ -272,11 +292,12 @@ Artifacts are automatically stored in `runs/pipeline_YYYYMMDD_HHMMSS/`:
 | `scripts/audit_data.py` | Raw data health check: `python scripts/audit_data.py --quick` |
 | `scripts/build_panel.py` | ETL panel builder: `python scripts/build_panel.py --quick` |
 | `scripts/init_seed_factors.py` | Registers 4 canonical academic seed factors: `python scripts/init_seed_factors.py` |
-| `scripts/run_gp.py` | Standalone STGP multi-island mining: `python scripts/run_gp.py --population 500 --generations 30` |
-| `scripts/run_ml.py` | Purged Walk-Forward ML synthesis: `python scripts/run_ml.py --start-year 2018 --end-year 2026` |
+| `scripts/run_gp.py` | Standalone STGP multi-island mining (supports `--recipe <id>`): `python scripts/run_gp.py --market futures --population 500 --generations 30` |
+| `scripts/run_dl.py` | PyTorch 1d DL Alpha Purged Walk-Forward trainer (`GRU`/`ST-Attention`/`Gated-MLP`/`TCN`, supports `--recipe <id>`): `python scripts/run_dl.py --market futures --model gru` |
+| `scripts/run_ml.py` | Purged Walk-Forward ML synthesis (supports `--recipe <id>`): `python scripts/run_ml.py --start-year 2018 --end-year 2026` |
 | `scripts/run_backtest.py` | Realistic futures backtesting: `python scripts/run_backtest.py --factor "ts_zscore(close, 20)"` |
 | `scripts/run_pipeline.py` | Unified end-to-end research pipeline: `python scripts/run_pipeline.py` |
-| `scripts/run_web.py` | 6-stage interactive quantitative research SPA studio: `python scripts/run_web.py --port 8080` |
+| `scripts/run_web.py` | Dual-market 5-page FastAPI + Uvicorn Web Workbench service: `python scripts/run_web.py --port 8080` |
 | `scripts/download_rq_stocks.py` | Downloads Ricequant A-share daily bars and metadata into `data/raw/stocks/` |
 | `scripts/backtest_volume_price_factor.py` | Single-factor (`Volume_Price_2_H5_2`) A-share backtest & FactorLab reconciliation (`--execution-simulation` optional) |
 | `scripts/backtest_multi_factors.py` | Multi-factor A-share reconciliation across 5 canonical factors (`--execution-simulation`, `--tech-trend-high-low`) |
@@ -408,13 +429,13 @@ FactorLibrary/
 
 ---
 
-## Phase 2 Stock Market Adapter & Cross-Platform Backtesting
+## Phase 2 & Phase 3 Dual-Market Profile, DL Alpha & Cross-Platform Backtesting
 
-Chinese A-share stock evaluation and cross-platform FactorLab reconciliation are now implemented alongside `factorlib.markets.stocks.adapter.StockMarketAdapter`:
-- **Market Contract**: 1 lot = 100 shares, multiplier 1.0, zero leverage (margin rate 1.0), asymmetric stamp duty on sells, T+1 settlement, and board-aware price limits ($\pm 10\%$ Main, $\pm 20\%$ ChiNext/STAR, $\pm 30\%$ BSE, $\pm 5\%$ ST);
-- **Panel & Zero-Leak Aliases (`factorlib.markets.stocks.panel_loader.StockPanelLoader`)**: Reshapes full-market stock parquet data (5,323 A-shares) into Fortran-order `StockPanelData`, exposing zero-copy `listed_days` and `sector` aliases via `to_panel()` so `apply_postprocess_pipeline` enforces trailing `baseUniMask` / `trdMask` re-masking after `decay(5)`;
-- **Directional Execution Simulation (`compute_forward_returns(..., execution_simulation=True)`)**: Uses separate `can_buy_mask` (blocking open limit-up / suspension entries at $t+1$) and `can_sell_mask` with vectorized backward-scan forward exit deferral past limit-down/suspension at $t+1+h$ (preserving limit-up holders rather than censoring them);
-- **Verified Benchmark**: `scripts/backtest_volume_price_factor.py` and `scripts/backtest_multi_factors.py` reconcile `Volume_Price_2_H5_2` (`2016-01-04 ~ 2024-12-31`) across `open_adj` and `vwap_adj` modes with optional `--execution-simulation`.
+Chinese A-share stock evaluation, PyTorch 1d DL Alpha, and cross-platform FactorLab MCP reconciliation are fully integrated under the unified `MarketProfile` architecture:
+- **A-Share Profile & Rust Execution Kernel (`StocksProfile`, `rust/factorlib_core/src/backtest/stocks.rs`)**: 1 lot = 100 shares, multiplier 1.0, zero leverage, asymmetric stamp duty on sells, T+1 settlement lock, and `can_buy_mask` / `can_sell_mask` limit-up/limit-down blocking;
+- **Full-Market Stock Panel (`StockPanelLoader` & `data/derived/stocks/v1`)**: Reshapes 5,323 A-shares (`2015-11-02 ~ 2024-12-31`, 2,231 trading days with a 42-day warmup buffer and 2,185 formal evaluation days in `2016-01-04 ~ 2024-12-31`) into Fortran-order matrices with zero-leak `apply_postprocess_pipeline` enforcement;
+- **PyTorch 1d DL Alpha & 3-Gate Admission (`factorlib.dl`, `rust/factorlib_core/src/metrics/spanning.rs`)**: Supports `Gated-MLP`, `GRU`, `1D-TCN`, and `Spatio-Temporal Attention` ($O(N \cdot M)$ Market-Guided Routing for A-shares) with Purged Walk-Forward seed bagging, `.npz` OOS materialization, and 3-gate admission auditing (Corr < 0.60, Rust MGS2 Spanning orthogonal residual $t$-stat, and Layer-2 Walk-Forward synthesis ablation $\Delta\text{Sharpe}$);
+- **Verified Web & CLI Benchmark (`Volume_Price_2_H5_2`)**: Pre-loaded in the Web Workbench (`#/stocks/lab` & `#/stocks/compare`) and verified against FactorLab MCP (`bt_bb3a04da6b20456ab444dcb7e5450949`, `2016-01-04 ~ 2024-12-31`, 2,185 days: `1d RankIC = 0.0343 (open_adj) / 0.0416 (vwap_adj) vs 0.0431 (MCP vwap30)`, `5d RankIC = 0.0618 vs 0.0659`, `G10 Annual Excess = +11.97%`, `Excess Sharpe = 1.34`).
 
 ---
 

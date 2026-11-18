@@ -283,13 +283,17 @@
 
           <div class="grid grid-4 gap-3" id="btMeta"></div>
           <div class="card"><div class="grid grid-4" id="btKpi"></div></div>
+          <div class="card" id="mcpCompareCard" hidden>
+            <h3 class="sec"><span>FactorLab MCP 线上权威基准同屏对账</span><span class="lbl" id="mcpRunBadge"></span></h3>
+            <div id="tMcpCompare" class="overflow-auto"></div>
+          </div>
 
           <div class="grid grid-2 gap-4">
             <div class="card"><h3 class="sec">全市场指标</h3><div id="tAll"></div></div>
-            <div class="card"><h3 class="sec">分层表现</h3><div id="tGrp"></div></div>
+            <div class="card"><h3 class="sec"><span id="tGrpTitle">分层表现</span></h3><div id="tGrp"></div></div>
           </div>
 
-          <div class="card"><h3 class="sec">多空组合 / 风格暴露</h3><div id="tLS"></div></div>
+          <div class="card"><h3 class="sec">多空组合指标与风险风格暴露</h3><div id="tLS"></div></div>
           <div class="card"><h3 class="sec">分年表现</h3><div id="tYear" class="overflow-auto"></div></div>
           <div class="card"><h3 class="sec">分月表现（最近 12 个月）</h3><div id="tMonth" class="overflow-auto"></div></div>
 
@@ -299,7 +303,7 @@
               <div class="p-2"><svg id="icChart" viewBox="0 0 520 190" class="w-full"></svg></div>
             </div>
             <div class="card">
-              <h3 class="sec"><span>分层累计收益</span><span class="lbl">G1..G5</span></h3>
+              <h3 class="sec"><span>分层累计收益</span><span class="lbl" id="grpChartSub">G1..G5</span></h3>
               <div class="p-2">
                 <svg id="grpChart" viewBox="0 0 520 190" class="w-full"></svg>
                 <div id="grpLeg" class="flex flex-wrap gap-2 lbl mt-1"></div>

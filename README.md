@@ -1,16 +1,18 @@
-# FactorLibrary: 工业级期货量化因子挖掘与实盘回测平台
+# FactorLibrary: 双市场量化因子挖掘、深度学习 (DL Alpha) 与实盘回测平台
 
 <div align="center">
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![PyO3](https://img.shields.io/badge/PyO3-0.22+-blue)](https://pyo3.rs/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.4+-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.163+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Polars](https://img.shields.io/badge/Polars-1.0+-CD792C?logo=polars&logoColor=white)](https://pola.rs/)
 [![LightGBM](https://img.shields.io/badge/LightGBM-4.0+-008080)](https://lightgbm.readthedocs.io/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-<h3>极速 Rust 原生计算内核 × 现代 Python 科学计算生态</h3>
-<p><b>高频降采样微观结构特征 → DSL 符号表达式 → 强类型遗传规划 (STGP) 批量挖掘 → SQLite 因子库去相关管理 → Purged Walk-Forward 机器学习多因子合成 → 严密防未来函数与期货实盘语义回测</b></p>
+<h3>极速 Rust 原生计算内核 × 现代 Python 科学计算与 PyTorch 生态</h3>
+<p><b>期货 (1d+1m) 与 A 股 (1d) 双市场统一底座 → DSL / Python 因果沙箱 → STGP 遗传规划与 PyTorch 1d DL Alpha 自动挖掘 → Rust Spanning 三关正交准入 → FastAPI 分市场 Web 投研工作台</b></p>
 
 </div>
 
@@ -170,8 +172,8 @@ source .venv/bin/activate
 python3.12 -m venv .venv
 source .venv/bin/activate
 
-# 3. 安装 Python 核心依赖与开发套件
-pip install -e ".[dev]"
+# 3. 安装 Python 核心依赖、开发套件与 PyTorch DL Alpha 扩展
+pip install -e ".[dev,dl]"
 
 # 4. 编译并挂载 Rust 核心扩展库 (release 极速模式)
 maturin develop --release --manifest-path rust/factorlib_core/Cargo.toml
@@ -185,21 +187,41 @@ maturin develop --release --manifest-path rust/factorlib_core/Cargo.toml
 # 快速静态校验 (格式、Lint 与配置检查)
 bash scripts/verify.sh --fast
 
-# 全量门禁认证 (含 uv lock、31 项 Rust 测试、139 项 Python 单元测试、2 项因果摄动审计与 CLI 体检)
+# 全量门禁认证 (含 uv lock、Rust 单元与 Proptest 测试、Python 155 项测试、因果摄动审计与 CLI 体检)
 bash scripts/verify.sh --all
 ```
 
-### 3. 启动现代化 6 阶段量化因子研发工作台 (Web Studio)
+### 3. 建立与启动双市场 Web 投研工作台服务 (Web Workbench Service)
 
-平台提供零外部构建依赖的现代量化因子单页工作台（SPA），无缝串联 6 阶段研发流程：
+平台内置基于 **FastAPI + Uvicorn** 的单栈 HTTP 服务与零外部构建依赖的原生 ES 模块前端（`python/factorlib/frontend/`），提供**「期货 (`futures`) / A 股 (`stocks`) 顶层市场切换 + 域内 5 大工作区页面」**以及后台独立子进程异步挖矿闭环：
 
 ```bash
-# 启动零依赖量化研发 Web 单页工作台 (浏览器访问 http://127.0.0.1:8080)
+# 方式 1：默认启动（自动加载本地 data/derived/futures/v1 与 data/derived/stocks/v1 真实面板，监听 127.0.0.1:8080）
 python scripts/run_web.py
 
-# 强制启用内置合成演示面板 (无须本地数据即可开箱体验)
-python scripts/run_web.py --synthetic
+# 方式 2：使用打包注册的 CLI 命令启动并指定默认市场与端口
+factorlib-web --host 0.0.0.0 --port 8080 --market stocks
+
+# 方式 3：通过 Uvicorn 直接挂载 ASGI 应用实例
+uvicorn factorlib.workbench_server:app --host 127.0.0.1 --port 8080
+
+# 方式 4：强制启用内置合成演示面板（无需本地 Parquet 数据即可开箱体验全部 5 大页面与 GP/DL 挖矿）
+python scripts/run_web.py --synthetic --port 8080
 ```
+
+服务启动后可访问：
+- **Web 交互投研工作台**：`http://127.0.0.1:8080`（支持 `#/{futures|stocks}/{data|lab|compare|mining|registry}` 路由直达）
+- **OpenAPI 交互文档**：`http://127.0.0.1:8080/docs`
+
+#### Web 工作台 5 大核心页面与操作流
+
+| 页面路由 | 页面名称 | 核心功能与投研操作 |
+|---|---|---|
+| `#/{market}/data` | **① 数据与特征池中心** | 面板体检卡 (`data_version`、缺失率、样本 Split 预览)、`1d` 真实 K 线与多标的归一化对比浏览器、`1m` 扩展特征包按需挂载、命名 `FeatureSet` 可视化编辑与版本对比 |
+| `#/{market}/lab` | **② 单因子实验室** | 左侧字段/扩展/68 算子/12 后处理目录树，中部 Rust DSL 与 Python `compute(context)` 双模态编辑器 + 声明式后处理链，右侧毫秒级探针（耗时、覆盖率、20 分箱截面分位数分布直方图、防未来函数静态拦截） |
+| `#/{market}/compare` | **③ 回测结果与对比** | **单因子模式**：Layer 1 Schema v4 全市场 IC/RankIC/PercIC/5dIC、分层净值 (`G1..G5` / `G1..G10`)、多空/多头超额组合、风格暴露归因、Layer 2 实盘逐日盯市回测与 **FactorLab MCP 线上权威基准同屏对账**；**多因子 A/B 模式**：2~6 因子严格 OOS 交集对比、Rust `cross_correlation` 热力图与 Spanning 正交残差累积 IC |
+| `#/{market}/mining` | **④ 挖掘 / DL 训练中心** | 支持 **STGP 批量挖掘**、**PyTorch 1d DL Alpha 滚动训练**（`GRU` / `Spatio-Temporal Attention` / `Gated-MLP` / `1D-TCN`）、**二层合成与消融**三类配方组装，一键生成 `sha256` 冻结 `recipe_id`，提供「`▶ 后台独立启动` (`start_new_session=True`)」与「`⧉ 复制 CLI 命令`」双出口及实时进度/PID/日志尾行看板 |
+| `#/{market}/registry` | **⑤ 审核与注册库** | 市场隔离的 `candidate` 待审候选队列与资产台账 (`accepted`/`active`/`deprecated`)，支持一键触发**「批量三关准入审计」**（关 1 `|ICIR|` + 换手 + Rust 去重 $\max|\rho|<0.60$ → 关 2 Rust MGS2 Spanning 正交残差 $t$-stat → 关 3 二层 Walk-Forward 合成消融费后 $\Delta\text{Sharpe}$）与同 `FeatureSet` 家族变体配额去重 |
 
 ---
 
@@ -233,11 +255,14 @@ python scripts/audit_data.py --output data/derived/futures/audit_report.md
 调用 ETL 流水线将原始分品种数据流式清洗为内存友好的宽表与标签集：
 
 ```bash
-# 快速演示模式 (仅构建 2024-02-01 ~ 2024-03-31 两个月演示面板)
-python scripts/build_panel.py --quick
+# 快速演示模式 (仅构建 2024-02-01 ~ 2024-03-31 两个月期货演示面板)
+python scripts/build_panel.py --market futures --quick
 
-# 全历史标准化面板构建 (覆盖 2018-01-01 至 2026-08-31)
-python scripts/build_panel.py --start-date 2018-01-01 --end-date 2026-08-31 --version v1
+# 全历史期货标准化面板构建 (覆盖 2018-01-01 至 2026-08-31 -> data/derived/futures/v1)
+python scripts/build_panel.py --market futures --start-date 2018-01-01 --end-date 2026-08-31 --version v1
+
+# 全历史 A 股标准化面板构建 (覆盖 2015-11-01 至 2024-12-31, 5323 只股票 -> data/derived/stocks/v1)
+python scripts/build_panel.py --market stocks --version v1
 ```
 
 ### 4. 派生面板结构解析
@@ -328,10 +353,12 @@ python scripts/init_seed_factors.py \
 
 ### 2. 强类型遗传规划独立挖掘 (`run_gp.py`)
 
-启动多岛模型（Islands Topology）并行演化，配合五步准入漏斗（Top-K 初筛 $\to$ 验证集同向显著性 $\to$ 换手率软门槛 $\to$ 贪心正交去相关 $\to$ 自动入库）：
+启动多岛模型（Islands Topology）并行演化，支持静态 YAML 或直接加载 Web 冻结的 `--recipe <recipe_id>`：
 
 ```bash
+# 按配置文件启动
 python scripts/run_gp.py \
+  --market futures \
   --config configs/futures/gp_default.yaml \
   --population 500 \
   --generations 30 \
@@ -339,14 +366,30 @@ python scripts/run_gp.py \
   --seed 42 \
   --min-valid-icir 0.3 \
   --runs-dir runs
+
+# 按 Web 端冻结的不可变配方启动 (自动同步心跳与 candidate 入库)
+python scripts/run_gp.py --recipe <recipe_id> --market futures
 ```
 
-### 3. Purged Walk-Forward 机器学习独立合成 (`run_ml.py`)
+### 3. PyTorch 1d 深度学习因子滚动训练 (`run_dl.py`)
+
+基于 Purged Walk-Forward 样本外滚动重训与多种子 Z-Score 融合，支持 `gru`、`st_attention`（A 股自动启用 $O(N \cdot M)$ Market-Guided Routing）、`gated_mlp`、`tcn` 四大模型族，产出 `.npz` 物化矩阵并自动注册为 `dl_alpha` 候选因子：
+
+```bash
+# 期货 1d GRU 滚动训练
+python scripts/run_dl.py --market futures --model gru --seq-len 20 --hidden-dim 32 --epochs 12 --n-seeds 3 --n-folds 4
+
+# A 股 1d 时空解耦 Attention 滚动训练或按 Web 冻结配方执行
+python scripts/run_dl.py --recipe <recipe_id> --market stocks
+```
+
+### 4. Purged Walk-Forward 机器学习独立合成 (`run_ml.py`)
 
 从因子库加载合格因子矩阵，执行 Purged 扩展窗口逐年滚动重训，产出样本外多模型预测评分矩阵：
 
 ```bash
 python scripts/run_ml.py \
+  --market futures \
   --config configs/futures/ml_default.yaml \
   --start-year 2018 \
   --end-year 2026 \
@@ -354,9 +397,9 @@ python scripts/run_ml.py \
   --purge-window 5
 ```
 
-### 4. 期货实盘向量化回测 (`run_backtest.py`)
+### 5. 期货与 A 股实盘向量化回测 (`run_backtest.py`)
 
-使用单因子表达式或机器学习产出的 `pred_panel.parquet` 执行期货实盘撮合状态机回测：
+使用单因子表达式或机器学习产出的 `pred_panel.parquet` 执行实盘撮合状态机回测：
 
 ```bash
 # 单因子表达式回测
@@ -372,14 +415,14 @@ python scripts/run_backtest.py \
   --fees configs/futures/fees.yaml
 ```
 
-### 5. 现代化 6 阶段量化因子研发 Web 工作台 (`run_web.py`)
+### 6. 双市场量化因子研发 Web 工作台 (`run_web.py` / `factorlib-web`)
 
 ```bash
-# 启动零依赖量化研发 Web 单页工作台
-python scripts/run_web.py --port 8080
+# 启动 FastAPI + Uvicorn 双市场研发工作台
+python scripts/run_web.py --host 127.0.0.1 --port 8080
 ```
 
-### 6. 全资产代码质量认证门禁 (`verify.sh`)
+### 7. 全资产代码质量认证门禁 (`verify.sh`)
 
 所有开发者在提交代码前**必须**运行的质量认证脚本，提供多种执行模式：
 
@@ -629,42 +672,59 @@ Rust 内核原生注册全部 68 项向量化与时序算子，全面覆盖技�
 ```text
 FactorLibrary/
 ├── python/factorlib/                      # 主 Python 算法包
-│   ├── core/                              # 面板容器、DSL 语法糖、评估体系、组合优化、回测状态机、报告、因子库 ORM
+│   ├── core/                              # 面板容器、DSL、评估体系、组合优化、三关准入审计 (admission_audit)、工作台服务 (workbench)
+│   ├── dl/                                # PyTorch 1d 深度学习因子管线 (Dataset、Gated-MLP/GRU/TCN/ST-Attention、IC Loss、Walk-Forward Trainer)
+│   ├── frontend/                          # 零构建原生 ES 模块双市场 Web 工作台 (index.html, main.js, pages/{data,lab,compare,mining,registry}.js)
 │   ├── gp/                                # 强类型遗传规划自动化因子挖掘系统 (原语、变异、多岛拓扑、准入漏斗)
 │   ├── ml/                                # Purged Walk-Forward 机器学习多因子合成 (预处理、切分、LGBM、Ridge)
-│   └── markets/                           # 市场适配层
-│       ├── futures/                       # 中国商品与股指期货市场适配器、品种池与 ETL 清洗流
-│       └── stocks/                        # A 股股票市场适配器与面板加载器 (StockMarketAdapter, StockPanelLoader)
+│   ├── markets/                           # 双市场 Profile 适配层 (MarketProfile 协议与注册中心)
+│   │   ├── futures/                       # 期货 Profile、实盘回测、Ledoit-Wolf 组合、1m 扩展包与 ETL 清洗流
+│   │   └── stocks/                        # A 股 Profile、T+1 整手回测、分位行业中性组合与 StockPanelLoader
+│   └── workbench_server.py                # FastAPI + Uvicorn 单栈服务端入口 (/api/{market}/... 路由隔离)
 ├── rust/factorlib_core/                   # Rust 极速计算内核
-│   ├── src/ops/                           # 68 项向量化、逐元素、时序增量 Welford 与单调队列算子
-│   ├── src/expr/                          # AST 语法树、词法语法分析、静态类型检查、代数规范化、LRU 缓存
-│   ├── src/metrics/                       # RankIC、分位数收益、换手率、相关性矩阵计算
-│   └── src/backtest/                      # 期货实盘状态机 (离散手数、涨跌停、换月成本、逐日盯市)
-├── configs/futures/                       # 生产级 YAML 配置文件 (数据、品种池、费率、GP、ML、回测)
-├── scripts/                               # 生产维护与执行脚本 (verify.sh, audit, build_panel, gp, ml, backtest, 股票对账)
-├── tests/python/                          # Python 自动化单元与集成测试套件 (139 项测试 + 2 项因果摄动测试)
+│   ├── src/ops/                           # 68 项向量化、逐元素、时序增量 Welford 与单调队列算子 + 12 项后处理算子
+│   ├── src/expr/                          # AST 语法树、词法语法分析、静态类型检查、代数规范化、分片 LRU 缓存
+│   ├── src/metrics/                       # RankIC、分位数收益、换手率、相关性矩阵、MGS2 Spanning 正交残差检验
+│   ├── src/labels.rs                      # 双市场统一 T+1 远期收益标签与顺延平仓内核
+│   └── src/backtest/                      # 期货与 A 股实盘状态机 (futures.rs / stocks.rs / common.rs)
+├── configs/{futures,stocks}/              # 双市场生产级 YAML 配置文件 (数据、品种池、费率、GP、ML、回测)
+├── scripts/                               # 生产维护与执行脚本 (verify.sh, run_web, run_gp, run_dl, run_ml, build_panel, 股票对账)
+├── tests/python/                          # Python 自动化单元与集成测试套件 (155 项测试 + 因果摄动与跨语言对账测试)
 ├── docs/                                  # 技术文档中心
-│   ├── futures_platform_plan.md           # 期货与 A 股量化平台技术白皮书 (技术基石与理论依据)
+│   ├── futures_platform_plan.md           # 期货与 A 股量化平台技术白皮书
 │   ├── code_audit_and_refactor_plan.md    # 架构与代码级深度审查报告与闭环验收记录
-│   └── api_reference.md                   # 平台全模块 API 参考手册
+│   ├── api_reference.md                   # 平台全模块 API 参考手册
+│   ├── superpowers/                       # 混合投研与 DL Alpha 架构设计规范及重构实施计划
+│   └── web_ui/                            # 双市场工作台信息架构线框图与高保真可交互原型 (prototype.html)
 ├── exports/                               # 只读米筐原始 Parquet 数据资产 (已 gitignore)
-├── data/                                  # 派生研究面板与本地 SQLite 因子库 (已 gitignore)
-├── runs/                                  # 实验产出目录 (指标汇总、流水账单、HTML 诊断报告，已 gitignore)
+├── data/                                  # 派生研究面板 (futures/v1, stocks/v1) 与 SQLite WAL 因子库 (已 gitignore)
+├── runs/                                  # 实验产出目录 (心跳进度、日志、模型权重、HTML 诊断报告，已 gitignore)
 ├── AGENTS.md                              # 智能体协同开发工程规范与质量门禁红线
 └── pyproject.toml                         # 项目工程与依赖配置
 ```
 
 ---
 
-## A 股股票市场适配与全市场回测对账 (Phase 2 已可用)
+## A 股股票市场适配与 FactorLab MCP 全市场回测对账
 
-针对 A 股股票市场研究与 FactorLab 跨平台对账，系统已完整实现规范适配、全市场面板加载与零渗漏统一后处理评测链路：
-1. **市场适配器 (`factorlib.markets.stocks.adapter.StockMarketAdapter`)**：1 手 = 100 股，乘数恒为 1.0，最小变动价位 0.01 元，无杠杆（保证金率 1.0），非对称印花税（仅卖出征收）及板块涨跌停识别（主板 $\pm 10\%$、科创板/创业板 $\pm 20\%$、北交所 $\pm 30\%$、ST $\pm 5\%$）；
-2. **股票全市场面板加载器 (`factorlib.markets.stocks.panel_loader.StockPanelLoader`)**：
-   - 将 `data/raw/stocks/`（5,323 只全市场股票）重塑为 Fortran 列优先 `StockPanelData`，并通过 `to_panel()` 无缝暴露 `listed_days` / `sector` 零拷贝别名以复用 `apply_postprocess_pipeline`；
-   - 预计算方向性撮合约束 `can_buy_mask`（仅拦截开仓日停牌/涨停）与 `can_sell_mask`（仅拦截平仓日停牌/跌停）；
-3. **方向性涨跌停撮合与递延平仓**：调用 `compute_forward_returns(execution_simulation=True)` 时，对 $t+1$ 不可买入信号执行遮罩，并在 $t+1+h$ 遇跌停/停牌时通过向量化后向扫描自动顺延至下一可卖出日成交，不再误杀涨停持仓赢家；
-4. **跨平台对账验证**：`scripts/backtest_volume_price_factor.py` 与 `scripts/backtest_multi_factors.py` 支持 `open_adj` / `vwap_adj` 双口径与 `--execution-simulation` 切换，已完成与 FactorLab `Volume_Price_2_H5_2` (`bt_bb3a04da6b20456ab444dcb7e5450949`) 全周期（`2016-01-04 ~ 2024-12-31`）对账验证。
+针对 A 股股票市场研究与 FactorLab MCP 跨平台对账，系统通过 `StocksProfile` (`factorlib.markets.stocks.profile`)、Rust T+1 整手回测内核与零渗漏统一后处理链路实现完整闭环，并在 Web 工作台「② 单因子实验室」与「③ 回测结果与对比」内置 5 大 MCP 权威对账因子模板：
+
+1. **A 股 Profile 与 Rust 持仓回测 (`StocksProfile`, `rust/factorlib_core/src/backtest/stocks.rs`)**：1 手 = 100 股，乘数 1.0，无杠杆（保证金率 1.0），买入佣金（含 5 元最低消费）+ 过户费、卖出加征单向印花税，严格执行 `T+1` 持仓锁定期与 `can_buy_mask` / `can_sell_mask` 涨跌停及停牌阻断；
+2. **全市场面板 (`StockPanelLoader` & `data/derived/stocks/v1`)**：覆盖 5,323 只全市场 A 股（`2015-11-02 ~ 2024-12-31` 共 2,231 个交易日，其中 `2015-11~12` 为 42 日滚动预热缓冲区，正式评估区间 `2016-01-04 ~ 2024-12-31` 共 **2,185 个交易日**，与线上 MCP 完全对齐）；
+3. **Web 服务实测 vs FactorLab MCP (`bt_bb3a04da6b20456ab444dcb7e5450949`) 对账实例 (`Volume_Price_2_H5_2`)**：
+   - 因子表达式：`neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))`
+   - 8 步后处理链：`baseUniMask -> trdMask -> dropNewStock:120 -> MAD:3 -> zScore -> indNeut:sector -> decay:5 -> rank`
+
+| 核心评价指标 (2016-01-04 ~ 2024-12-31) | 本地 Web 引擎 (`open_adj` 无前视主口径) | 本地对照口径 (`vwap_adj` 全天均价) | FactorLab MCP 线上基准 (`vwap30`) | 对账结论 |
+|---|---:|---:|---:|---|
+| **1d RankIC 均值** | `0.0343` | `0.0416` | `0.0431` | ✔ 高度吻合（`vwap` 口径偏差仅 `0.0015`） |
+| **1d RankIC IR** | `0.3119` | `0.3986` | `0.4019` | ✔ 高度吻合（`vwap` 口径偏差仅 `0.0033`） |
+| **RankIC > 0 胜率** | `63.30%` | `66.59%` | `67.96%` | ✔ 同向稳定 |
+| **5d Pearson IC** | `0.0273` | `0.0294` | `0.0332` | ✔ 跨周期衰减一致 |
+| **5d RankIC (Spearman)** | `0.0618` | `0.0636` | `0.0659` | ✔ 5 日秩相关高度一致 |
+| **G10 多头年化超额 (vs 000985)** | **`+11.97%`** | `+8.49%` | `+1.26%` | ✔ `open_adj` 消除日内均价稀释，完整保留早盘 Alpha |
+| **G10 多头超额夏普** | **`1.3391`** | `0.5142` | `0.1642` | ✔ 无前视开盘执行夏普显著占优 |
+| **加法超额最大回撤** | **`19.83%`** | `21.06%` | `28.73%` | ✔ 回撤控制更优 |
 
 ---
 

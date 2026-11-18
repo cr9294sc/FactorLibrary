@@ -145,18 +145,26 @@ def _normalize_style_matrix(raw: np.ndarray, mask: np.ndarray | None = None) -> 
 
 def _causal_rolling_mean_allow_partial(x: np.ndarray, window: int) -> np.ndarray:
     """严格因果的滚动均值：若有效长度达到 window 则采用标准 ts_mean，对前段样本做因果累积均值兜底。"""
-    res = ts_mean_ref(x, window)
     T, N = x.shape
-    # 对前 window-1 行（或因缺失未满 window 的行），使用截至当前行 t 的因果可用均值补充，避免短样本全 NaN
-    for j in range(N):
-        col = x[:, j]
-        for t in range(T):
-            if np.isnan(res[t, j]) and np.isfinite(col[t]):
-                start = max(0, t + 1 - window)
-                seg = col[start : t + 1]
-                valid = seg[np.isfinite(seg)]
-                if len(valid) >= 1:
-                    res[t, j] = float(np.mean(valid))
+    if T >= window and N > 200:
+        # 大截面矩阵优先调用 Rust 向量化单次扫描，并对前 window-1 行补充因果累积均值
+        f_x = np.asfortranarray(x, dtype=np.float64)
+        mask_all = np.ones((T, N), dtype=bool, order="F")
+        eng = factorlib_core.Engine({"x": f_x}, mask_all)
+        res = np.array(eng.eval(f"ts_mean(x, {int(window)})"), dtype=np.float64, copy=True)
+    else:
+        res = ts_mean_ref(x, window)
+
+    # 对前 window-1 行或因中间缺失导致窗口未满但当前行有效的单元格，补充因果可用均值
+    need_fill = np.isnan(res) & np.isfinite(x)
+    if np.any(need_fill):
+        rows, cols = np.where(need_fill)
+        for t, j in zip(rows.tolist(), cols.tolist(), strict=False):
+            start = max(0, t + 1 - window)
+            seg = x[start : t + 1, j]
+            valid = seg[np.isfinite(seg)]
+            if len(valid) >= 1:
+                res[t, j] = float(np.mean(valid))
     return res
 
 
@@ -164,14 +172,21 @@ def _causal_pct_change_allow_short(close: np.ndarray, window: int) -> np.ndarray
     """严格因果的收益率计算：优先使用 t - window，若 t < window 且 t >= 1 则使用首日价格兜底。"""
     T, N = close.shape
     out = np.full((T, N), np.nan, dtype=np.float64)
-    for j in range(N):
-        col = close[:, j]
-        for t in range(1, T):
-            lag = min(window, t)
-            prev = col[t - lag]
-            curr = col[t]
-            if np.isfinite(curr) and np.isfinite(prev) and abs(prev) > 1e-12:
-                out[t, j] = curr / prev - 1.0
+    if T <= 1:
+        return out
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for t in range(1, min(T, window)):
+            prev = close[0, :]
+            curr = close[t, :]
+            ok = np.isfinite(curr) & np.isfinite(prev) & (np.abs(prev) > 1e-12)
+            out[t, ok] = curr[ok] / prev[ok] - 1.0
+        if T > window:
+            prev_m = close[:-window, :]
+            curr_m = close[window:, :]
+            ok_m = np.isfinite(curr_m) & np.isfinite(prev_m) & (np.abs(prev_m) > 1e-12)
+            out_sub = np.full_like(curr_m, np.nan)
+            out_sub[ok_m] = curr_m[ok_m] / prev_m[ok_m] - 1.0
+            out[window:, :] = out_sub
     return out
 
 
@@ -231,15 +246,30 @@ def compute_style_exposures(
                 if len(s_valid) > 0:
                     group_accum[g_key][s].append(float(np.mean(s_valid)))
 
-        # 计算因子与各风格的截面秩相关（支持并列平均秩）
+        # 计算因子与各风格的截面秩相关（小截面保留逐日精确循环，大截面调用 Rust calc_ic 并行加速）
+        if N <= 200:
+            for s in style_names:
+                s_row = styles_dict[s][t, :]
+                both = valid_f & np.isfinite(s_row)
+                b_idx = np.where(both)[0]
+                if len(b_idx) >= 5:
+                    c = _spearman_corr_1d(f_row[b_idx], s_row[b_idx])
+                    if np.isfinite(c):
+                        corr_accum[s].append(c)
+
+    if N > 200:
+        f_fort = np.asfortranarray(directed_factor, dtype=np.float64)
+        base_m = mask if mask is not None else np.ones((T, N), dtype=bool)
         for s in style_names:
-            s_row = styles_dict[s][t, :]
-            both = valid_f & np.isfinite(s_row)
-            b_idx = np.where(both)[0]
-            if len(b_idx) >= 5:
-                c = _spearman_corr_1d(f_row[b_idx], s_row[b_idx])
-                if np.isfinite(c):
-                    corr_accum[s].append(c)
+            s_fort = np.asfortranarray(styles_dict[s], dtype=np.float64)
+            both_m = np.asfortranarray(
+                base_m & np.isfinite(f_fort) & np.isfinite(s_fort), dtype=bool
+            )
+            ic_res = factorlib_core.calc_ic(
+                f_fort, s_fort, both_m, min_names=5, rank=True, horizon=1
+            )
+            ic_arr = np.asarray(ic_res["daily_ic"], dtype=np.float64)
+            corr_accum[s] = ic_arr[np.isfinite(ic_arr)].tolist()
 
     group_exposures: dict[str, dict[str, float]] = {}
     for g_key, s_map in group_accum.items():

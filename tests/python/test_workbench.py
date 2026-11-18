@@ -318,3 +318,57 @@ def test_workbench_frontend_packaging_and_cli_args():
     assert args.market == "stocks"
     assert args.synthetic is True
     assert args.log_level == "DEBUG"
+
+
+def test_workbench_probe_quantile_hist_and_mcp_stock_templates(
+    tmp_path: Path,
+) -> None:
+    """验证 P2 探针分位数分布直方图输出及 A 股 MCP 基准因子对账元数据。"""
+    svc = FactorWorkbenchService(
+        db_path=tmp_path / "wb_mcp.sqlite",
+        runs_dir=tmp_path / "runs",
+        force_synthetic=True,
+    )
+    wb_client = TestClient(create_app(svc))
+
+    # 1. P2 探针返回耗时、覆盖率与 20 分箱分布直方图
+    probe_res = wb_client.post(
+        "/api/futures/probe",
+        json={
+            "name": "probe_hist_test",
+            "factor_type": "expression",
+            "expression": "cs_zscore(pct_change(close, 10))",
+            "postprocess": ["baseUniMask", "zScore"],
+        },
+    )
+    assert probe_res.status_code == 200
+    p_data = probe_res.json()
+    assert p_data["status"] == "ok"
+    assert "elapsed_ms" in p_data and p_data["elapsed_ms"] >= 0.0
+    assert "coverage" in p_data and 0.0 <= p_data["coverage"] <= 1.0
+    assert "quantile_hist" in p_data and len(p_data["quantile_hist"]) == 20
+
+    # 2. A 股上下文包含 Volume_Price_2_H5_2 等 5 个 MCP 对账因子模板，且 workflow 返回 mcp_benchmark 与 portfolio_summary
+    stk_ctx = wb_client.get("/api/stocks/context").json()
+    tpl_names = [t["name"] for t in stk_ctx["authoring_templates"]]
+    assert "Volume_Price_2_H5_2" in tpl_names
+    assert "Tech_Trend_VP_1_Rev" in tpl_names
+
+    wf_res = wb_client.post(
+        "/api/stocks/workflow/run",
+        json={
+            "name": "Volume_Price_2_H5_2",
+            "factor_type": "expression",
+            "expression": "-ts_std(c2c_ret, 10)",
+            "postprocess": ["baseUniMask", "trdMask", "zScore"],
+            "materialize": False,
+            "lock_version": False,
+        },
+    )
+    assert wf_res.status_code == 200
+    wf_data = wf_res.json()
+    assert wf_data["mcp_benchmark"] is not None
+    assert wf_data["mcp_benchmark"]["run_id"] == "bt_bb3a04da6b20456ab444dcb7e5450949"
+    assert "portfolio_summary" in wf_data["v4_stats"]
+    assert "long_short" in wf_data["v4_stats"]["portfolio_summary"]
+    assert wf_data["v4_stats"]["group_analysis"]["n_quantiles"] == 10

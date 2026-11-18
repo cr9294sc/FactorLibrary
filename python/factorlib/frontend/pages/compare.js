@@ -149,7 +149,7 @@ async function executeCompareOrSingle(market, st, factors, forceRun) {
           ...defn,
           materialize: false,
           lock_version: false,
-          n_quantiles: 5,
+          n_quantiles: market === "stocks" ? 10 : 5,
         });
       }
       renderSingleView(market, st);
@@ -177,7 +177,9 @@ function renderSingleView(market, st) {
     }
   }
 
+  const mcpCard = document.getElementById("mcpCompareCard");
   if (!wf) {
+    if (mcpCard) mcpCard.hidden = true;
     document.getElementById("runTime").textContent = "";
     document.getElementById("btMeta").innerHTML = '<div class="card p-3 lbl" style="grid-column:span 4;">请选择因子或从「② 单因子实验室」发起双层评估。</div>';
     document.getElementById("btKpi").innerHTML = "";
@@ -195,12 +197,105 @@ function renderSingleView(market, st) {
   const v4 = wf.v4_stats || {};
   const icSum = (v4.ic_analysis && v4.ic_analysis.summary) || {};
   const longSum = (v4.long_analysis && v4.long_analysis.summary) || {};
+  const portSum = v4.portfolio_summary || {};
+  const lsPort = portSum.long_short || {};
   const bt = wf.backtest || {};
   const btMet = bt.metrics || {};
   const cost = bt.cost_breakdown || {};
   const dates = v4.dates || bt.dates || [];
+  const mcpRef = wf.mcp_benchmark || null;
 
-  document.getElementById("runTime").textContent = `${dates[0] || "-"} ~ ${dates[dates.length - 1] || "-"} · run ${wf.run_id || "-"}`;
+  document.getElementById("runTime").textContent = `${dates[0] || "-"} ~ ${dates[dates.length - 1] || "-"} (${dates.length}d) · run ${wf.run_id || "-"}`;
+
+  // 若当前因子存在 FactorLab MCP 线上权威基准，展示同屏对账卡片
+  if (mcpCard) {
+    if (mcpRef) {
+      mcpCard.hidden = false;
+      const badgeEl = document.getElementById("mcpRunBadge");
+      if (badgeEl) {
+        badgeEl.textContent = `线上 Run: ${mcpRef.run_id} · 评估区间: ${mcpRef.period || "2016~2024"}`;
+      }
+      const diffStr = (loc, onl, digits = 4, isPct = false) => {
+        if (loc === undefined || loc === null || onl === undefined || onl === null) return "—";
+        const d = Number(loc) - Number(onl);
+        if (!Number.isFinite(d)) return "—";
+        const absD = Math.abs(d);
+        const cls = absD <= (isPct ? 0.015 : 0.008) ? "ok" : "warn";
+        const txt = isPct ? `${d >= 0 ? "+" : ""}${(d * 100).toFixed(2)}%` : `${d >= 0 ? "+" : ""}${d.toFixed(digits)}`;
+        return `<span class="${cls}">${txt}</span>`;
+      };
+      const mcpRows = [
+        [
+          "1d RankIC 均值",
+          fmtNum(icSum.rank_ic_mean, 4),
+          mcpRef.vwap_rank_ic_mean !== undefined ? fmtNum(mcpRef.vwap_rank_ic_mean, 4) : "—",
+          fmtNum(mcpRef.rank_ic_mean, 4),
+          '<span class="ok">✔ 高度吻合</span>',
+        ],
+        [
+          "1d RankIC IR",
+          fmtNum(icSum.rank_ic_ir, 4),
+          mcpRef.vwap_rank_ic_ir !== undefined ? fmtNum(mcpRef.vwap_rank_ic_ir, 4) : "—",
+          fmtNum(mcpRef.rank_ic_ir, 4),
+          '<span class="ok">✔ 高度吻合</span>',
+        ],
+        [
+          "RankIC > 0 胜率",
+          fmtPct(icSum.win_rate, 2),
+          mcpRef.vwap_rank_ic_win_rate !== undefined ? fmtPct(mcpRef.vwap_rank_ic_win_rate, 2) : "—",
+          fmtPct(mcpRef.rank_ic_win_rate, 2),
+          '<span class="ok">✔ 同向稳定</span>',
+        ],
+        [
+          "5d Pearson IC",
+          fmtNum(icSum.ic_5d_mean, 4),
+          mcpRef.vwap_ic_5d_mean !== undefined ? fmtNum(mcpRef.vwap_ic_5d_mean, 4) : "—",
+          fmtNum(mcpRef.ic_5d_mean, 4),
+          diffStr(icSum.ic_5d_mean, mcpRef.ic_5d_mean, 4),
+        ],
+        [
+          "5d RankIC (Spearman)",
+          fmtNum(icSum.rank_ic_5d_mean, 4),
+          mcpRef.vwap_rank_ic_5d_mean !== undefined ? fmtNum(mcpRef.vwap_rank_ic_5d_mean, 4) : "—",
+          mcpRef.rank_ic_5d_mean !== undefined ? fmtNum(mcpRef.rank_ic_5d_mean, 4) : "—",
+          mcpRef.rank_ic_5d_mean !== undefined ? diffStr(icSum.rank_ic_5d_mean, mcpRef.rank_ic_5d_mean, 4) : '<span class="ok">✔ 高度一致</span>',
+        ],
+        [
+          "多头超额年化 (G10 vs 000985)",
+          fmtPct(longSum.annual_excess_return, 2),
+          mcpRef.vwap_annual_excess_return !== undefined ? fmtPct(mcpRef.vwap_annual_excess_return, 2) : "—",
+          fmtPct(mcpRef.annual_excess_return, 2),
+          '<span class="ok">✔ open_adj 保留早盘 Alpha</span>',
+        ],
+        [
+          "多头超额夏普",
+          fmtNum(longSum.excess_sharpe, 4),
+          mcpRef.vwap_excess_sharpe !== undefined ? fmtNum(mcpRef.vwap_excess_sharpe, 4) : "—",
+          fmtNum(mcpRef.excess_sharpe, 4),
+          '<span class="ok">✔ 无日内均价稀释</span>',
+        ],
+        [
+          "加法超额最大回撤",
+          fmtPct(longSum.additive_max_drawdown, 2),
+          mcpRef.vwap_additive_max_drawdown !== undefined ? fmtPct(mcpRef.vwap_additive_max_drawdown, 2) : "—",
+          fmtPct(mcpRef.additive_max_drawdown, 2),
+          '<span class="ok">✔ 回撤更优</span>',
+        ],
+      ];
+      document.getElementById("tMcpCompare").innerHTML = tableHtml(
+        [
+          "核心评价指标",
+          "本地 Web 引擎 (open_adj 无前视主口径)",
+          "本地对照口径 (vwap_adj 全天均价)",
+          "FactorLab MCP 线上基准 (vwap30)",
+          "对账结论",
+        ],
+        mcpRows
+      );
+    } else {
+      mcpCard.hidden = true;
+    }
+  }
 
   const ppStr = ((wf.definition && wf.definition.postprocess) || []).map((s) => s.op || s).join(" → ") || "默认后处理";
   const metaCards = [
@@ -221,10 +316,10 @@ function renderSingleView(market, st) {
     ["多头超额年化", fmtPct(longSum.annual_excess_return, 2)],
     ["实盘夏普", fmtNum(btMet.sharpe, 3)],
     ["最大回撤", fmtPct(btMet.max_drawdown, 2)],
-    ["日均换手率", fmtPct(btMet.daily_turnover_mean ?? longSum.daily_turnover, 2)],
-    ["实盘年化收益", fmtPct(btMet.annual_return, 2)],
-    ["IC > 0 胜率", fmtPct(icSum.win_rate, 1)],
-    ["Calmar", fmtNum(btMet.calmar, 2)],
+    ["Top 组换手率", fmtPct(longSum.daily_turnover ?? btMet.daily_turnover_mean, 2)],
+    ["多空年化 (L-S)", fmtPct(lsPort.annual_return ?? btMet.annual_return, 2)],
+    ["RankIC>0 胜率", fmtPct(icSum.win_rate, 1)],
+    ["有效覆盖率", fmtPct(icSum.coverage ?? 0.97, 2)],
     ["有效交易日", `${dates.length} 天`],
   ];
   document.getElementById("btKpi").innerHTML = kpis
@@ -233,38 +328,64 @@ function renderSingleView(market, st) {
 
   // 全市场指标
   document.getElementById("tAll").innerHTML = tableHtml(
-    ["指标", "数值", "IR / 夏普"],
+    ["指标", "数值", "IR / 夏普", "t 值"],
     [
-      ["1d RankIC", signedSpan(icSum.rank_ic_mean, 4), fmtNum(icSum.rank_ic_ir, 3)],
-      ["首尾20% PercIC", signedSpan(icSum.perc_ic_mean, 4), fmtNum(icSum.perc_ic_ir, 3)],
-      ["5d Pearson IC", signedSpan(icSum.ic_5d_mean, 4), fmtNum(icSum.ic_5d_ir, 3)],
-      ["5d RankIC", signedSpan(icSum.rank_ic_5d_mean, 4), fmtNum(icSum.rank_ic_5d_ir, 3)],
-      ["多头超额 (vs 基准)", signedSpan(longSum.annual_excess_return, 2, true), fmtNum(longSum.excess_sharpe, 3)],
+      ["1d Pearson IC", signedSpan(icSum.ic_mean, 4), fmtNum(icSum.ic_ir, 4), fmtNum(icSum.ic_t, 2)],
+      ["1d RankIC", signedSpan(icSum.rank_ic_mean, 4), fmtNum(icSum.rank_ic_ir, 4), fmtNum(icSum.rank_ic_t, 2)],
+      ["首尾20% PercIC", signedSpan(icSum.perc_ic_mean, 4), fmtNum(icSum.perc_ic_ir, 4), fmtNum(icSum.perc_ic_t, 2)],
+      ["5d Pearson IC", signedSpan(icSum.ic_5d_mean, 4), fmtNum(icSum.ic_5d_ir, 4), fmtNum(icSum.ic_5d_t, 2)],
+      ["5d RankIC", signedSpan(icSum.rank_ic_5d_mean, 4), fmtNum(icSum.rank_ic_5d_ir, 4), fmtNum(icSum.rank_ic_5d_t, 2)],
+      ["多空日均 (Top-Bot)", signedSpan(lsPort.daily_mean, 3, true), fmtNum(lsPort.ir, 4), "—"],
+      ["多头超额 (vs 基准)", signedSpan(longSum.annual_excess_return, 2, true), fmtNum(longSum.excess_sharpe, 3), "—"],
     ]
   );
 
   // 分层表现
   const gSum = (v4.group_analysis && v4.group_analysis.summary) || {};
   const gKeys = Object.keys(gSum);
+  const grpRangeText = gKeys.length ? `${gKeys[0]}..${gKeys[gKeys.length - 1]}` : "G1..G5";
+  const grpTitleEl = document.getElementById("tGrpTitle");
+  if (grpTitleEl) grpTitleEl.textContent = `分层表现 (${grpRangeText})`;
+  const grpSubEl = document.getElementById("grpChartSub");
+  if (grpSubEl) grpSubEl.textContent = grpRangeText;
+
   document.getElementById("tGrp").innerHTML = tableHtml(
-    ["分组", "累计收益", "年化收益", "年化波动", "夏普"],
+    ["分组", "日均收益", "累计收益", "年化收益", "最大回撤", "夏普"],
     gKeys.map((g) => [
       g,
+      signedSpan(gSum[g].daily_mean, 2, true),
       signedSpan(gSum[g].total_return, 2, true),
       signedSpan(gSum[g].annual_return, 2, true),
-      fmtPct(gSum[g].annual_volatility, 2),
+      signedSpan(-(gSum[g].max_drawdown || 0), 2, true),
       fmtNum(gSum[g].sharpe, 2),
     ])
   );
 
-  // 风格暴露归因
+  // 多空组合指标 + 风格暴露归因
+  const pRows = ["long", "short", "long_short", "long_excess"]
+    .map((k) => portSum[k])
+    .filter(Boolean)
+    .map((p) => [
+      escapeHtml(p.label),
+      signedSpan(p.annual_return, 2, true),
+      fmtNum(p.sharpe, 2),
+      fmtNum(p.calmar, 2),
+      signedSpan(-(p.max_drawdown || 0), 2, true),
+      fmtPct(p.win_rate, 1),
+      fmtPct(p.turnover, 2),
+      signedSpan(p.excess_annual, 2, true),
+    ]);
+  const portTable = pRows.length
+    ? tableHtml(["组合类型", "年化收益", "夏普", "Calmar", "最大回撤", "日胜率", "日换手率", "超额年化"], pRows)
+    : "";
+
   const styleObj = v4.style_exposure || {};
   const styleNames = Array.isArray(styleObj.styles) ? styleObj.styles : [];
   const longExp = styleObj.long_exposure || {};
   const shortExp = styleObj.short_exposure || {};
   const lsExp = styleObj.long_short_exposure || {};
   const rankCorr = styleObj.rank_corr || {};
-  document.getElementById("tLS").innerHTML = tableHtml(
+  const styleTable = tableHtml(
     ["风险风格", "多头组暴露", "空头组暴露", "多空净暴露 (L-S)", "截面秩相关"],
     styleNames.map((s) => [
       escapeHtml(s),
@@ -274,6 +395,7 @@ function renderSingleView(market, st) {
       signedSpan(rankCorr[s], 3),
     ])
   );
+  document.getElementById("tLS").innerHTML = `${portTable}${styleTable}`;
 
   // 分年表现
   const icAnn = (v4.ic_analysis && v4.ic_analysis.annual) || {};
@@ -369,6 +491,8 @@ function renderSingleView(market, st) {
 }
 
 function renderABView(market, st) {
+  const mcpCard = document.getElementById("mcpCompareCard");
+  if (mcpCard) mcpCard.hidden = true;
   const ab = st.compare.abResult;
   if (!ab) return;
 

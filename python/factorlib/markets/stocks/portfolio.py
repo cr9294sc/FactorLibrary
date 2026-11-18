@@ -39,40 +39,46 @@ def build_stocks_portfolio_weights(
     weights = np.zeros((T, N), dtype=np.float64, order="F")
 
     for t in range(T):
-        valid_mask = mask[t, :] & np.isfinite(scores[t, :])
-        active_idx = np.where(valid_mask)[0]
+        s_row = scores[t, :]
+        valid_mask = mask[t, :] & np.isfinite(s_row)
+        active_idx = np.flatnonzero(valid_mask)
         k_active = len(active_idx)
         if k_active == 0:
             continue
 
-        selected: list[int] = []
+        s_act = s_row[active_idx]
         if cfg.industry_neutral and sector is not None:
             sec_row = sector[t, active_idx]
             finite_sec = np.isfinite(sec_row)
             if np.any(finite_sec):
-                buckets: dict[int, list[int]] = {}
-                for pos, idx in enumerate(active_idx):
-                    code = int(round(sec_row[pos])) if finite_sec[pos] else -1
-                    buckets.setdefault(code, []).append(int(idx))
-                for _code, idxs in buckets.items():
-                    m_sec = len(idxs)
-                    k_top = max(1, int(math.ceil(m_sec * cfg.top_quantile)))
-                    idxs_sorted = sorted(idxs, key=lambda j: float(scores[t, j]), reverse=True)
-                    selected.extend(idxs_sorted[:k_top])
+                codes = np.where(finite_sec, np.rint(sec_row).astype(np.int32), -1)
+                order = np.lexsort((-s_act, codes))
+                sorted_codes = codes[order]
+                sorted_idx = active_idx[order]
+                _, group_starts, group_counts = np.unique(
+                    sorted_codes, return_index=True, return_counts=True
+                )
+                sel_parts = [
+                    sorted_idx[st_i : st_i + max(1, int(math.ceil(cnt * cfg.top_quantile)))]
+                    for st_i, cnt in zip(group_starts.tolist(), group_counts.tolist(), strict=False)
+                ]
+                selected_arr = (
+                    np.concatenate(sel_parts) if sel_parts else np.empty(0, dtype=np.int64)
+                )
             else:
                 k_top = max(1, int(math.ceil(k_active * cfg.top_quantile)))
-                order = np.argsort(scores[t, active_idx], kind="mergesort")[::-1]
-                selected = active_idx[order[:k_top]].tolist()
+                order = np.argsort(-s_act, kind="mergesort")
+                selected_arr = active_idx[order[:k_top]]
         else:
             k_top = max(1, int(math.ceil(k_active * cfg.top_quantile)))
-            order = np.argsort(scores[t, active_idx], kind="mergesort")[::-1]
-            selected = active_idx[order[:k_top]].tolist()
+            order = np.argsort(-s_act, kind="mergesort")
+            selected_arr = active_idx[order[:k_top]]
 
-        if not selected:
+        n_sel = len(selected_arr)
+        if n_sel == 0:
             continue
 
-        raw_w = np.zeros(len(selected), dtype=np.float64)
-        raw_w[:] = float(cfg.max_gross_leverage) / float(len(selected))
+        raw_w = np.full(n_sel, float(cfg.max_gross_leverage) / float(n_sel), dtype=np.float64)
         capped_w = clip_and_normalize_weights(
             raw_w,
             max_single_weight=cfg.max_single_weight,
@@ -81,8 +87,7 @@ def build_stocks_portfolio_weights(
         )
 
         target_w_full = np.zeros(N, dtype=np.float64)
-        for pos, col_idx in enumerate(selected):
-            target_w_full[col_idx] = capped_w[pos]
+        target_w_full[selected_arr] = capped_w
 
         if t == 0:
             weights[0, :] = target_w_full

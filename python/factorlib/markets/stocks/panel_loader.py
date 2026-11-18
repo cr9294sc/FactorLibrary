@@ -675,14 +675,11 @@ def build_stock_panel(
         exec_price_mode=cfg.exec_price_mode,
     )
 
-    # 按配置施加股票池过滤
+    # 基础股票池掩码 (BaseUnivMask) 保持与 StockPanelLoader.load 一致（剔除停牌、ST 与存续期外）；
+    # 新股过滤阈值 (min_listed_days, 如 120 / 60) 交由后处理算子 dropNewStock 在滚动窗口求值后按需执行，
+    # 避免在 AST 时序算子 (ts_corr / ts_std) 预热阶段提前屏蔽早期有效行情。
     uf = cfg.universe_filters
-    if uf.min_listed_days > 0:
-        sdata.base_univ_mask = sdata.base_univ_mask & (
-            np.nan_to_num(sdata.stock_listed_days, nan=-1.0) >= float(uf.min_listed_days)
-        )
     if not uf.exclude_st:
-        # 若不过滤 ST，仍保留行情完整条件
         pass
 
     panel = sdata.to_panel(horizons=cfg.label_horizons)

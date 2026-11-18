@@ -1507,3 +1507,18 @@ class StockMarketAdapter(MarketAdapter):
 4. **Rust Spanning Test 正交审计与同族去重 (`metrics/spanning.rs`, `core/admission_audit.py`)**：
    - Rust 内核新增基于二次修正 Gram-Schmidt (MGS2) 的高并发日度截面多元 OLS 正交残差检验 `calc_spanning_test` / `Engine.spanning_test`（输出残差 RankICIR、原始 `t_stat` 与自由度修正 `t_stat_adj`），并在 `ops_ref.py`、`proptest_metrics.rs` 与 `test_rust_core.py` 完成全数值边界对账；
    - `core/admission_audit.py` 在严格同日度有效交集上执行三关递进式增量准入，并强制对同一 `FeatureSet` 下的 `dl_alpha` 变体族保留残差 `|ICIR|` 最优的前 2 名代表变体。
+
+---
+
+## 24. Web 上线审查、原型细节补齐与 FactorLab MCP 跨平台对账闭环
+
+围绕 `docs/web_ui/prototype.html` 与 `docs/superpowers/specs/2026-11-14-hybrid-research-and-dl-alpha-design.md` 的上线验收，平台完成以下精度对齐、性能优化与冗余清理：
+
+1. **A 股派生面板 (`stocks/v1`) 与 `StockPanelLoader` 零差异对齐 (`core/panel.py`, `markets/stocks/panel_loader.py`)**：
+   - `compute_limit_mask()` 补齐 A 股停牌 (`is_suspended`)、收盘封死涨跌停 (`limit_up`/`limit_down`) 及一字板阻断掩码还原逻辑，确保 `Panel.load("data/derived/stocks/v1")` 与原始 `StockPanelLoader.load()` 在 `trdMask` 后处理阶段 100% 一致；
+   - `Panel.load()` 采用 Polars 稠密秩索引向量化填充与数值型 `sector` 直通拷贝，避免将浮点 `NaN` 误编码为字符串类别；同时 `Panel.to_rust_engine()` 引入基于字段/掩码状态指纹的 `Engine` 实例缓存；
+   - `build_stock_panel()` 保持 `base_univ_mask` 与 `StockPanelLoader.load()` 一致（剔除停牌、ST 与存续期外标的），将次新股阈值 (`120d`/`60d`) 交由后处理 `dropNewStock` 在时序滚动算子预热后执行；全周期 `data/derived/stocks/v1` 覆盖 `2015-11-01 ~ 2024-12-31`（`2231` 交易日 $\times$ `5323` 只 A 股，`2015-11~12` 为 42 日预热缓冲区，正式统计区间 `2016-01-04 ~ 2024-12-31` 共 `2185` 交易日）。
+2. **原型 UI 细节补齐与 FactorLab MCP 线上基准同屏对账 (`core/workbench.py`, `frontend/pages/{lab,compare}.js`)**：
+   - P2 单因子实验室探针 (`POST /api/{market}/probe`) 新增尾部窗口快速求值，输出求值耗时 (`elapsed_ms`)、有效覆盖率 (`coverage`)、`NaN` 率及 20 分箱截面分位数分布直方图 SVG；
+   - A 股工作台预置 `Volume_Price_2_H5_2` (`bt_bb3a04da6b20456ab444dcb7e5450949`)、`Tech_Trend_VP_1_Rev`、`Volume_Price_2_H5`、`Volume_Price_2_R7`、`Gaussian distribution` 5 大 FactorLab MCP 线上对账因子模板与种子库，默认启用 10 分组 (`G1..G10`) 评价，并在 P3 回测结果页展示「本地 `open_adj` 无前视主口径 vs 本地 `vwap_adj` 对照口径 vs FactorLab MCP 线上 `vwap30` 基准」同屏对账表与多空/多头组合汇总表；
+   - 清理过渡期空壳 `markets/stocks/adapter.py` 与 `workbench.py` 中已废弃同步入口 `run_e2e_pipeline`，统一收敛至 `StocksProfile` 与异步子进程派发架构。

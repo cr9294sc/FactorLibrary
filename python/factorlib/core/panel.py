@@ -106,7 +106,7 @@ def compute_limit_mask(
     aux_fields: dict[str, np.ndarray] | None = None,
     fields: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
-    """根据在池掩码及停牌/单边市/成交量标记计算可交易掩码矩阵 (1.0 / NaN, order='F')。"""
+    """根据在池掩码及停牌/单边市/涨跌停/成交量标记计算可交易掩码矩阵 (1.0 / NaN, order='F')。"""
     tradable = np.array(valid_mask, dtype=bool, copy=True, order="F")
 
     is_unilateral = _lookup_panel_field("is_unilateral", aux_fields=aux_fields, fields=fields)
@@ -120,6 +120,40 @@ def compute_limit_mask(
     volume = _lookup_panel_field("volume", aux_fields=aux_fields, fields=fields)
     if volume is not None:
         tradable &= np.isfinite(volume) & (volume > 0.0)
+
+    is_suspended = _lookup_panel_field("is_suspended", aux_fields=aux_fields, fields=fields)
+    if is_suspended is not None:
+        tradable &= ~(np.isfinite(is_suspended) & (is_suspended > 0.5))
+
+        limit_up = _lookup_panel_field("limit_up", aux_fields=aux_fields, fields=fields)
+        limit_down = _lookup_panel_field("limit_down", aux_fields=aux_fields, fields=fields)
+        close_raw = _lookup_panel_field("close_raw", aux_fields=aux_fields, fields=fields)
+        if close_raw is None:
+            close_raw = _lookup_panel_field("close", aux_fields=aux_fields, fields=fields)
+        high_raw = _lookup_panel_field("high_raw", aux_fields=aux_fields, fields=fields)
+        if high_raw is None:
+            high_raw = _lookup_panel_field("high", aux_fields=aux_fields, fields=fields)
+        low_raw = _lookup_panel_field("low_raw", aux_fields=aux_fields, fields=fields)
+        if low_raw is None:
+            low_raw = _lookup_panel_field("low", aux_fields=aux_fields, fields=fields)
+
+        eps = 1e-4
+        if limit_up is not None and close_raw is not None:
+            tradable &= ~(
+                np.isfinite(limit_up) & np.isfinite(close_raw) & (close_raw >= limit_up - eps)
+            )
+        if limit_down is not None and close_raw is not None:
+            tradable &= ~(
+                np.isfinite(limit_down) & np.isfinite(close_raw) & (close_raw <= limit_down + eps)
+            )
+        if high_raw is not None and low_raw is not None:
+            flat_hl = (
+                np.isfinite(high_raw) & np.isfinite(low_raw) & (np.abs(high_raw - low_raw) < eps)
+            )
+            if limit_up is not None:
+                tradable &= ~(flat_hl & np.isfinite(limit_up) & (high_raw >= limit_up - eps))
+            if limit_down is not None:
+                tradable &= ~(flat_hl & np.isfinite(limit_down) & (low_raw <= limit_down + eps))
 
     return np.asfortranarray(np.where(tradable, 1.0, np.nan), dtype=np.float64)
 
@@ -299,21 +333,24 @@ class Panel:
         if load_sector:
             extra_cols.append("sector")
         needed_cols = list(set(extra_cols + load_cols))
-        df = pl.read_parquet(panel_file, columns=needed_cols).sort(["trading_date", "symbol"])
+        df = (
+            pl.read_parquet(panel_file, columns=needed_cols)
+            .sort(["trading_date", "symbol"])
+            .with_columns(
+                _r=pl.col("trading_date").rank("dense").cast(pl.Int32) - 1,
+                _c=pl.col("symbol").rank("dense").cast(pl.Int32) - 1,
+            )
+        )
 
-        unique_dates_list = df["trading_date"].unique().sort().to_list()
+        unique_dates_list = df["trading_date"].unique(maintain_order=True).to_list()
         unique_dates = np.array(unique_dates_list)
-        unique_symbols = df["symbol"].unique().sort().to_list()
+        unique_symbols = df["symbol"].unique(maintain_order=True).sort().to_list()
 
         T = len(unique_dates)
         N = len(unique_symbols)
 
-        # 建立整数索引映射以实现 O(1) 向量化填充
-        date_map = {d: i for i, d in enumerate(unique_dates_list)}
-        symbol_map = {s: i for i, s in enumerate(unique_symbols)}
-
-        row_indices = np.array([date_map[d] for d in df["trading_date"].to_list()], dtype=np.int32)
-        col_indices = np.array([symbol_map[s] for s in df["symbol"].to_list()], dtype=np.int32)
+        row_indices = df["_r"].to_numpy()
+        col_indices = df["_c"].to_numpy()
 
         # 构建 mask
         mask = np.zeros((T, N), dtype=bool, order="F")
@@ -351,17 +388,42 @@ class Panel:
 
         # 编码板块字段 sector 为正整数矩阵 (1.0, 2.0, ..., K; 缺失为 NaN)
         if load_sector and "sector" in df.columns:
-            sec_raw = df["sector"].to_list()
-            valid_secs = sorted({str(s) for s in sec_raw if s is not None and str(s).strip()})
-            sec_to_code = {s: float(idx + 1) for idx, s in enumerate(valid_secs)}
-            meta["sector_mapping"] = {int(v): k for k, v in sec_to_code.items()}
+            sec_col = df["sector"]
             sec_arr = np.full((T, N), np.nan, dtype=np.float64, order="F")
-            sec_vals = np.array(
-                [sec_to_code.get(str(s), np.nan) if s is not None else np.nan for s in sec_raw],
-                dtype=np.float64,
-            )
-            sec_arr[row_indices, col_indices] = sec_vals
+            if sec_col.dtype in (
+                pl.Float32,
+                pl.Float64,
+                pl.Int32,
+                pl.Int64,
+                pl.UInt32,
+                pl.UInt64,
+            ):
+                sec_arr[row_indices, col_indices] = sec_col.cast(pl.Float64).to_numpy()
+            else:
+                sec_raw = sec_col.to_list()
+                valid_secs = sorted({str(s) for s in sec_raw if s is not None and str(s).strip()})
+                sec_to_code = {s: float(idx + 1) for idx, s in enumerate(valid_secs)}
+                meta["sector_mapping"] = {int(v): k for k, v in sec_to_code.items()}
+                sec_vals = np.array(
+                    [sec_to_code.get(str(s), np.nan) if s is not None else np.nan for s in sec_raw],
+                    dtype=np.float64,
+                )
+                sec_arr[row_indices, col_indices] = sec_vals
             fields_dict["sector"] = sec_arr
+
+        # 补充 A 股结构化字段别名 (stock_listed_days -> listed_days, industry_code -> sector)
+        if (
+            "stock_listed_days" in fields_dict
+            and "listed_days" not in fields_dict
+            and (fields_subset is None or "listed_days" in fields_subset)
+        ):
+            fields_dict["listed_days"] = fields_dict["stock_listed_days"]
+        if (
+            "industry_code" in fields_dict
+            and "sector" not in fields_dict
+            and (fields_subset is None or "sector" in fields_subset)
+        ):
+            fields_dict["sector"] = fields_dict["industry_code"]
 
         # 当全量加载或显式请求时，注入后处理隐式掩码矩阵 (in_universe_mask 与 limit_mask)
         if fields_subset is None or "in_universe_mask" in (fields_subset or []):
@@ -380,22 +442,37 @@ class Panel:
         labels_dict: dict[str, np.ndarray] = {}
         if load_labels and labels_file.exists():
             ldf = pl.read_parquet(labels_file).sort(["trading_date", "symbol"])
-            l_dates = ldf["trading_date"].to_list()
-            l_syms = ldf["symbol"].to_list()
-            valid_idx = [
-                i
-                for i, (d, s) in enumerate(zip(l_dates, l_syms, strict=True))
-                if d in date_map and s in symbol_map
-            ]
-            l_row_idx = np.array([date_map[l_dates[i]] for i in valid_idx], dtype=np.int32)
-            l_col_idx = np.array([symbol_map[l_syms[i]] for i in valid_idx], dtype=np.int32)
+            if (
+                len(ldf) == len(df)
+                and ldf["trading_date"].equals(df["trading_date"])
+                and ldf["symbol"].equals(df["symbol"])
+            ):
+                l_row_idx = row_indices
+                l_col_idx = col_indices
+                valid_mask_lbl = None
+            else:
+                date_map = {d: i for i, d in enumerate(unique_dates_list)}
+                symbol_map = {s: i for i, s in enumerate(unique_symbols)}
+                l_dates = ldf["trading_date"].to_list()
+                l_syms = ldf["symbol"].to_list()
+                valid_idx = [
+                    i
+                    for i, (d, s) in enumerate(zip(l_dates, l_syms, strict=True))
+                    if d in date_map and s in symbol_map
+                ]
+                l_row_idx = np.array([date_map[l_dates[i]] for i in valid_idx], dtype=np.int32)
+                l_col_idx = np.array([symbol_map[l_syms[i]] for i in valid_idx], dtype=np.int32)
+                valid_mask_lbl = valid_idx
 
             for col_name in ldf.columns:
                 if col_name in ("trading_date", "symbol"):
                     continue
                 arr = np.full((T, N), np.nan, dtype=np.float64, order="F")
                 vals = ldf[col_name].cast(pl.Float64).to_numpy()
-                arr[l_row_idx, l_col_idx] = vals[valid_idx]
+                if valid_mask_lbl is None:
+                    arr[l_row_idx, l_col_idx] = vals
+                else:
+                    arr[l_row_idx, l_col_idx] = vals[valid_mask_lbl]
                 labels_dict[col_name] = arr
 
         return cls(
@@ -408,11 +485,13 @@ class Panel:
             meta=meta,
         )
 
-    def to_rust_engine(self, cache_mb: int = 4096, n_threads: int | None = None) -> Any:
-        """将内存矩阵零拷贝传递给 Rust 计算内核 (factorlib_core)。
+    @property
+    def engine(self) -> Any:
+        """惰性缓存并返回当前 Panel 绑定的 Rust 计算内核实例。"""
+        return self.to_rust_engine()
 
-        注意: factorlib_core 将在工程计划 P2 阶段构建提供。
-        """
+    def to_rust_engine(self, cache_mb: int = 4096, n_threads: int | None = None) -> Any:
+        """将内存矩阵传递给 Rust 计算内核 (factorlib_core)，并在面板未变更时复用缓存实例。"""
         try:
             import factorlib_core
         except ImportError as exc:
@@ -421,15 +500,48 @@ class Panel:
                 "请按照实施路线图推进计划 P2 (Rust 内核实现)。"
             ) from exc
 
-        return factorlib_core.Engine(
+        eff_threads = n_threads or 0
+        state_key = (
+            cache_mb,
+            eff_threads,
+            len(self.dates),
+            len(self.symbols),
+            id(self.mask),
+            int(np.sum(self.mask[-1])) if self.mask.size else 0,
+            tuple(
+                (
+                    k,
+                    id(v),
+                    float(np.nan_to_num(v[-1, 0], nan=-999.0)) if v.size else 0.0,
+                    float(np.nan_to_num(v[-1, -1], nan=-999.0)) if v.size else 0.0,
+                )
+                for k, v in self.fields.items()
+            ),
+            tuple(
+                (
+                    k,
+                    id(v),
+                    float(np.nan_to_num(v[0, 0], nan=-999.0)) if v.size else 0.0,
+                    float(np.nan_to_num(v[-1, -1], nan=-999.0)) if v.size else 0.0,
+                )
+                for k, v in self.labels.items()
+            ),
+        )
+        cached = getattr(self, "_cached_engine_pair", None)
+        if cached is not None and cached[0] == state_key:
+            return cached[1]
+
+        eng = factorlib_core.Engine(
             self.fields,
             self.mask,
             self.labels,
             [str(d) for d in self.dates],
             self.symbols,
             cache_mb=cache_mb,
-            n_threads=n_threads or 0,
+            n_threads=eff_threads,
         )
+        object.__setattr__(self, "_cached_engine_pair", (state_key, eng))
+        return eng
 
     @property
     def attached_extensions(self) -> list[dict[str, Any]]:

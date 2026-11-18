@@ -260,14 +260,13 @@ flowchart TD
 
 ---
 
-## 6. 后续 A 股股票市场扩展指南 (Phase 2 Roadmap)
+## 6. 双市场抽象 (`MarketProfile`) 与 A 股全市场适配体系
 
-针对第二期接入 A 股股票市场，系统已在以下关键切面完成标准化接口固化：
-1. **数据适配器**：继承 `MarketAdapter` 实现 `StockMarketAdapter`（已在 `factorlib.markets.stocks.adapter` 固化），接入 A 股日线/高频行情 Parquet；
-2. **复权管理**：股票除权除息（送转、分红派息）通过前复权/后复权清洗后，统一向 `Panel` 注入 `close` 与 `open`，计算内核无需变动；
-3. **交易机制适配**：在回测状态机中开启 `is_t_plus_one=True` 与 `allow_short=False`，施加卖出可用头寸约束；
-4. **横截面中性化**：直接调用 Rust 内核中预留的 `group_rank` 与 `group_demean` 算子，挂载申万 31 个一级行业分类与流通市值；
-5. **大规模常驻内存**：Rust Fortran 列优先矩阵可直接横向扩展至 5000 只股票 $\times$ 4000 交易日，单矩阵约 160MB，依然轻松常驻内存高速并行计算。
+系统通过 `MarketProfile` 协议 (`factorlib.markets.profile`) 与 `get_profile("futures" | "stocks")` (`factorlib.markets.registry`) 实现期货与 A 股双市场统一底座隔离：
+1. **A 股 Profile 与回测执行器 (`StocksProfile`, `StocksBacktester`)**：1 手 = 100 股，乘数恒为 1.0，无杠杆（保证金率 1.0），买入佣金（含最低 5 元）+ 过户费、卖出加征单向印花税，严格执行 `T+1` 交收约束与涨跌停/停牌成交阻断 (`rust/factorlib_core/src/backtest/stocks.rs`)；
+2. **A 股标准面板加载与构建 (`StockPanelLoader`, `build_stock_panel`)**：加载 `data/raw/stocks/`（5,323 只 A 股）或派生面板 `data/derived/stocks/v1/`，将未复权价格、涨跌停价、停牌/ST 掩码及基准前向收益物理隔离至 `Panel.aux_fields`；
+3. **分位等权与申万行业中性组合 (`build_stocks_portfolio_weights`)**：采用 $O(N \log N)$ 向量化行业内分位选股、单股权重上限与调仓缓冲带，不使用全截面协方差矩阵；
+4. **跨平台 MCP 基准对账 (`MCP_STOCK_BENCHMARKS`)**：Web 工作台内置 FactorLab MCP 线上 5 大基准因子模板与种子库，支持在 P3 看板一键复现并与线上 `vwap30` 基准同屏对账。
 
 ---
 

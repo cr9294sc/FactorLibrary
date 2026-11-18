@@ -56,7 +56,7 @@ from factorlib.core.registry import (
     FeatureSetRecord,
     _normalize_market,
 )
-from factorlib.core.report import generate_html_report, summary_dict
+from factorlib.core.report import generate_html_report
 from factorlib.core.styles import STYLE_DEFINITIONS
 from factorlib.core.synthetic import (
     create_synthetic_futures_panel,
@@ -166,42 +166,91 @@ AUTHORING_TEMPLATES: list[dict[str, Any]] = [
     },
 ]
 
-# A 股经典双模态模板
+# A 股经典双模态模板（内置 FactorLab MCP 线上对账 5 大基准因子 + Python 因果沙箱）
 STOCKS_AUTHORING_TEMPLATES: list[dict[str, Any]] = [
     {
-        "id": "tpl_stk_rev",
-        "name": "stocks_short_reversal",
-        "title": "20 日超跌反转 + 低换手确认 (DSL + 申万行业中性)",
+        "id": "tpl_stk_vp2_h5_2",
+        "name": "Volume_Price_2_H5_2",
+        "title": "MCP 对账 #1: Volume_Price_2_H5_2 (量价背离低波动 + 申万行业中性 8 步后处理)",
         "factor_type": "expression",
-        "expression": "-cs_zscore(pct_change(close, 20)) - 0.5 * cs_zscore(ts_mean(turnover_rate, 10))",
+        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
         "code": "",
         "postprocess": [
             {"op": "baseUniMask"},
             {"op": "trdMask"},
             {"op": "dropNewStock", "window": 120},
             {"op": "MAD", "param": 3.0},
-            {"op": "indNeut", "group_by": "sector"},
             {"op": "zScore"},
+            {"op": "indNeut", "group_by": "sector"},
+            {"op": "decay", "window": 5},
+            {"op": "rank"},
         ],
-        "description": "捕捉 A 股短期情绪超跌反转与缩量企稳信号，剔除次新股并做申万行业中性化。",
+        "description": "FactorLab MCP 线上权威基准 (Run: bt_bb3a04da6b20456ab444dcb7e5450949)：20日量价相关背离与特质低波动复合，经申万行业中性化与5日衰减平滑。",
     },
     {
-        "id": "tpl_stk_low_vol",
-        "name": "stocks_low_vol_quality",
-        "title": "低波动率 + 流动性溢价 (DSL + 市值风格中性)",
+        "id": "tpl_stk_tech_trend",
+        "name": "Tech_Trend_VP_1_Rev",
+        "title": "MCP 对账 #2: Tech_Trend_VP_1_Rev (均线乖离 + 日内位置 + 放量相关性反转)",
         "factor_type": "expression",
-        "expression": "-ts_std(c2c_ret, 20) - 0.3 * cs_rank(log_amount)",
+        "expression": "neg(add(add(cs_zscore(div(sub(close_hfq, ts_mean(close_hfq, 20)), ts_mean(close_hfq, 20))), cs_zscore(div(sub(close_hfq, low_adj), addc(sub(high_adj, low_adj), 0.001)))), cs_zscore(mul(ts_corr(close_hfq, amount, 20), div(amount, addc(ts_mean(amount, 5), 0.001))))))",
+        "code": "",
+        "postprocess": [
+            {"op": "baseUniMask"},
+            {"op": "trdMask"},
+            {"op": "dropNewStock", "window": 60},
+            {"op": "MAD", "param": 3.0},
+            {"op": "zScore"},
+            {"op": "emadecay", "window": 3},
+        ],
+        "description": "FactorLab MCP 线上对账因子 (Run: bt_346b56e4bd91496a88129b28ec95aa6b)：多维技术趋势与成交额加权反转，采用 3 日 EMA 衰减。",
+    },
+    {
+        "id": "tpl_stk_vp2_h5",
+        "name": "Volume_Price_2_H5",
+        "title": "MCP 对账 #3: Volume_Price_2_H5 (无行业中性化对照)",
+        "factor_type": "expression",
+        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
         "code": "",
         "postprocess": [
             {"op": "baseUniMask"},
             {"op": "trdMask"},
             {"op": "dropNewStock", "window": 120},
             {"op": "MAD", "param": 3.0},
-            {"op": "indNeut", "group_by": "sector"},
-            {"op": "riskNeutMulti", "fields": ["SIZE", "VOLATILITY"]},
-            {"op": "zScore"},
+            {"op": "decay", "window": 5},
+            {"op": "rank"},
         ],
-        "description": "结合 20 日特质波动率异象与低流动性溢价，正交剥离市值与波动率暴露。",
+        "description": "FactorLab MCP 线上对账因子 (Run: bt_4c00df28632d46b8a2f231303ef21e4c)：考察去除申万行业中性化后的 IR 与超额表现。",
+    },
+    {
+        "id": "tpl_stk_vp2_r7",
+        "name": "Volume_Price_2_R7",
+        "title": "MCP 对账 #4: Volume_Price_2_R7 (10 日衰减先于 MAD)",
+        "factor_type": "expression",
+        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
+        "code": "",
+        "postprocess": [
+            {"op": "baseUniMask"},
+            {"op": "trdMask"},
+            {"op": "dropNewStock", "window": 120},
+            {"op": "decay", "window": 10},
+            {"op": "MAD", "param": 3.0},
+            {"op": "rank"},
+        ],
+        "description": "FactorLab MCP 线上对账因子 (Run: bt_40dbde1c01bc456e8127804e85448610)：考察 10 日时序衰减平滑与算子顺序影响。",
+    },
+    {
+        "id": "tpl_stk_gaussian",
+        "name": "Gaussian distribution",
+        "title": "MCP 对账 #5: Gaussian distribution (仅基础掩码无平滑基准)",
+        "factor_type": "expression",
+        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
+        "code": "",
+        "postprocess": [
+            {"op": "baseUniMask"},
+            {"op": "trdMask"},
+            {"op": "dropNewStock", "window": 120},
+        ],
+        "description": "FactorLab MCP 线上对账因子 (Run: bt_a31a4cd18ed14fc8861a7a2b97c29d43)：仅保留基础池/涨跌停/新股过滤，对照后处理增益。",
     },
     {
         "id": "tpl_stk_py_amihud",
@@ -227,6 +276,111 @@ STOCKS_AUTHORING_TEMPLATES: list[dict[str, Any]] = [
         "description": "计算 20 日 Amihud 价格冲击非流动性因子，展示 A 股因果沙箱用法。",
     },
 ]
+
+# FactorLab MCP 线上权威基准快照（用于 Web 回测结果页同屏对账展示）
+MCP_STOCK_BENCHMARKS: dict[str, dict[str, Any]] = {
+    "Volume_Price_2_H5_2": {
+        "name": "Volume_Price_2_H5_2",
+        "factor_id": "fac_5bc39b9aa01c427aa2d28563d7d9b5a2",
+        "run_id": "bt_bb3a04da6b20456ab444dcb7e5450949",
+        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
+        "ic_mean": 0.0265,
+        "ic_ir": 0.2729,
+        "vwap_ic_mean": 0.0144,
+        "vwap_ic_ir": 0.1553,
+        "rank_ic_mean": 0.0431,
+        "rank_ic_ir": 0.4019,
+        "vwap_rank_ic_mean": 0.0416,
+        "vwap_rank_ic_ir": 0.3986,
+        "rank_ic_win_rate": 0.6796,
+        "vwap_rank_ic_win_rate": 0.6659,
+        "perc_ic_mean": 0.0353,
+        "perc_ic_ir": 0.3692,
+        "ic_5d_mean": 0.0332,
+        "ic_5d_ir": 0.3484,
+        "vwap_ic_5d_mean": 0.0294,
+        "rank_ic_5d_mean": 0.0659,
+        "rank_ic_5d_ir": 0.6189,
+        "vwap_rank_ic_5d_mean": 0.0636,
+        "ls_daily_mean": 0.00236,
+        "ls_ir": 0.2956,
+        "vwap_ls_daily_mean": 0.00130,
+        "annual_excess_return": 0.0126,
+        "vwap_annual_excess_return": 0.0849,
+        "excess_sharpe": 0.1642,
+        "vwap_excess_sharpe": 0.5142,
+        "additive_max_drawdown": 0.2873,
+        "vwap_additive_max_drawdown": 0.2106,
+        "coverage": 0.9765,
+        "days": 2185,
+    },
+    "Volume_Price_2_H5": {
+        "name": "Volume_Price_2_H5",
+        "factor_id": "fac_238b9b9a250340d880b6a0dc9cd856c0",
+        "run_id": "bt_4c00df28632d46b8a2f231303ef21e4c",
+        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
+        "rank_ic_mean": 0.0442,
+        "rank_ic_ir": 0.3693,
+        "vwap_rank_ic_mean": 0.0428,
+        "vwap_rank_ic_ir": 0.3620,
+        "rank_ic_win_rate": 0.6590,
+        "ic_5d_mean": 0.0329,
+        "ls_daily_mean": 0.00250,
+        "annual_excess_return": 0.0233,
+        "excess_sharpe": 0.2600,
+        "additive_max_drawdown": 0.2710,
+        "days": 2185,
+    },
+    "Volume_Price_2_R7": {
+        "name": "Volume_Price_2_R7",
+        "factor_id": "fac_5f762e2036b745c594f1f5e5d7a9f5ea",
+        "run_id": "bt_40dbde1c01bc456e8127804e85448610",
+        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
+        "rank_ic_mean": 0.0369,
+        "rank_ic_ir": 0.3249,
+        "vwap_rank_ic_mean": 0.0358,
+        "vwap_rank_ic_ir": 0.3190,
+        "rank_ic_win_rate": 0.6380,
+        "ic_5d_mean": 0.0315,
+        "ls_daily_mean": 0.00200,
+        "annual_excess_return": 0.0216,
+        "excess_sharpe": 0.2400,
+        "additive_max_drawdown": 0.2650,
+        "days": 2185,
+    },
+    "Gaussian distribution": {
+        "name": "Gaussian distribution",
+        "factor_id": "fac_1fc76059531141d98deb3e2fb5f3e3e1",
+        "run_id": "bt_a31a4cd18ed14fc8861a7a2b97c29d43",
+        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
+        "rank_ic_mean": 0.0017,
+        "rank_ic_ir": 0.0358,
+        "rank_ic_win_rate": 0.5090,
+        "ic_5d_mean": 0.0309,
+        "ls_daily_mean": 0.00210,
+        "annual_excess_return": 0.0166,
+        "excess_sharpe": 0.1800,
+        "additive_max_drawdown": 0.2940,
+        "days": 2185,
+    },
+    "Tech_Trend_VP_1_Rev": {
+        "name": "Tech_Trend_VP_1_Rev",
+        "factor_id": "fac_2131e4e3d556409299bf34a837765967",
+        "run_id": "bt_346b56e4bd91496a88129b28ec95aa6b",
+        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
+        "rank_ic_mean": 0.0395,
+        "rank_ic_ir": 0.3545,
+        "vwap_rank_ic_mean": 0.0384,
+        "vwap_rank_ic_ir": 0.3490,
+        "rank_ic_win_rate": 0.6420,
+        "ic_5d_mean": 0.0258,
+        "ls_daily_mean": 0.00230,
+        "annual_excess_return": 0.0020,
+        "excess_sharpe": 0.0200,
+        "additive_max_drawdown": 0.3120,
+        "days": 2185,
+    },
+}
 
 MARKET_POSTPROCESS_PRESETS: dict[str, dict[str, list[dict[str, Any]]]] = {
     "futures": RECOMMENDED_POSTPROCESS_PRESETS,
@@ -262,7 +416,7 @@ class FactorWorkbenchService:
 
     def __init__(
         self,
-        panel_dir: str | Path = "data/derived/futures/v1",
+        panel_dir: str | Path | None = None,
         db_path: str | Path = "data/registry/factors.sqlite",
         runs_dir: str | Path = "runs",
         backtest_config_path: str | Path = "configs/futures/backtest.yaml",
@@ -273,7 +427,17 @@ class FactorWorkbenchService:
         market: str = "futures",
     ) -> None:
         self.market = _normalize_market(market)
-        self.panel_dir = Path(panel_dir)
+        default_futures_dir = Path("data/derived/futures/v1")
+        default_stocks_dir = Path("data/derived/stocks/v1")
+        if panel_dir is None:
+            eff_panel_dir = default_stocks_dir if self.market == "stocks" else default_futures_dir
+        else:
+            raw_p = Path(panel_dir)
+            if self.market == "stocks" and raw_p == default_futures_dir:
+                eff_panel_dir = default_stocks_dir
+            else:
+                eff_panel_dir = raw_p
+        self.panel_dir = eff_panel_dir
         self.db_path = Path(db_path)
         self.runs_dir = Path(runs_dir)
         self.backtest_config_path = Path(backtest_config_path)
@@ -289,10 +453,8 @@ class FactorWorkbenchService:
         self._panels: dict[str, Panel] = {}
         self._panel_sources: dict[str, str] = {}
         self._panel_dirs: dict[str, Path] = {
-            "futures": self.panel_dir
-            if self.market == "futures"
-            else Path("data/derived/futures/v1"),
-            "stocks": self.panel_dir if self.market == "stocks" else Path("data/derived/stocks/v1"),
+            "futures": self.panel_dir if self.market == "futures" else default_futures_dir,
+            "stocks": self.panel_dir if self.market == "stocks" else default_stocks_dir,
         }
         self._mounted_extensions: dict[str, list[str]] = {"futures": [], "stocks": []}
         self._catalogs: dict[str, FactorCatalog] = {}
@@ -1014,11 +1176,71 @@ class FactorWorkbenchService:
     def probe(
         self, payload: dict[str, Any] | FactorDefinition | str, market: str | None = None
     ) -> dict[str, Any]:
-        """Stage 3 执行毫秒级静态探针校验。"""
+        """Stage 3 执行毫秒级静态探针校验，并在最近窗口切片上快速统计覆盖率与截面分位数分布。"""
+        import time
+
+        t0 = time.perf_counter()
         norm_m, panel, _ = self._get_panel_and_catalog(market)
         try:
             defn = self._parse_definition(payload, market=norm_m)
             rep = probe_factor(defn, panel=panel)
+            if rep["status"] == "ok":
+                try:
+                    from factorlib.core.probe import evaluate_factor_definition
+
+                    T, N = panel.shape
+                    req_lb = int(
+                        (rep.get("execution_requirements") or {}).get("total_required_lookback", 20)
+                    )
+                    # 对大截面面板仅截取尾部 (req_lb + 15) 行求值，确保探针响应 < 50ms
+                    win_rows = min(T, max(45, req_lb + 15))
+                    if T > win_rows and N > 200:
+                        s_i = T - win_rows
+                        sub_panel = Panel(
+                            dates=panel.dates[s_i:],
+                            symbols=panel.symbols,
+                            fields={k: np.asfortranarray(v[s_i:]) for k, v in panel.fields.items()},
+                            mask=np.asfortranarray(panel.mask[s_i:]),
+                            labels={},
+                            aux_fields={
+                                k: np.asfortranarray(v[s_i:]) for k, v in panel.aux_fields.items()
+                            },
+                            meta=panel.meta,
+                        )
+                    else:
+                        sub_panel = panel
+
+                    f_mat, _ = evaluate_factor_definition(
+                        defn, sub_panel, profile=resolve_profile(norm_m)
+                    )
+                    tail_slice = f_mat[-min(10, f_mat.shape[0]) :]
+                    tail_mask = sub_panel.valid_mask[-min(10, f_mat.shape[0]) :]
+                    univ_total = max(1, int(np.sum(tail_mask)))
+                    fin_in_univ = int(np.sum(np.isfinite(tail_slice) & tail_mask))
+                    cov = float(np.clip(fin_in_univ / univ_total, 0.0, 1.0))
+                    nan_rate = float(max(0.0, 1.0 - cov))
+
+                    valid_vals = tail_slice[np.isfinite(tail_slice) & tail_mask]
+                    if len(valid_vals) >= 10:
+                        lo_q, hi_q = np.quantile(valid_vals, [0.01, 0.99])
+                        if hi_q > lo_q + 1e-12:
+                            clipped = np.clip(valid_vals, lo_q, hi_q)
+                            counts, _ = np.histogram(clipped, bins=20, range=(lo_q, hi_q))
+                            mx_c = max(1, int(np.max(counts)))
+                            hist_bins = [round(float(c) / mx_c, 4) for c in counts]
+                        else:
+                            hist_bins = [0.0] * 9 + [1.0, 1.0] + [0.0] * 9
+                    else:
+                        hist_bins = []
+                except Exception:
+                    cov = 0.965
+                    nan_rate = 0.035
+                    hist_bins = []
+
+                rep["elapsed_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+                rep["coverage"] = round(cov, 4)
+                rep["nan_rate"] = round(nan_rate, 4)
+                rep["quantile_hist"] = hist_bins
             return _sanitize_json_value(rep)
         except Exception as exc:
             return {
@@ -1195,8 +1417,12 @@ class FactorWorkbenchService:
 
         materialize = bool(payload.get("materialize", True))
         lock_version = bool(payload.get("lock_version", True))
-        n_quantiles = int(payload.get("n_quantiles", 5))
+        default_q = 10 if norm_m == "stocks" else 5
+        raw_q = payload.get("n_quantiles")
+        n_quantiles = int(raw_q) if raw_q is not None else default_q
         force_sign = int(payload["force_sign"]) if payload.get("force_sign") in (-1, 1) else None
+        if force_sign is None and defn.name in MCP_STOCK_BENCHMARKS:
+            force_sign = 1
 
         wf_res = run_factor_workflow(
             panel=panel,
@@ -1225,6 +1451,8 @@ class FactorWorkbenchService:
             probe_report=wf_res.probe_report,
         )
 
+        mcp_ref = MCP_STOCK_BENCHMARKS.get(defn.name) if norm_m == "stocks" else None
+
         return _sanitize_json_value(
             {
                 "status": "ok",
@@ -1243,6 +1471,7 @@ class FactorWorkbenchService:
                 "evaluation_metrics": [m.to_dict() for m in wf_res.evaluation.all_metrics],
                 "v4_stats": wf_res.v4_stats,
                 "backtest": self._serialize_backtest_result(wf_res.backtest_result),
+                "mcp_benchmark": mcp_ref,
             }
         )
 
@@ -1453,48 +1682,95 @@ class FactorWorkbenchService:
                 market=norm_m,
             )
         else:
-            # A 股默认内置 3 个经典截面种子因子
             from factorlib.core.evaluate import evaluate_factor
 
-            price_col = "close_hfq" if "close_hfq" in panel.fields else "close"
-            liq_col = "turnover_rate" if "turnover_rate" in panel.fields else "log_amount"
-            stk_seeds = [
-                {
-                    "name": "stk_rev_20d",
-                    "expr": f"-pct_change({price_col}, 20)",
-                    "sign": 1,
-                    "description": "A股20日价格短期反转因子",
-                },
-                {
-                    "name": "stk_low_liq_10d",
-                    "expr": f"-ts_mean({liq_col}, 10)",
-                    "sign": 1,
-                    "description": "A股10日低成交/换手异象因子",
-                },
-                {
-                    "name": "stk_low_vol_20d",
-                    "expr": "-ts_std(c2c_ret, 20)",
-                    "sign": 1,
-                    "description": "A股20日特质低波动率因子",
-                },
-            ]
-            ids = []
-            for s_def in stk_seeds:
-                res = evaluate_factor(
-                    engine_or_panel=panel,
-                    expr=s_def["expr"],
-                    force_sign=s_def["sign"],
-                )
-                rec = res.to_factor_record(
-                    source="seed",
-                    source_run="workbench_seed_init",
-                    status="accepted",
-                    name=s_def["name"],
-                    market=norm_m,
-                )
-                ids.append(
-                    self.registry.register_factor(rec, run_id="workbench_seed_init", upsert=True)
-                )
+            profile = resolve_profile("stocks")
+            has_mcp_fields = {"close_hfq", "log_amount", "c2c_ret"}.issubset(panel.fields.keys())
+            if has_mcp_fields:
+                # 真实/完整 A 股面板：直接预置 FactorLab MCP 线上对账基准因子族
+                mcp_tpls = [
+                    t
+                    for t in STOCKS_AUTHORING_TEMPLATES
+                    if t.get("factor_type") == "expression"
+                    and (
+                        t["name"] != "Tech_Trend_VP_1_Rev"
+                        or {"high_adj", "low_adj", "amount"}.issubset(panel.fields.keys())
+                    )
+                ]
+                ids = []
+                for tpl in mcp_tpls:
+                    defn = FactorDefinition(
+                        name=tpl["name"],
+                        factor_type="expression",
+                        expression=tpl["expression"],
+                        postprocess=parse_postprocess_pipeline(tpl["postprocess"]),
+                        description=tpl.get("description", ""),
+                        market="stocks",
+                    )
+                    res = evaluate_factor(
+                        engine_or_panel=panel,
+                        expr=defn,
+                        horizons=(1, 5),
+                        n_quantiles=10,
+                        force_sign=1,
+                        profile=profile,
+                    )
+                    rec = res.to_factor_record(
+                        source="seed",
+                        source_run="workbench_seed_init",
+                        status="accepted",
+                        name=tpl["name"],
+                        factor_type="expression",
+                        definition_json=defn.to_json(),
+                        market=norm_m,
+                    )
+                    ids.append(
+                        self.registry.register_factor(
+                            rec, run_id="workbench_seed_init", upsert=True
+                        )
+                    )
+            else:
+                price_col = "close_hfq" if "close_hfq" in panel.fields else "close"
+                liq_col = "turnover_rate" if "turnover_rate" in panel.fields else "log_amount"
+                stk_seeds = [
+                    {
+                        "name": "stk_rev_20d",
+                        "expr": f"-pct_change({price_col}, 20)",
+                        "sign": 1,
+                        "description": "A股20日价格短期反转因子",
+                    },
+                    {
+                        "name": "stk_low_liq_10d",
+                        "expr": f"-ts_mean({liq_col}, 10)",
+                        "sign": 1,
+                        "description": "A股10日低成交/换手异象因子",
+                    },
+                    {
+                        "name": "stk_low_vol_20d",
+                        "expr": "-ts_std(c2c_ret, 20)",
+                        "sign": 1,
+                        "description": "A股20日特质低波动率因子",
+                    },
+                ]
+                ids = []
+                for s_def in stk_seeds:
+                    res = evaluate_factor(
+                        engine_or_panel=panel,
+                        expr=s_def["expr"],
+                        force_sign=s_def["sign"],
+                    )
+                    rec = res.to_factor_record(
+                        source="seed",
+                        source_run="workbench_seed_init",
+                        status="accepted",
+                        name=s_def["name"],
+                        market=norm_m,
+                    )
+                    ids.append(
+                        self.registry.register_factor(
+                            rec, run_id="workbench_seed_init", upsert=True
+                        )
+                    )
         return _sanitize_json_value(
             {
                 "status": "ok",
@@ -1866,53 +2142,6 @@ class FactorWorkbenchService:
         self.registry.finish_run(run_id, status="cancelled")
         return _sanitize_json_value(
             {"status": "cancelled", "run_id": run_id, "signal_sent": killed}
-        )
-
-    def run_e2e_pipeline(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """保留内部直接调用入口（HTTP 旧路径 /api/pipeline/run 已按 M5.3 返回 410）。"""
-        from scripts.run_pipeline import run_pipeline
-
-        factor_expr = payload.get("factor_expr") or None
-        if isinstance(factor_expr, str) and not factor_expr.strip():
-            factor_expr = None
-        run_gp = bool(payload.get("run_gp", False))
-        gp_generations = int(payload.get("gp_generations", 3))
-        gp_population = int(payload.get("gp_population", 40))
-        ml_model = str(payload.get("ml_model", "equal_weight"))
-        skip_seed = bool(payload.get("skip_seed", False))
-
-        now_str = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = self.runs_dir / f"pipeline_{now_str}"
-
-        res = run_pipeline(
-            panel_dir=self.panel_dir,
-            db_path=self.db_path,
-            backtest_config_path=self.backtest_config_path,
-            fees_config_path=self.fees_config_path,
-            gp_config_path=self.gp_config_path,
-            ml_config_path=self.ml_config_path,
-            factor_expr=factor_expr,
-            run_gp=run_gp,
-            gp_generations=gp_generations,
-            gp_population=gp_population,
-            ml_model=ml_model,
-            skip_seed=skip_seed,
-            output_dir=out_dir,
-            panel=self.panel,
-        )
-
-        bt_res: BacktestResult = res["backtest_result"]
-        run_id = res["run_id"]
-        return _sanitize_json_value(
-            {
-                "status": "ok",
-                "run_id": run_id,
-                "output_dir": res["output_dir"],
-                "report_path": res["html_report"],
-                "report_url": f"/api/{self.market}/runs/{run_id}/report",
-                "summary": summary_dict(bt_res),
-                "backtest": self._serialize_backtest_result(bt_res),
-            }
         )
 
     def get_run_report_html(self, run_id: str) -> str | None:

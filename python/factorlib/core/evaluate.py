@@ -318,23 +318,27 @@ def _summarize_ic_slice(
 ) -> dict[str, float]:
     """按样本标准差 (ddof=1) 汇总指定时段内的 IC 统计指标（显式区分 5d Pearson IC 与 5d RankIC）。"""
 
-    def _mean_std_ir(arr: np.ndarray) -> tuple[float, float, float]:
+    def _mean_std_ir_t(arr: np.ndarray) -> tuple[float, float, float, float]:
         valid = arr[np.isfinite(arr)]
-        if len(valid) == 0:
-            return 0.0, 0.0, 0.0
+        n_v = len(valid)
+        if n_v == 0:
+            return 0.0, 0.0, 0.0, 0.0
         mean_v = float(np.mean(valid))
-        std_v = float(np.std(valid, ddof=1)) if len(valid) > 1 else 0.0
+        std_v = float(np.std(valid, ddof=1)) if n_v > 1 else 0.0
         ir_v = mean_v / std_v if std_v > 1e-12 else 0.0
-        return mean_v, std_v, ir_v
+        t_v = ir_v * float(np.sqrt(n_v))
+        return mean_v, std_v, ir_v, t_v
 
-    ic_m, ic_s, ic_ir = _mean_std_ir(ic_arr)
-    ric_m, ric_s, ric_ir = _mean_std_ir(rank_ic_arr)
-    pic_m, _, pic_ir = _mean_std_ir(perc_ic_arr)
-    ic5_m, _, ic5_ir = _mean_std_ir(ic_5d_arr)
-    ric5_m, _, ric5_ir = (
-        _mean_std_ir(rank_ic_5d_arr) if rank_ic_5d_arr is not None else (0.0, 0.0, 0.0)
+    ic_m, ic_s, ic_ir, ic_t = _mean_std_ir_t(ic_arr)
+    ric_m, ric_s, ric_ir, ric_t = _mean_std_ir_t(rank_ic_arr)
+    pic_m, _, pic_ir, pic_t = _mean_std_ir_t(perc_ic_arr)
+    ic5_m, _, ic5_ir, ic5_t = _mean_std_ir_t(ic_5d_arr)
+    ric5_m, _, ric5_ir, ric5_t = (
+        _mean_std_ir_t(rank_ic_5d_arr) if rank_ic_5d_arr is not None else (0.0, 0.0, 0.0, 0.0)
     )
 
+    valid_ic = ic_arr[np.isfinite(ic_arr)]
+    ic_win_rate = float(np.mean(valid_ic > 0.0)) if len(valid_ic) > 0 else 0.0
     valid_ric = rank_ic_arr[np.isfinite(rank_ic_arr)]
     win_rate = float(np.mean(valid_ric > 0.0)) if len(valid_ric) > 0 else 0.0
 
@@ -342,16 +346,23 @@ def _summarize_ic_slice(
         "ic_mean": ic_m,
         "ic_std": ic_s,
         "ic_ir": ic_ir,
+        "ic_t": ic_t,
+        "ic_win_rate": ic_win_rate,
         "rank_ic_mean": ric_m,
         "rank_ic_std": ric_s,
         "rank_ic_ir": ric_ir,
+        "rank_ic_t": ric_t,
         "perc_ic_mean": pic_m,
         "perc_ic_ir": pic_ir,
+        "perc_ic_t": pic_t,
         "ic_5d_mean": ic5_m,
         "ic_5d_ir": ic5_ir,
+        "ic_5d_t": ic5_t,
         "rank_ic_5d_mean": ric5_m,
         "rank_ic_5d_ir": ric5_ir,
+        "rank_ic_5d_t": ric5_t,
         "win_rate": win_rate,
+        "valid_days": float(len(valid_ric)),
     }
 
 
@@ -501,24 +512,59 @@ def evaluate_factor_v4_stats(
     benchmark_rets: np.ndarray | None = None,
     trading_days_per_year: float = 250.0,
     profile: Any | None = None,
+    eval_start_date: str | None = None,
+    eval_end_date: str | None = None,
 ) -> dict[str, Any]:
     """执行 FactorLab Schema v4 标准统计分布评价 (Layer 1 Statistical Evaluation)。"""
-    T, N = factor_matrix.shape
-    dates = [str(d) for d in panel.dates]
-    directed = np.asarray(factor_matrix, dtype=np.float64) * (1.0 if sign >= 0 else -1.0)
-    mask = panel.valid_mask
+    raw_T, N = factor_matrix.shape
+    raw_dates = [str(d) for d in panel.dates]
+
+    # 对包含 2015-11 ~ 2015-12 预热缓冲区的全历史 A 股标准面板，默认从 2016-01-01 开始统计评价（对齐 2016-2024 权威对账区间）
+    if (
+        eval_start_date is None
+        and raw_T > 1000
+        and len(raw_dates) > 0
+        and raw_dates[0].replace("-", "").startswith("201511")
+    ):
+        eval_start_date = "20160101"
+
+    # 先在全长 panel 上取好风格字典（利用面板级缓存），再按评估窗口切片
+    resolved_profile = (
+        profile if profile is not None else resolve_profile(resolve_panel_market(panel))
+    )
+    full_styles_dict = resolved_profile.style_factors(panel)
+
+    if eval_start_date is not None or eval_end_date is not None:
+        s_norm = eval_start_date.replace("-", "") if eval_start_date else "00000000"
+        e_norm = eval_end_date.replace("-", "") if eval_end_date else "99999999"
+        eval_idx = [
+            i for i, d in enumerate(raw_dates) if s_norm <= d.replace("-", "")[:8] <= e_norm
+        ]
+        if not eval_idx:
+            eval_idx = list(range(raw_T))
+    else:
+        eval_idx = list(range(raw_T))
+
+    dates = [raw_dates[i] for i in eval_idx]
+    T = len(dates)
+    sub_factor = np.asarray(factor_matrix[eval_idx], dtype=np.float64)
+    directed = sub_factor * (1.0 if sign >= 0 else -1.0)
+    mask = panel.valid_mask[eval_idx]
+    styles_dict = {k: v[eval_idx] for k, v in full_styles_dict.items()}
 
     # 提取 1 日执行收益与 5 日累计收益标签
     if "y_1" in panel.labels:
-        ret_1d = panel.labels["y_1"]
+        ret_1d = panel.labels["y_1"][eval_idx]
     elif "r_exec_next" in panel.labels:
-        ret_1d = panel.labels["r_exec_next"]
+        ret_1d = panel.labels["r_exec_next"][eval_idx]
     else:
-        first_lbl = next(iter(panel.labels.values())) if panel.labels else np.zeros((T, N))
+        first_lbl = (
+            next(iter(panel.labels.values()))[eval_idx] if panel.labels else np.zeros((T, N))
+        )
         ret_1d = first_lbl
 
     if "y_5" in panel.labels:
-        ret_5d = panel.labels["y_5"]
+        ret_5d = panel.labels["y_5"][eval_idx]
     else:
         ret_5d = ret_1d
 
@@ -531,81 +577,154 @@ def evaluate_factor_v4_stats(
     group_daily_rets = {f"G{q + 1}": np.zeros(T, dtype=np.float64) for q in range(n_quantiles)}
     active_days_mask = np.zeros(T, dtype=bool)
     if benchmark_rets is not None:
-        bench_daily_rets = np.asarray(benchmark_rets, dtype=np.float64)
+        b_full = np.asarray(benchmark_rets, dtype=np.float64)
+        bench_daily_rets = b_full[eval_idx] if len(b_full) == raw_T else b_full[:T]
     else:
         bench_daily_rets = np.full(T, np.nan, dtype=np.float64)
     top_turnover = np.full(T, np.nan, dtype=np.float64)
     prev_top_set: set[int] = set()
+    coverage_series = np.full(T, np.nan, dtype=np.float64)
 
-    for t in range(T):
-        f_row = directed[t, :]
-        r1_row = ret_1d[t, :]
-        r5_row = ret_5d[t, :]
+    if N > 200:
+        # 大截面（如 A 股 5000+ 标的）直接调用 Rust Rayon 并行算子计算 IC 与分组收益
+        dir_f = np.asfortranarray(directed, dtype=np.float64)
+        r1_f = np.asfortranarray(ret_1d, dtype=np.float64)
+        r5_f = np.asfortranarray(ret_5d, dtype=np.float64)
+        v1_mask = np.asfortranarray(mask & np.isfinite(dir_f) & np.isfinite(r1_f), dtype=bool)
+        v5_mask = np.asfortranarray(mask & np.isfinite(dir_f) & np.isfinite(r5_f), dtype=bool)
 
-        valid_1d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r1_row)
-        idx_1d = np.where(valid_1d)[0]
-        m = len(idx_1d)
+        ic_res_1 = factorlib_core.calc_ic(
+            dir_f, r1_f, v1_mask, min_names=min_names, rank=False, horizon=1
+        )
+        ric_res_1 = factorlib_core.calc_ic(
+            dir_f, r1_f, v1_mask, min_names=min_names, rank=True, horizon=1
+        )
+        ic_res_5 = factorlib_core.calc_ic(
+            dir_f, r5_f, v5_mask, min_names=min_names, rank=False, horizon=5
+        )
+        ric_res_5 = factorlib_core.calc_ic(
+            dir_f, r5_f, v5_mask, min_names=min_names, rank=True, horizon=5
+        )
 
-        if m >= min_names:
-            active_days_mask[t] = True
-            fx = f_row[idx_1d]
-            ry = r1_row[idx_1d]
-            ic_series[t] = _pearson_corr_1d(fx, ry)
-            rank_ic_series[t] = _spearman_corr_1d(fx, ry)
+        ic_series = np.asarray(ic_res_1["daily_ic"], dtype=np.float64)
+        rank_ic_series = np.asarray(ric_res_1["daily_ic"], dtype=np.float64)
+        ic_5d_series = np.asarray(ic_res_5["daily_ic"], dtype=np.float64)
+        rank_ic_5d_series = np.asarray(ric_res_5["daily_ic"], dtype=np.float64)
 
-            # PercIC: 首尾 20% 极值品种的截面 Pearson 相关系数
-            order = np.argsort(fx, kind="mergesort")
-            tail_k = max(2, int(np.ceil(0.2 * m)))
-            if 2 * tail_k <= m:
-                ext_pos = np.concatenate([order[:tail_k], order[m - tail_k :]])
-            else:
-                ext_pos = order
-            perc_ic_series[t] = _pearson_corr_1d(fx[ext_pos], ry[ext_pos])
+        q_res = factorlib_core.calc_quantile_returns(
+            dir_f, r1_f, v1_mask, n_quantiles=n_quantiles, min_names=min_names, sign=1
+        )
+        g_raw = q_res["group_daily_returns"]
+        ls_raw = np.asarray(q_res["ls_daily_returns"], dtype=np.float64)
+        active_days_mask = np.isfinite(ls_raw)
+        for q in range(n_quantiles):
+            arr_q = np.asarray(g_raw[q], dtype=np.float64)
+            group_daily_rets[f"G{q + 1}"] = np.where(np.isfinite(arr_q), arr_q, 0.0)
+        top_turnover = np.asarray(q_res["top_turnover_series"], dtype=np.float64)
 
-            # 等权商品池基准日收益 (Equal-Weight Universe Benchmark: 若未传入外部基准)
+        # 使用 O(N) argpartition 计算首尾 20% PercIC 与覆盖率
+        univ_counts = np.sum(mask, axis=1)
+        valid_counts = np.sum(v1_mask, axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            coverage_series = np.where(univ_counts > 0, valid_counts / univ_counts, np.nan)
+
+        for t in range(T):
+            m = int(valid_counts[t])
+            if m < min_names:
+                continue
+            row_m = v1_mask[t, :]
+            fx = directed[t, row_m]
+            ry = ret_1d[t, row_m]
             if benchmark_rets is None:
                 bench_daily_rets[t] = float(np.mean(ry))
+            tail_k = max(2, int(np.ceil(0.2 * m)))
+            if 2 * tail_k <= m:
+                part_low = np.argpartition(fx, tail_k - 1)[:tail_k]
+                part_high = np.argpartition(fx, m - tail_k)[m - tail_k :]
+                ext_pos = np.concatenate([part_low, part_high])
+                perc_ic_series[t] = _pearson_corr_1d(fx[ext_pos], ry[ext_pos])
+            else:
+                perc_ic_series[t] = ic_series[t]
+    else:
+        for t in range(T):
+            f_row = directed[t, :]
+            r1_row = ret_1d[t, :]
+            r5_row = ret_5d[t, :]
 
-            # 分位数分组收益 G1 (最低) .. G{n_quantiles} (最高/多头组)
-            for q in range(n_quantiles):
-                s_i = int(round(q * m / n_quantiles))
-                e_i = int(round((q + 1) * m / n_quantiles))
-                g_pos = order[s_i:e_i]
-                if len(g_pos) > 0:
-                    group_daily_rets[f"G{q + 1}"][t] = float(np.mean(ry[g_pos]))
-                if q == n_quantiles - 1:
-                    curr_top_set = set(idx_1d[g_pos].tolist())
-                    if prev_top_set and curr_top_set:
-                        kp = float(len(prev_top_set))
-                        kc = float(len(curr_top_set))
-                        o = float(len(prev_top_set & curr_top_set))
-                        sum_diff = o * abs(1.0 / kc - 1.0 / kp) + (1.0 - o / kc) + (1.0 - o / kp)
-                        top_turnover[t] = float(np.clip(0.5 * sum_diff, 0.0, 1.0))
-                    prev_top_set = curr_top_set
+            u_cnt = int(np.sum(mask[t, :]))
+            valid_1d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r1_row)
+            idx_1d = np.where(valid_1d)[0]
+            m = len(idx_1d)
+            if u_cnt > 0 and m > 0:
+                coverage_series[t] = float(m / u_cnt)
 
-        valid_5d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r5_row)
-        idx_5d = np.where(valid_5d)[0]
-        if len(idx_5d) >= min_names:
-            fx5 = f_row[idx_5d]
-            ry5 = r5_row[idx_5d]
-            ic_5d_series[t] = _pearson_corr_1d(fx5, ry5)
-            rank_ic_5d_series[t] = _spearman_corr_1d(fx5, ry5)
+            if m >= min_names:
+                active_days_mask[t] = True
+                fx = f_row[idx_1d]
+                ry = r1_row[idx_1d]
+                ic_series[t] = _pearson_corr_1d(fx, ry)
+                rank_ic_series[t] = _spearman_corr_1d(fx, ry)
+
+                # PercIC: 首尾 20% 极值品种的截面 Pearson 相关系数
+                order = np.argsort(fx, kind="mergesort")
+                tail_k = max(2, int(np.ceil(0.2 * m)))
+                if 2 * tail_k <= m:
+                    ext_pos = np.concatenate([order[:tail_k], order[m - tail_k :]])
+                else:
+                    ext_pos = order
+                perc_ic_series[t] = _pearson_corr_1d(fx[ext_pos], ry[ext_pos])
+
+                # 等权商品池基准日收益 (Equal-Weight Universe Benchmark: 若未传入外部基准)
+                if benchmark_rets is None:
+                    bench_daily_rets[t] = float(np.mean(ry))
+
+                # 分位数分组收益 G1 (最低) .. G{n_quantiles} (最高/多头组)
+                for q in range(n_quantiles):
+                    s_i = int(round(q * m / n_quantiles))
+                    e_i = int(round((q + 1) * m / n_quantiles))
+                    g_pos = order[s_i:e_i]
+                    if len(g_pos) > 0:
+                        group_daily_rets[f"G{q + 1}"][t] = float(np.mean(ry[g_pos]))
+                    if q == n_quantiles - 1:
+                        curr_top_set = set(idx_1d[g_pos].tolist())
+                        if prev_top_set and curr_top_set:
+                            kp = float(len(prev_top_set))
+                            kc = float(len(curr_top_set))
+                            o = float(len(prev_top_set & curr_top_set))
+                            sum_diff = (
+                                o * abs(1.0 / kc - 1.0 / kp) + (1.0 - o / kc) + (1.0 - o / kp)
+                            )
+                            top_turnover[t] = float(np.clip(0.5 * sum_diff, 0.0, 1.0))
+                        prev_top_set = curr_top_set
+
+            valid_5d = mask[t, :] & np.isfinite(f_row) & np.isfinite(r5_row)
+            idx_5d = np.where(valid_5d)[0]
+            if len(idx_5d) >= min_names:
+                fx5 = f_row[idx_5d]
+                ry5 = r5_row[idx_5d]
+                ic_5d_series[t] = _pearson_corr_1d(fx5, ry5)
+                rank_ic_5d_series[t] = _spearman_corr_1d(fx5, ry5)
 
     # 按年份与全样本汇总 IC
     years = sorted({d[:4] for d in dates if len(d) >= 4})
     ic_annual: dict[str, dict[str, float]] = {}
     for y in years:
         y_idx = [i for i, d in enumerate(dates) if d.startswith(y)]
-        ic_annual[y] = _summarize_ic_slice(
+        y_sum = _summarize_ic_slice(
             ic_series[y_idx],
             rank_ic_series[y_idx],
             perc_ic_series[y_idx],
             ic_5d_series[y_idx],
             rank_ic_5d_series[y_idx],
         )
+        y_cov = coverage_series[y_idx][np.isfinite(coverage_series[y_idx])]
+        y_sum["coverage"] = float(np.mean(y_cov)) if len(y_cov) > 0 else 0.0
+        ic_annual[y] = y_sum
     ic_full = _summarize_ic_slice(
         ic_series, rank_ic_series, perc_ic_series, ic_5d_series, rank_ic_5d_series
     )
+    valid_cov_all = coverage_series[np.isfinite(coverage_series)]
+    ic_full["coverage"] = float(np.mean(valid_cov_all)) if len(valid_cov_all) > 0 else 0.0
 
     # 分组复利净值与年化收益（净值序列保持完整 T 长度，统计量从首个有效活跃日开始以免前导 0 稀释波动率与年化指标）
     group_nav_series: dict[str, list[float]] = {}
@@ -617,10 +736,13 @@ def evaluate_factor_v4_stats(
         group_nav_series[g_key] = [float(x) for x in nav]
         if first_active_day is None:
             group_summary[g_key] = {
+                "daily_mean": 0.0,
                 "total_return": 0.0,
                 "annual_return": 0.0,
                 "annual_volatility": 0.0,
                 "sharpe": 0.0,
+                "max_drawdown": 0.0,
+                "win_rate": 0.0,
             }
             continue
         active_rets = g_rets[first_active_day:][active_days_mask[first_active_day:]]
@@ -634,15 +756,39 @@ def evaluate_factor_v4_stats(
             else 0.0
         )
         sharpe = ann_ret / vol if vol > 1e-12 else 0.0
+        peaks = np.maximum.accumulate(nav)
+        max_dd = float(np.max((peaks - nav) / np.maximum(peaks, 1e-12))) if len(nav) > 0 else 0.0
+        win_r = float(np.mean(active_rets > 0.0)) if active_len > 0 else 0.0
         group_summary[g_key] = {
+            "daily_mean": float(np.mean(active_rets)) if active_len > 0 else 0.0,
             "total_return": tot_ret,
             "annual_return": ann_ret,
             "annual_volatility": vol,
             "sharpe": sharpe,
+            "max_drawdown": max_dd,
+            "win_rate": win_r,
         }
 
-    # 多头超额分析 (Long Excess Analysis: Top Group vs Benchmark；未达 min_names 的预热日置 NaN，避免混入 -benchmark)
+    # 多空对冲 (Top - Bottom) 统计
     top_key = f"G{n_quantiles}"
+    bot_key = "G1"
+    ls_daily_arr = group_daily_rets[top_key] - group_daily_rets[bot_key]
+    ls_nav = np.cumprod(1.0 + ls_daily_arr)
+    if first_active_day is not None:
+        ls_act = ls_daily_arr[first_active_day:][active_days_mask[first_active_day:]]
+        ls_mean = float(np.mean(ls_act)) if len(ls_act) > 0 else 0.0
+        ls_std = float(np.std(ls_act, ddof=1)) if len(ls_act) > 1 else 0.0
+        ls_ir = ls_mean / ls_std if ls_std > 1e-12 else 0.0
+        ls_ann = ls_mean * trading_days_per_year
+        ls_vol = ls_std * float(np.sqrt(trading_days_per_year))
+        ls_sharpe = ls_ann / ls_vol if ls_vol > 1e-12 else 0.0
+        ls_peaks = np.maximum.accumulate(ls_nav)
+        ls_mdd = float(np.max((ls_peaks - ls_nav) / np.maximum(ls_peaks, 1e-12)))
+        ls_win = float(np.mean(ls_act > 0.0)) if len(ls_act) > 0 else 0.0
+    else:
+        ls_mean = ls_ir = ls_ann = ls_vol = ls_sharpe = ls_mdd = ls_win = 0.0
+
+    # 多头超额分析 (Long Excess Analysis: Top Group vs Benchmark；未达 min_names 的预热日置 NaN，避免混入 -benchmark)
     long_rets_for_excess = np.where(active_days_mask, group_daily_rets[top_key], np.nan)
     excess_res = calc_long_excess_metrics(
         long_rets_for_excess,
@@ -659,19 +805,75 @@ def evaluate_factor_v4_stats(
         y_idx = [i for i, d in enumerate(dates) if d.startswith(y)]
         y_to = top_turnover[y_idx][np.isfinite(top_turnover[y_idx])]
         y_dict["daily_turnover"] = float(np.mean(y_to)) if len(y_to) > 0 else 0.0
+        y_ls = ls_daily_arr[y_idx][active_days_mask[y_idx]]
+        y_ls_m = float(np.mean(y_ls)) if len(y_ls) > 0 else 0.0
+        y_ls_s = float(np.std(y_ls, ddof=1)) if len(y_ls) > 1 else 0.0
+        y_dict["ls_mean"] = y_ls_m
+        y_dict["ls_ir"] = y_ls_m / y_ls_s if y_ls_s > 1e-12 else 0.0
 
-    # 按市场 Profile 计算风格暴露归因
-    resolved_profile = (
-        profile if profile is not None else resolve_profile(resolve_panel_market(panel))
-    )
-    styles_dict = resolved_profile.style_factors(panel)
     style_exp = compute_style_exposures(
-        factor_matrix,
+        sub_factor,
         styles_dict,
         mask=mask,
         n_quantiles=n_quantiles,
         sign=sign,
     )
+
+    top_s = group_summary[top_key]
+    bot_s = group_summary[bot_key]
+    portfolio_summary = {
+        "long": {
+            "label": f"多头 ({top_key})",
+            "annual_return": top_s["annual_return"],
+            "sharpe": top_s["sharpe"],
+            "calmar": top_s["annual_return"] / top_s["max_drawdown"]
+            if top_s["max_drawdown"] > 1e-6
+            else 0.0,
+            "max_drawdown": top_s["max_drawdown"],
+            "win_rate": top_s["win_rate"],
+            "turnover": mean_top_turnover,
+            "excess_annual": excess_res["annual_excess_return"],
+        },
+        "short": {
+            "label": f"空头 ({bot_key})",
+            "annual_return": bot_s["annual_return"],
+            "sharpe": bot_s["sharpe"],
+            "calmar": bot_s["annual_return"] / bot_s["max_drawdown"]
+            if bot_s["max_drawdown"] > 1e-6
+            else 0.0,
+            "max_drawdown": bot_s["max_drawdown"],
+            "win_rate": bot_s["win_rate"],
+            "turnover": mean_top_turnover,
+            "excess_annual": 0.0,
+        },
+        "long_short": {
+            "label": f"多空 ({top_key}-{bot_key})",
+            "daily_mean": ls_mean,
+            "ir": ls_ir,
+            "annual_return": ls_ann,
+            "sharpe": ls_sharpe,
+            "calmar": ls_ann / ls_mdd if ls_mdd > 1e-6 else 0.0,
+            "max_drawdown": ls_mdd,
+            "win_rate": ls_win,
+            "turnover": mean_top_turnover,
+            "excess_annual": ls_ann,
+            "nav_series": [float(x) for x in ls_nav],
+        },
+        "long_excess": {
+            "label": f"{top_key} 超额 (vs 基准)",
+            "annual_return": excess_res["annual_excess_return"],
+            "sharpe": excess_res["excess_sharpe"],
+            "calmar": (
+                excess_res["annual_excess_return"] / excess_res["additive_max_drawdown"]
+                if excess_res["additive_max_drawdown"] > 1e-6
+                else 0.0
+            ),
+            "max_drawdown": excess_res["additive_max_drawdown"],
+            "win_rate": excess_res["win_rate"],
+            "turnover": mean_top_turnover,
+            "excess_annual": excess_res["annual_excess_return"],
+        },
+    }
 
     clean_bench_rets = np.where(np.isfinite(bench_daily_rets), bench_daily_rets, 0.0)
     return {
@@ -712,6 +914,7 @@ def evaluate_factor_v4_stats(
             "cum_excess_additive": excess_res["cumulative_additive"],
             "cum_excess_compound": excess_res["cumulative_compound"],
         },
+        "portfolio_summary": portfolio_summary,
         "style_exposure": style_exp,
     }
 
@@ -790,7 +993,8 @@ def run_factor_workflow(
         for lbl in sorted(engine.label_names)
         if lbl.startswith("y_") and lbl[2:].isdigit()
     )
-    eval_horizons = tuple(h for h in DEFAULT_HORIZONS if h in avail_horizons) or avail_horizons
+    target_horizons = (1, 5) if panel.N > 200 else DEFAULT_HORIZONS
+    eval_horizons = tuple(h for h in target_horizons if h in avail_horizons) or avail_horizons
     eval_res = _evaluate_factor_matrix_core(
         engine=engine,
         dates=np.array([str(d) for d in panel.dates]),

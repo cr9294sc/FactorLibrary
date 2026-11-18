@@ -233,14 +233,22 @@ def test_workbench_fastapi_endpoints_and_async_subprocess(tmp_path: Path):
         assert r_f.status_code == 200 and r_f.json()["market"] == "futures"
         assert r_s.status_code == 200 and r_s.json()["market"] == "stocks"
 
-        # 6. 异步后台子进程派发 (DL Alpha Phase 2 基线) -> 轮询完成 -> 产出 candidate
+        # 6. 异步后台子进程派发 (PyTorch 1d DL Alpha) -> 轮询完成 -> 产出 candidate
         r_launch = client.post(
             "/api/futures/runs",
             json={
                 "kind": "dl",
                 "target_label": "y_5",
                 "seed": 42,
-                "params": {"n_folds": 2, "n_seeds": 2, "purge_window": 5},
+                "params": {
+                    "model": "gated_mlp",
+                    "seq_len": 8,
+                    "epochs": 3,
+                    "n_folds": 2,
+                    "n_seeds": 2,
+                    "purge_window": 5,
+                    "device": "cpu",
+                },
             },
         )
         assert r_launch.status_code == 202
@@ -251,7 +259,7 @@ def test_workbench_fastapi_endpoints_and_async_subprocess(tmp_path: Path):
 
         # 轮询等待独立子进程结束
         final_detail = None
-        for _ in range(40):
+        for _ in range(80):
             r_det = client.get(f"/api/futures/runs/{run_id}")
             assert r_det.status_code == 200
             det = r_det.json()

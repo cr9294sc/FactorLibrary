@@ -28,6 +28,7 @@ use crate::metrics::quantile::{
     calc_quantile_metrics, calc_top_quantile_turnover as rust_calc_top_quantile_turnover,
     QuantileMetrics, TopQuantileTurnoverMetrics,
 };
+use crate::metrics::spanning::{calc_spanning_metrics, SpanningMetrics};
 use crate::metrics::turnover::{calc_turnover_metrics, TurnoverMetrics};
 use crate::ops::list_all_operators;
 use crate::ops::postprocess::{
@@ -136,6 +137,40 @@ fn ic_metrics_to_pydict<'py>(py: Python<'py>, m: &IcMetrics) -> PyResult<Bound<'
     d.set_item("coverage", m.coverage)?;
     d.set_item("valid_days", m.valid_days)?;
     d.set_item("daily_ic", PyArray1::from_slice_bound(py, &m.daily_ic))?;
+    Ok(d)
+}
+
+fn spanning_metrics_to_pydict<'py>(
+    py: Python<'py>,
+    m: &SpanningMetrics,
+    row_offset: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("valid_days", m.valid_days)?;
+    d.set_item("n_days", m.valid_days)?;
+    d.set_item("effective_n", m.effective_n)?;
+    d.set_item("mean_ic", m.mean_ic)?;
+    d.set_item("mean", m.mean_ic)?;
+    d.set_item("std_ic", m.std_ic)?;
+    d.set_item("std", m.std_ic)?;
+    d.set_item("icir", m.icir)?;
+    d.set_item("t_stat", m.t_stat)?;
+    d.set_item("t_stat_adj", m.t_stat_adj)?;
+
+    let daily_arr = PyArray1::from_slice_bound(py, &m.daily_ic);
+    let _ = daily_arr.readwrite().make_nonwriteable();
+    d.set_item("daily_ic", daily_arr)?;
+
+    let cum_arr = PyArray1::from_slice_bound(py, &m.cum_ic);
+    let _ = cum_arr.readwrite().make_nonwriteable();
+    d.set_item("cum_ic", cum_arr)?;
+
+    let shifted_rows: Vec<usize> = m
+        .valid_row_indices
+        .iter()
+        .map(|&r| r + row_offset)
+        .collect();
+    d.set_item("row_indices", PyList::new_bound(py, &shifted_rows))?;
     Ok(d)
 }
 
@@ -850,6 +885,50 @@ impl PyEngine {
         Ok(PyArray2::from_owned_array_bound(py, mat))
     }
 
+    /// 多因子正交残差检验 (Spanning Test)：每日截面对基准因子做 OLS 回归并计算残差 RankIC 序列与统计量。
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (target, benchmarks, label_name="y_5", min_names=5, horizon=5, start_row=None, end_row=None))]
+    pub fn spanning_test<'py>(
+        &self,
+        py: Python<'py>,
+        target: &Bound<'_, PyAny>,
+        benchmarks: Vec<PyReadonlyArray2<'_, f64>>,
+        label_name: &str,
+        min_names: usize,
+        horizon: usize,
+        start_row: Option<usize>,
+        end_row: Option<usize>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let tgt_raw = self.resolve_factor_mat(py, target)?;
+        let (tgt_slice, s_row, e_row) = self.align_factor_slice(tgt_raw, start_row, end_row)?;
+
+        let label_mat =
+            self.panel.labels.get(label_name).ok_or_else(|| {
+                PyValueError::new_err(format!("Engine 中不存在标签 '{label_name}'"))
+            })?;
+        let label_sub = label_mat.slice(s![s_row..e_row, ..]);
+        let mask_sub = self.panel.universe_mask.slice(s![s_row..e_row, ..]);
+
+        let mut b_views: Vec<ArrayView2<'_, f64>> = Vec::with_capacity(benchmarks.len());
+        for b in &benchmarks {
+            let v = b.as_array();
+            let (sliced, sb, eb) = self.align_factor_view(v, Some(s_row), Some(e_row))?;
+            if (sb, eb) != (s_row, e_row) {
+                return Err(PyValueError::new_err(
+                    "benchmark 与 target 的行切片区间不一致",
+                ));
+            }
+            b_views.push(sliced);
+        }
+
+        let metrics = py.allow_threads(|| {
+            calc_spanning_metrics(
+                &tgt_slice, &b_views, &label_sub, &mask_sub, min_names, horizon,
+            )
+        });
+        spanning_metrics_to_pydict(py, &metrics, s_row)
+    }
+
     /// 遗传规划 (STGP) 专用高并发批求值与适应度指标计算（单次释放 GIL 完成 DAG 求值 + 切片 RankIC + 库内相关性）。
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (exprs, label_name="y_5", start_row=0, end_row=None, min_names=5, horizon=5, library_factors=None, use_cache=true))]
@@ -1444,6 +1523,45 @@ pub fn calc_correlation_matrix<'py>(
     });
 
     Ok(PyArray2::from_owned_array_bound(py, mat))
+}
+
+/// 独立矩阵级多因子正交残差检验 (Spanning Test)。
+#[pyfunction]
+#[pyo3(signature = (target, benchmarks, label, mask, min_names=5, horizon=5))]
+pub fn calc_spanning_test<'py>(
+    py: Python<'py>,
+    target: PyReadonlyArray2<'_, f64>,
+    benchmarks: Vec<PyReadonlyArray2<'_, f64>>,
+    label: PyReadonlyArray2<'_, f64>,
+    mask: PyReadonlyArray2<'_, bool>,
+    min_names: usize,
+    horizon: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let t_view = target.as_array();
+    let l_view = label.as_array();
+    let m_view = mask.as_array();
+    let (t, n) = t_view.dim();
+    if l_view.dim() != (t, n) || m_view.dim() != (t, n) {
+        return Err(PyValueError::new_err(
+            "target, label 与 mask 矩阵维度必须完全一致",
+        ));
+    }
+
+    let mut b_views: Vec<ArrayView2<'_, f64>> = Vec::with_capacity(benchmarks.len());
+    for b in &benchmarks {
+        let bv = b.as_array();
+        if bv.dim() != (t, n) {
+            return Err(PyValueError::new_err(
+                "所有 benchmark 矩阵的维度必须与 target 严格一致",
+            ));
+        }
+        b_views.push(bv);
+    }
+
+    let metrics = py.allow_threads(|| {
+        calc_spanning_metrics(&t_view, &b_views, &l_view, &m_view, min_names, horizon)
+    });
+    spanning_metrics_to_pydict(py, &metrics, 0)
 }
 
 /// 快速连续权重回测函数。

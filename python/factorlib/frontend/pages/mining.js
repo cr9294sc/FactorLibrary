@@ -164,12 +164,14 @@ function renderRecipeForm(market, st) {
   const kind = st.mining.kind;
   const dlHint =
     market === "futures"
-      ? "小截面期货模板：轻量 GRU(hidden=32) / Gated-MLP · 高 Dropout 0.4 · Phase 2 基线可先跑通闭环"
-      : "大截面 A 股模板：时空解耦 GRU + Cross-Attn · 按日打包 Batch · Phase 2 基线可先跑通闭环";
+      ? "小截面期货 PyTorch 模板：轻量 GRU(hidden=32) / Gated-MLP / TCN · 高 Dropout 0.40 · 品种+板块嵌入防过拟合"
+      : "大截面 A 股 PyTorch 模板：时空解耦 GRU + Cross-Attn (O(N·M) 市场原型路由) · 按日打包 Batch";
+  const defaultHidden = market === "futures" ? 32 : 64;
+  const defaultDrop = market === "futures" ? 0.4 : 0.25;
 
   const body = {
     dl: `
-      <b>DL Alpha 滚动训练配方</b>
+      <b>DL Alpha 滚动训练配方 (PyTorch 1d)</b>
       <label class="lbl" style="display:block;">FeatureSet
         <select class="inp mt-1" id="mFsSelect">${fsOpts}</select>
       </label>
@@ -177,16 +179,30 @@ function renderRecipeForm(market, st) {
         <label class="lbl">预测标签 y_h
           <select class="inp mt-1" id="mLabelSelect">${labels}</select>
         </label>
-        <label class="lbl">网络骨架
+        <label class="lbl">网络骨架 (Arch)
           <select class="inp mt-1" data-rparam="model">
-            <option>${market === "futures" ? "GRU(1层,32) [Phase2基线]" : "GRU+CrossAttn [Phase2基线]"}</option>
-            <option>Gated-MLP (基线)</option>
-            <option>因果 1D-TCN</option>
+            <option value="gru" ${market === "futures" ? "selected" : ""}>GRU (时序注意力池化)</option>
+            <option value="st_attention" ${market === "stocks" ? "selected" : ""}>时空解耦 Attention</option>
+            <option value="gated_mlp">Gated-MLP (SwiGLU 基线)</option>
+            <option value="tcn">因果扩张 1D-TCN</option>
           </select>
         </label>
+        <label class="lbl">回看步长 L (Seq Len)<input class="inp mt-1" type="number" data-rparam="seq_len" value="20" min="4" max="60"></label>
+        <label class="lbl">隐层维度 Hidden<input class="inp mt-1" type="number" data-rparam="hidden_dim" value="${defaultHidden}" min="8" max="256"></label>
+        <label class="lbl">Dropout 正则<input class="inp mt-1" type="number" step="0.05" data-rparam="dropout" value="${defaultDrop}" min="0" max="0.8"></label>
+        <label class="lbl">训练 Epochs<input class="inp mt-1" type="number" data-rparam="epochs" value="12" min="2" max="100"></label>
         <label class="lbl">随机种子数 (Seeds)<input class="inp mt-1" type="number" data-rparam="n_seeds" value="3" min="1" max="5"></label>
+        <label class="lbl">折数 (Folds)<input class="inp mt-1" type="number" data-rparam="n_folds" value="4" min="2" max="8"></label>
         <label class="lbl">Purge ≥ h<input class="inp mt-1" type="number" data-rparam="purge_window" value="5" min="1"></label>
-        <label class="lbl">折数 (Folds)<input class="inp mt-1" type="number" data-rparam="n_folds" value="4" min="2" max="6"></label>
+        <label class="lbl">换手差分惩罚<input class="inp mt-1" type="number" step="0.01" data-rparam="turnover_penalty" value="0.05" min="0" max="1"></label>
+        <label class="lbl">标签去 Beta
+          <select class="inp mt-1" data-rparam="label_neutralize">
+            <option value="demean" selected>截面去均值 (demean)</option>
+            <option value="sector">行业/板块中性 (sector)</option>
+            <option value="none">不中性化 (raw)</option>
+          </select>
+        </label>
+        <label class="lbl">Lockbox 盲测占比<input class="inp mt-1" type="number" step="0.05" data-rparam="lockbox_ratio" value="0.2" min="0" max="0.4"></label>
         <label class="lbl">基础 Seed<input class="inp mt-1" type="number" id="mSeed" value="42"></label>
       </div>
       <div class="mk-soft p-2 lbl" style="border-radius:6px;">💡 ${escapeHtml(dlHint)}</div>`,

@@ -1487,3 +1487,23 @@ class StockMarketAdapter(MarketAdapter):
 3. **后台独立子进程闭环与三关准入审计 (`scripts/run_dl.py`, `core/admission_audit.py`)**：
    - `POST /api/{market}/runs` 以 `start_new_session=True` 派生独立后台进程执行 `run_gp.py` / `run_ml.py` / `run_dl.py`（Phase 2 Purged Walk-Forward 基线预览），立即返回 `run_id` 与 `pid`，支持刷新恢复、日志尾行查看与 `SIGTERM` 中止；
    - 新增 `core/admission_audit.py`，打通候选因子三关准入审计（关 1 Rust `cross_correlation` 去重 + 关 2 Spanning 截面正交残差 + 关 3 因果 Ridge 合成消融 `ΔSharpe`）与多因子 A/B 对比（Rust `factor_correlation_matrix`）。
+
+---
+
+## 23. `1d` DL Alpha 研发管线与正交审计 (Phase 3)
+
+依据 `docs/superpowers/specs/2026-11-14-hybrid-research-and-dl-alpha-design.md` 第 5 节与架构计划 M8 规范，平台完成基于 PyTorch + Rust 内核的双市场 `1d` DL Alpha 训练与增量准入体系：
+
+1. **双市场统一 `1d` 时序 Dataset 与防泄漏预处理器 (`factorlib.dl.dataset`)**：
+   - **特征隔离与按需扩展**：从 `FeatureSet` 白名单抽取 `panel.fields`（自动兼容通过 `core/extensions.py` 按需挂载的 `1m` 日频扩展包特征），物理禁止读取 `aux_fields` 与 `labels`；对只读矩阵拷贝后再转入 PyTorch 张量，杜绝内存篡改与 `non-writable` 警告；
+   - **Fold 内严格因果归一化**：每日独立执行截面 MAD 去极值 + Rank-Gauss / CS Z-Score，并可选因果历史滚动 Z-Score；`FoldScaler` 严格仅在当前折 `train_indices` 内部拟合 `[0.5%, 99.5%]` 裁剪边界与标准化统计量后静态变换 `valid` / `test`；
+   - **标签去 Beta 与低显存按日滑窗**：支持按日截面 `demean` 与 `sector`（$O(N)$ 分组向量化）中性化，并按 `(B_days, N, L, C)` 动态切片严格因果历史窗 `[t-L+1..t]`；
+   - **Purged 切分与 Lockbox 防护**：复用 `ml/splits.PurgedWalkForwardSplitter`（短样本回退为等步长 Purged 切分），强制断言 `purge_window >= horizon` 与选型/Lockbox 完全隔离。
+2. **分市场 PyTorch 基准模型族与复合损失 (`factorlib.dl.models`, `factorlib.dl.loss`)**：
+   - 实现四大模型族：`GatedMLPAlpha` (`gated_mlp`)、`GRUAlpha` (`gru`)、`CausalTCNAlpha` (`tcn`) 与 `SpatioTemporalAttentionAlpha` (`st_attention`，小截面期货使用精确 Masked MHA，大截面 A 股自动启用 $O(N \cdot M)$ **Market-Guided Routing** 原型路由注意力)；
+   - `CompositeAlphaLoss` 融合日内截面 Pearson IC Loss、小权重 Huber 锚定与相邻交易日预测差分换手惩罚。
+3. **Purged Walk-Forward 多种子训练器与物化入库 (`factorlib.dl.{trainer,stitch,materialize}`, `scripts/run_dl.py`)**：
+   - 每折支持多种子 (`3~5`) 按验证集 **Valid Daily RankICIR** 早停，每日截面 Z-Score 等权融合后无重叠拼接 OOS `(T, N)` 矩阵，物化 `.npz` 并注册为 `factor_type = "dl_alpha"`、`status = "candidate"`（P4 前端配方表单完整接入模型骨架、回看步长、`hidden_dim`、`dropout`、`epochs`、`turnover_penalty`、`label_neutralize`、`lockbox_ratio`）。
+4. **Rust Spanning Test 正交审计与同族去重 (`metrics/spanning.rs`, `core/admission_audit.py`)**：
+   - Rust 内核新增基于二次修正 Gram-Schmidt (MGS2) 的高并发日度截面多元 OLS 正交残差检验 `calc_spanning_test` / `Engine.spanning_test`（输出残差 RankICIR、原始 `t_stat` 与自由度修正 `t_stat_adj`），并在 `ops_ref.py`、`proptest_metrics.rs` 与 `test_rust_core.py` 完成全数值边界对账；
+   - `core/admission_audit.py` 在严格同日度有效交集上执行三关递进式增量准入，并强制对同一 `FeatureSet` 下的 `dl_alpha` 变体族保留残差 `|ICIR|` 最优的前 2 名代表变体。

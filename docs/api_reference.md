@@ -300,3 +300,23 @@ flowchart TD
   - 启动命令：`python scripts/run_web.py --port 8080`、或安装 Wheel 后直接执行 `factorlib-web --port 8080`；
   - 全面按市场隔离的 REST API (`/api/{market}/context`, `/api/{market}/panel/kline`, `/api/{market}/feature-sets`, `/api/{market}/probe`, `/api/{market}/workflow/run`, `/api/{market}/compare`, `/api/{market}/recipes`, `/api/{market}/runs`, `/api/{market}/factors/audit` 等)；旧阻塞式 `/api/pipeline/run` 返回 HTTP `410 Gone`；
   - 托管零构建 ES 模块前端 (`factorlib/frontend/{index.html,styles.css,main.js,api.js,state.js,router.js,components/charts.js,pages/*.js}`)，支持 `#/{market}/{page}` 路由与 5 大研究页面。
+
+---
+
+## 9. `1d` DL Alpha 研发管线与正交审计内核 (`factorlib.dl`, `metrics/spanning.rs`)
+
+- **PyTorch 时序与防泄漏 Dataset (`factorlib.dl.dataset`)**：
+  - `prepare_dl_panel_data(panel, feature_names, target_label, ...)`：物理屏蔽 `aux_fields` 与 `labels`，从 `panel.fields`（含按需挂载的 `1m` 扩展特征）抽取输入，执行逐日因果 MAD 去极值 + Rank-Gauss / CS Z-Score，并支持 `demean` / `sector` 标签去 Beta 中性化；
+  - `FoldScaler`：严格仅在当前折 `train_indices` 内部拟合 `[0.5%, 99.5%]` 截断与标准化参数后静态变换 `valid` / `test`；
+  - `build_dl_folds(...)` & `assert_folds_no_leakage(...)`：复用 `PurgedWalkForwardSplitter`，强制断言 `purge_window >= horizon` 并严格隔离外层盲测 Lockbox；
+  - `gather_day_windows(...)`：基于 `(T, N, C)` float32 按日批动态切片严格因果 `[t-L+1..t]` 滑窗，支持 A 股 5000+ 标的低显存训练。
+- **分市场基准模型族 (`factorlib.dl.models`)**：
+  - `GatedMLPAlpha` (`gated_mlp`)：多尺度因果汇总 + SwiGLU 门控残差块；
+  - `GRUAlpha` (`gru`)：因果单向 1~2 层 GRU + 时序注意力池化（期货小截面支持低维品种/板块嵌入）；
+  - `CausalTCNAlpha` (`tcn`)：纯左侧零填充因果扩张 1D-TCN；
+  - `SpatioTemporalAttentionAlpha` (`st_attention`)：Stage 1 因果 GRU + Stage 2 截面自注意力（`N <= 256` 使用精确 Masked MHA，`N > 256` 自动切换为 $O(N \cdot M)$ **Market-Guided Routing** 适应 A 股全市场）。
+- **复合损失与多种子滚动训练器 (`factorlib.dl.{loss,trainer,stitch,materialize}` & `scripts/run_dl.py`)**：
+  - `CompositeAlphaLoss`：每日截面 Pearson IC Loss + 小权重 Huber 锚定 + 相邻交易日换手差分惩罚；
+  - `train_dl_walk_forward`：按 `Valid Daily RankICIR` 早停，每日截面 Z-Score 多种子集成并无重叠拼接 OOS 矩阵，物化 `.npz` 并以 `factor_type = "dl_alpha"`、`status = "candidate"` 注册。
+- **Rust Spanning Test 正交残差内核 (`factorlib_core.calc_spanning_test` / `Engine.spanning_test`)**：
+  - 采用二次修正 Gram-Schmidt (MGS2) 在每日截面执行多因子 OLS 正交残差分解并计算残差 RankICIR、原始 `t_stat` 及持仓期自由度修正 `t_stat_adj`；与 `ops_ref.spanning_test_ref` 完成高精度对账，并在 `core/admission_audit.py` 中接入同 `FeatureSet` 家族变体配额去重（保留前 2 名代表变体）。

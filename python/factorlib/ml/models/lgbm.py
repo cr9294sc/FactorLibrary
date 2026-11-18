@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import lightgbm as lgb
@@ -157,12 +158,21 @@ class LightGBMModel:
 
         y_train_eff = _discretize_ranking_labels(y, groups) if is_ranking else y
 
+        # LightGBM 要求 feature_name 不含 JSON 特殊字符（如公式表达式与 dl_alpha 中的括号/逗号/冒号）
+        if self.feature_names and len(self.feature_names) == self.n_features_:
+            safe_feat_names = [
+                f"f{idx}_{re.sub(r'[^0-9A-Za-z_]+', '_', str(fn)).strip('_')[:48] or 'col'}"
+                for idx, fn in enumerate(self.feature_names)
+            ]
+        else:
+            safe_feat_names = "auto"
+
         # 构建 Dataset
         train_data = lgb.Dataset(
             X,
             label=y_train_eff,
             group=groups if is_ranking else None,
-            feature_name=self.feature_names,
+            feature_name=safe_feat_names,
             free_raw_data=False,
         )
 
@@ -176,7 +186,7 @@ class LightGBMModel:
                 label=y_val_eff,
                 group=groups_val if is_ranking else None,
                 reference=train_data,
-                feature_name=self.feature_names,
+                feature_name=safe_feat_names,
                 free_raw_data=False,
             )
             valid_sets.append(val_data)

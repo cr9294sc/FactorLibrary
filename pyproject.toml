@@ -24,6 +24,9 @@ dev = [
     "ruff>=0.5",
     "httpx>=0.28.1",
 ]
+dl = [
+    "torch>=2.4",
+]
 
 [project.scripts]
 factorlib-web = "factorlib.workbench_server:main"

@@ -433,7 +433,7 @@ function renderABView(market, st) {
 
   // 正交残差累积 IC
   const orth = ab.orthogonal_residual || {};
-  document.getElementById("resIcSummary").textContent = `Resid ICIR=${fmtNum(orth.residual_icir, 3)} · t=${fmtNum(orth.residual_t_stat, 2)}`;
+  document.getElementById("resIcSummary").textContent = `Resid ICIR=${fmtNum(orth.residual_icir, 3)} · t=${fmtNum(orth.residual_t_stat, 2)} (t_adj=${fmtNum(orth.residual_t_stat_adj, 2)})`;
   drawLines(
     document.getElementById("resChart"),
     [orth.cum_raw_ic || [], orth.cum_residual_ic || []],

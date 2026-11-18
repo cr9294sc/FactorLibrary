@@ -9,6 +9,7 @@
 pub mod corr;
 pub mod ic;
 pub mod quantile;
+pub mod spanning;
 pub mod turnover;
 
 pub use corr::{
@@ -19,4 +20,5 @@ pub use ic::{calc_ic_metrics, calc_ic_series, IcMetrics};
 pub use quantile::{
     calc_quantile_metrics, calc_top_quantile_turnover, QuantileMetrics, TopQuantileTurnoverMetrics,
 };
+pub use spanning::{calc_daily_spanning_ic, calc_spanning_metrics, SpanningMetrics};
 pub use turnover::{calc_turnover_metrics, TurnoverMetrics};

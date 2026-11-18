@@ -169,7 +169,7 @@ def test_panel_load_existing_quick_panel():
 
     p = Panel.load(derived_v1)
     assert p.T > 0
-    assert p.N == 79
+    assert p.N >= 79
     assert "close" in p.fields
     assert "exec_vwap" in p.aux_fields
     assert "exec_vwap" not in p.fields

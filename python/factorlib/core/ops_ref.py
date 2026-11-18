@@ -1954,3 +1954,108 @@ def compound_forward_labels_ref(
                     mat[t, j] = float(np.prod(1.0 + seg) - 1.0)
         out[f"y_{h_int}"] = mat
     return out
+
+
+def spanning_test_ref(
+    target: np.ndarray,
+    benchmarks: list[np.ndarray],
+    label: np.ndarray,
+    mask: np.ndarray,
+    min_names: int = 5,
+    horizon: int = 5,
+) -> dict[str, object]:
+    """多因子 Spanning Test 正交残差检验纯 Python/NumPy 参考实现。"""
+    from scipy.stats import rankdata
+
+    tgt = _clean(target)
+    lbl = _clean(label)
+    bm_list = [_clean(b) for b in benchmarks]
+    m_arr = np.asarray(mask, dtype=bool)
+    t_len, _ = tgt.shape
+    req_min = max(2, int(min_names), len(bm_list) + 2)
+
+    daily_ic = np.full(t_len, np.nan, dtype=np.float64)
+    valid_rows: list[int] = []
+    valid_ics: list[float] = []
+
+    for row in range(t_len):
+        vm = m_arr[row, :] & np.isfinite(tgt[row, :]) & np.isfinite(lbl[row, :])
+        for bm in bm_list:
+            vm = vm & np.isfinite(bm[row, :])
+        idx = np.where(vm)[0]
+        m = len(idx)
+        if m < req_min:
+            continue
+
+        y_vec = tgt[row, idx].astype(np.float64)
+        orig_var = float(np.var(y_vec))
+        if not np.isfinite(orig_var) or orig_var <= 1e-24:
+            continue
+
+        if bm_list:
+            cols = [np.ones(m, dtype=np.float64)]
+            for bm in bm_list:
+                cv = bm[row, idx].astype(np.float64)
+                sd = float(np.std(cv))
+                if np.isfinite(sd) and sd > 1e-12:
+                    cols.append((cv - float(np.mean(cv))) / sd)
+            if len(cols) > 1:
+                x_mat = np.column_stack(cols)
+                beta, _, _, _ = np.linalg.lstsq(x_mat, y_vec, rcond=1e-10)
+                resid = y_vec - x_mat @ beta
+            else:
+                resid = y_vec - float(np.mean(y_vec))
+        else:
+            resid = y_vec
+
+        r_var = float(np.var(resid))
+        if not np.isfinite(r_var) or r_var <= 1e-24 or r_var <= 1e-18 * orig_var:
+            continue
+
+        r_ranks = rankdata(resid, method="average")
+        l_ranks = rankdata(lbl[row, idx], method="average")
+        r_d = r_ranks - float(np.mean(r_ranks))
+        l_d = l_ranks - float(np.mean(l_ranks))
+        denom = float(np.sqrt(np.sum(r_d * r_d) * np.sum(l_d * l_d)))
+        if denom <= 1e-14:
+            continue
+        rho = float(np.clip(np.sum(r_d * l_d) / denom, -1.0, 1.0))
+        daily_ic[row] = rho
+        valid_rows.append(row)
+        valid_ics.append(rho)
+
+    n_days = len(valid_ics)
+    h = max(1, int(horizon))
+    if n_days == 0:
+        return {
+            "valid_days": 0,
+            "effective_n": 0.0,
+            "mean_ic": 0.0,
+            "std_ic": 0.0,
+            "icir": 0.0,
+            "t_stat": 0.0,
+            "t_stat_adj": 0.0,
+            "daily_ic": daily_ic,
+            "cum_ic": np.array([], dtype=np.float64),
+            "row_indices": [],
+        }
+
+    arr = np.asarray(valid_ics, dtype=np.float64)
+    mean_ic = float(np.mean(arr))
+    std_ic = float(np.std(arr, ddof=1)) if n_days > 1 else 0.0
+    icir = mean_ic / std_ic if std_ic > 1e-12 else 0.0
+    eff_n = float(n_days) / float(h)
+    t_stat = icir * float(np.sqrt(n_days)) if std_ic > 1e-12 and n_days > 1 else 0.0
+    t_stat_adj = icir * float(np.sqrt(eff_n)) if std_ic > 1e-12 and n_days > 1 else 0.0
+    return {
+        "valid_days": n_days,
+        "effective_n": eff_n,
+        "mean_ic": mean_ic,
+        "std_ic": std_ic,
+        "icir": icir,
+        "t_stat": t_stat,
+        "t_stat_adj": t_stat_adj,
+        "daily_ic": daily_ic,
+        "cum_ic": np.cumsum(arr),
+        "row_indices": valid_rows,
+    }

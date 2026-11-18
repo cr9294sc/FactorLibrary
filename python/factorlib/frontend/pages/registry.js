@@ -215,8 +215,22 @@ async function openFactorDetail(market, st, factorId, navigate) {
           ? `<div class="card p-2 space-y-1 lbl">
               <b>三关准入审计摘要</b>
               <div>关1 (|ICIR|=${fmtNum(aud.oos_icir, 3)}, max|ρ|=${fmtNum(aud.max_corr, 2)}): ${gateBadge(aud.gate1_pass)}</div>
-              <div>关2 (残差 ICIR=${fmtNum(aud.residual_icir, 3)}, t=${fmtNum(aud.residual_t_stat, 2)}): ${gateBadge(aud.gate2_pass)}</div>
+              <div>关2 (残差 ICIR=${fmtNum(aud.residual_icir, 3)}, t=${fmtNum(aud.residual_t_stat, 2)}, t_adj=${fmtNum(aud.residual_t_stat_adj, 2)}): ${gateBadge(aud.gate2_pass)}</div>
               <div>关3 (消融 ΔSharpe=${fmtNum(aud.delta_sharpe, 3)}): ${gateBadge(aud.gate3_pass)}</div>
+              ${aud.family_dedup_dropped ? '<div class="warn">同 FeatureSet 家族配额去重降级 (非前 2 名代表变体)</div>' : ""}
+            </div>`
+          : ""
+      }
+      ${
+        detail.definition && Array.isArray(detail.definition.fold_diagnostics) && detail.definition.fold_diagnostics.length
+          ? `<div class="card p-2 space-y-1 lbl">
+              <b>Walk-Forward 逐折 OOS 诊断</b>
+              ${detail.definition.fold_diagnostics
+                .map(
+                  (fd) =>
+                    `<div>Fold ${fd.fold}${fd.is_lockbox ? " [Lockbox]" : ""}: valid=${fmtNum(fd.valid_icir, 2)} · test=${fmtNum(fd.test_icir, 2)} (${escapeHtml((fd.test_range || []).join("~"))})</div>`
+                )
+                .join("")}
             </div>`
           : ""
       }

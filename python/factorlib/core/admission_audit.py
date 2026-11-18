@@ -14,6 +14,7 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+import factorlib_core
 import numpy as np
 
 from factorlib.core._hooks import resolve_panel_market, resolve_profile
@@ -96,73 +97,50 @@ def _daily_cs_ols_residual_ic(
     mask: np.ndarray,
     row_indices: np.ndarray,
     min_names: int = 5,
+    horizon: int = 5,
 ) -> dict[str, Any]:
-    """对每日截面执行 `target ~ 1 + X_bench` OLS 回归，计算正交残差 RankIC 序列与 t 统计量。"""
-    ic_vals: list[float] = []
-    dates_idx: list[int] = []
-
-    for t in row_indices:
-        y_row = target_mat[t, :]
-        r_row = label_mat[t, :]
-        valid = mask[t, :] & np.isfinite(y_row) & np.isfinite(r_row)
-        for bm in bench_mats:
-            valid = valid & np.isfinite(bm[t, :])
-        idx = np.where(valid)[0]
-        m = len(idx)
-        if m < max(min_names, len(bench_mats) + 2):
-            continue
-
-        y_vec = y_row[idx]
-        if bench_mats:
-            x_cols = [np.ones(m, dtype=np.float64)]
-            for bm in bench_mats:
-                col = bm[t, idx]
-                std_c = float(np.std(col))
-                if std_c > 1e-12:
-                    x_cols.append((col - float(np.mean(col))) / std_c)
-            if len(x_cols) > 1:
-                X = np.column_stack(x_cols)
-                beta, _, _, _ = np.linalg.lstsq(X, y_vec, rcond=None)
-                resid = y_vec - X @ beta
-            else:
-                resid = y_vec - float(np.mean(y_vec))
-        else:
-            resid = y_vec
-
-        if float(np.std(resid)) <= 1e-12:
-            continue
-        rho = _spearman_corr_1d(resid, r_row[idx])
-        if math.isfinite(rho):
-            ic_vals.append(float(rho))
-            dates_idx.append(int(t))
-
-    arr = np.asarray(ic_vals, dtype=np.float64)
-    n_days = len(arr)
-    if n_days == 0:
+    """调用 Rust `calc_spanning_test` 对指定交易日执行 `target ~ 1 + X_bench` OLS 回归并计算正交残差 RankIC。"""
+    if len(row_indices) == 0:
         return {
             "n_days": 0,
+            "effective_n": 0.0,
             "mean": 0.0,
             "std": 0.0,
             "icir": 0.0,
             "t_stat": 0.0,
+            "t_stat_adj": 0.0,
             "daily_ic": [],
             "cum_ic": [],
             "row_indices": [],
         }
-    mean_v = float(np.mean(arr))
-    std_v = float(np.std(arr, ddof=1)) if n_days > 1 else 0.0
-    icir = mean_v / std_v if std_v > 1e-12 else 0.0
-    t_stat = (mean_v / std_v) * math.sqrt(n_days) if std_v > 1e-12 and n_days > 1 else 0.0
-    cum_ic = np.cumsum(arr).tolist()
+
+    idx_arr = np.asarray(row_indices, dtype=np.int64)
+    tgt_sub = np.asfortranarray(target_mat[idx_arr, :], dtype=np.float64)
+    bm_subs = [np.asfortranarray(bm[idx_arr, :], dtype=np.float64) for bm in bench_mats]
+    lbl_sub = np.asfortranarray(label_mat[idx_arr, :], dtype=np.float64)
+    msk_sub = np.asfortranarray(mask[idx_arr, :], dtype=bool)
+
+    res = factorlib_core.calc_spanning_test(
+        tgt_sub,
+        bm_subs,
+        lbl_sub,
+        msk_sub,
+        min_names=int(min_names),
+        horizon=max(1, int(horizon)),
+    )
+    mapped_rows = [int(idx_arr[r]) for r in res["row_indices"]]
+    valid_daily = [float(x) for x in res["daily_ic"] if math.isfinite(float(x))]
     return {
-        "n_days": n_days,
-        "mean": mean_v,
-        "std": std_v,
-        "icir": icir,
-        "t_stat": t_stat,
-        "daily_ic": arr.tolist(),
-        "cum_ic": [float(x) for x in cum_ic],
-        "row_indices": dates_idx,
+        "n_days": int(res["valid_days"]),
+        "effective_n": float(res["effective_n"]),
+        "mean": float(res["mean_ic"]),
+        "std": float(res["std_ic"]),
+        "icir": float(res["icir"]),
+        "t_stat": float(res["t_stat"]),
+        "t_stat_adj": float(res["t_stat_adj"]),
+        "daily_ic": valid_daily,
+        "cum_ic": [float(x) for x in res["cum_ic"]],
+        "row_indices": mapped_rows,
     }
 
 
@@ -418,24 +396,60 @@ def audit_candidates(
             mask=panel.valid_mask,
             row_indices=oos_rows,
             min_names=min_names,
+            horizon=horizon,
         )
         resid_icir = float(span["icir"])
         resid_t = float(span["t_stat"])
+        resid_t_adj = float(span.get("t_stat_adj", resid_t))
         gate2_pass = abs(resid_icir) >= min_residual_icir and abs(resid_t) >= min_residual_t
 
         # ------------------------------------------------------------------
-        # 关 3: 二层合成消融校验 (Base vs Base + Candidate)
+        # 关 3: 二层合成消融校验 (严格在 Candidate 有效日期交集上对比 Base vs Base + Candidate)
         # ------------------------------------------------------------------
-        with_ablation = _quick_ridge_oos_sharpe(
-            [*lib_mats, cand_mat],
-            ret_1d=ret_1d,
-            mask=panel.valid_mask,
-            row_indices=oos_rows,
-            min_names=min_names,
+        cand_valid_day_mask = (
+            np.sum(panel.valid_mask[oos_rows] & np.isfinite(cand_mat[oos_rows]), axis=1)
+            >= min_names
         )
-        delta_sharpe = float(with_ablation["sharpe"] - base_ablation["sharpe"])
-        delta_ann_ret = float(with_ablation["ann_ret"] - base_ablation["ann_ret"])
+        ablation_rows = oos_rows[cand_valid_day_mask]
+        if len(ablation_rows) >= 10:
+            cand_base_ablation = _quick_ridge_oos_sharpe(
+                lib_mats,
+                ret_1d=ret_1d,
+                mask=panel.valid_mask,
+                row_indices=ablation_rows,
+                min_names=min_names,
+            )
+            with_ablation = _quick_ridge_oos_sharpe(
+                [*lib_mats, cand_mat],
+                ret_1d=ret_1d,
+                mask=panel.valid_mask,
+                row_indices=ablation_rows,
+                min_names=min_names,
+            )
+        else:
+            cand_base_ablation = base_ablation
+            with_ablation = _quick_ridge_oos_sharpe(
+                [*lib_mats, cand_mat],
+                ret_1d=ret_1d,
+                mask=panel.valid_mask,
+                row_indices=oos_rows,
+                min_names=min_names,
+            )
+        delta_sharpe = float(with_ablation["sharpe"] - cand_base_ablation["sharpe"])
+        delta_ann_ret = float(with_ablation["ann_ret"] - cand_base_ablation["ann_ret"])
         gate3_pass = delta_sharpe > 0.0
+
+        # 解析 DL 家族标识 (同一 FeatureSet 下的 dl_alpha 变体族)
+        family_key: str | None = None
+        if rec.factor_type == "dl_alpha":
+            fs_tag = "default"
+            if rec.recipe_id:
+                rcp = registry.get_recipe(rec.recipe_id)
+                if rcp is not None and rcp.feature_set_id is not None:
+                    fs_tag = f"fs_{rcp.feature_set_id}"
+                elif rcp is not None:
+                    fs_tag = f"h_{rcp.content_hash[:8]}"
+            family_key = f"dl_alpha:{fs_tag}"
 
         all_passed = bool(gate1_pass and gate2_pass and gate3_pass)
         audit_payload = {
@@ -452,7 +466,9 @@ def audit_candidates(
             "dir_consistency": dir_consistency,
             "residual_icir": resid_icir,
             "residual_t_stat": resid_t,
-            "base_sharpe": base_ablation["sharpe"],
+            "residual_t_stat_adj": resid_t_adj,
+            "effective_n": float(span.get("effective_n", len(oos_rows))),
+            "base_sharpe": cand_base_ablation["sharpe"],
             "with_cand_sharpe": with_ablation["sharpe"],
             "delta_sharpe": delta_sharpe,
             "delta_ann_ret": delta_ann_ret,
@@ -460,11 +476,32 @@ def audit_candidates(
             "gate2_pass": gate2_pass,
             "gate3_pass": gate3_pass,
             "all_passed": all_passed,
+            "family_key": family_key,
+            "family_dedup_dropped": False,
             "oos_window": [dates[oos_start] if dates else "", dates[-1] if dates else ""],
         }
         results.append(audit_payload)
 
+    # M8.3 同族 DL 变体去重：同一 FeatureSet 家族仅保留 |residual_icir| 最优的前 2 个代表性变体
+    _apply_dl_family_dedup(results, max_per_family=2)
     return results
+
+
+def _apply_dl_family_dedup(results: list[dict[str, Any]], max_per_family: int = 2) -> None:
+    """标记同一 FeatureSet 下超出 `max_per_family` 配额的次优 `dl_alpha` 变体。"""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in results:
+        fk = item.get("family_key")
+        if fk and "error" not in item:
+            groups.setdefault(str(fk), []).append(item)
+    for _fk, items in groups.items():
+        ranked = sorted(items, key=lambda r: abs(float(r.get("residual_icir", 0.0))), reverse=True)
+        for rank_idx, item in enumerate(ranked, start=1):
+            item["family_rank"] = rank_idx
+            item["family_size"] = len(ranked)
+            if rank_idx > max_per_family and item.get("all_passed"):
+                item["family_dedup_dropped"] = True
+                item["all_passed"] = False
 
 
 def compare_factors(
@@ -583,6 +620,7 @@ def compare_factors(
         mask=panel.valid_mask,
         row_indices=inter_rows,
         min_names=min_names,
+        horizon=horizon,
     )
     raw_target_ic = cum_ic_series[0]["values"]
 
@@ -604,6 +642,8 @@ def compare_factors(
             "benchmark_names": [r.name or f"factor_{r.id}" for r in records[1:]],
             "residual_icir": span_res["icir"],
             "residual_t_stat": span_res["t_stat"],
+            "residual_t_stat_adj": span_res.get("t_stat_adj", span_res["t_stat"]),
+            "effective_n": span_res.get("effective_n", len(span_res["row_indices"])),
             "residual_mean_ic": span_res["mean"],
             "dates": [dates[i] for i in span_res["row_indices"]],
             "cum_residual_ic": span_res["cum_ic"],

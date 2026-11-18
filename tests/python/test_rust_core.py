@@ -763,3 +763,51 @@ def test_compound_forward_labels_parity():
     for k in ["r_exec_next", *[f"y_{h}" for h in horizons]]:
         assert rust_out[k].flags.writeable is False
         np.testing.assert_allclose(rust_out[k], ref_out[k], rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_spanning_test_rust_parity_and_collinearity():
+    """验证 M8.3 Rust `calc_spanning_test` / `Engine.spanning_test` 与 `ops_ref.spanning_test_ref` 对账。"""
+    rng = np.random.default_rng(2027)
+    T, N = 45, 16
+    cand = _make_noisy_matrix(rng, T, N, nan_prob=0.15)
+    b1 = _make_noisy_matrix(rng, T, N, nan_prob=0.10)
+    b2 = _make_noisy_matrix(rng, T, N, nan_prob=0.10)
+    b3_collinear = np.asfortranarray(2.0 * b1 - 3.5)
+    lbl = _make_noisy_matrix(rng, T, N, nan_prob=0.05) * 0.01
+    mask = np.asfortranarray(rng.random((T, N)) > 0.1, dtype=bool)
+
+    rust_res = factorlib_core.calc_spanning_test(
+        cand, [b1, b2, b3_collinear], lbl, mask, min_names=5, horizon=5
+    )
+    ref_res = ops_ref.spanning_test_ref(
+        cand, [b1, b2, b3_collinear], lbl, mask, min_names=5, horizon=5
+    )
+
+    assert rust_res["valid_days"] == ref_res["valid_days"]
+    assert rust_res["row_indices"] == ref_res["row_indices"]
+    assert rust_res["daily_ic"].flags.writeable is False
+    assert rust_res["cum_ic"].flags.writeable is False
+    assert abs(rust_res["mean_ic"] - ref_res["mean_ic"]) < 1e-10
+    assert abs(rust_res["icir"] - ref_res["icir"]) < 1e-10
+    assert abs(rust_res["t_stat"] - ref_res["t_stat"]) < 1e-9
+    assert abs(rust_res["t_stat_adj"] - ref_res["t_stat_adj"]) < 1e-9
+    np.testing.assert_allclose(
+        rust_res["daily_ic"], ref_res["daily_ic"], rtol=1e-9, atol=1e-9, equal_nan=True
+    )
+
+    # Engine.spanning_test 行切片对账
+    eng = factorlib_core.Engine(
+        {"cand": cand, "b1": b1},
+        mask,
+        {"y_5": np.asfortranarray(lbl)},
+        [f"d_{i}" for i in range(T)],
+        [f"S_{j}" for j in range(N)],
+    )
+    slice_res = eng.spanning_test(
+        "cand", [b1], label_name="y_5", min_names=5, horizon=5, start_row=10, end_row=35
+    )
+    sub_ref = ops_ref.spanning_test_ref(
+        cand[10:35], [b1[10:35]], lbl[10:35], mask[10:35], min_names=5, horizon=5
+    )
+    assert abs(slice_res["icir"] - sub_ref["icir"]) < 1e-9
+    assert [r - 10 for r in slice_res["row_indices"]] == sub_ref["row_indices"]

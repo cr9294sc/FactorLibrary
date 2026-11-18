@@ -11,6 +11,7 @@ use factorlib_core::metrics::ic::{
     calc_ic_metrics, calc_ic_series, compute_fractional_ranks, pearson_correlation,
 };
 use factorlib_core::metrics::quantile::{calc_quantile_metrics, calc_top_quantile_turnover};
+use factorlib_core::metrics::spanning::calc_spanning_metrics;
 use factorlib_core::metrics::turnover::calc_turnover_metrics;
 use ndarray::{Array2, ShapeBuilder};
 use proptest::prelude::*;
@@ -276,4 +277,62 @@ proptest! {
         prop_assert!((mat[[0, 1]] - mat[[1, 0]]).abs() < 1e-12);
         prop_assert!(mat[[0, 1]] >= -1.0 - 1e-12 && mat[[0, 1]] <= 1.0 + 1e-12);
     }
+
+    #[test]
+    fn prop_spanning_invariance_under_linear_benchmark_shift(
+        alpha in -3.0f64..3.0,
+        beta in -2.5f64..2.5,
+    ) {
+        let t = 12;
+        let n = 10;
+        let mut bench = Array2::<f64>::zeros((t, n).f());
+        let mut pure_alpha = Array2::<f64>::zeros((t, n).f());
+        let mut label = Array2::<f64>::zeros((t, n).f());
+        let mask = Array2::<bool>::from_elem((t, n).f(), true);
+
+        for r in 0..t {
+            for c in 0..n {
+                let x = ((r * 3 + c * 7) % 19) as f64 - 9.0;
+                let e = (((r + 1) * (c + 2)) % 17) as f64 - 8.0 + 0.03 * (c as f64);
+                bench[[r, c]] = x;
+                pure_alpha[[r, c]] = alpha + beta * x + e;
+                label[[r, c]] = e * 0.01 + (c as f64) * 0.002;
+            }
+        }
+
+        let res_shifted = calc_spanning_metrics(&pure_alpha, &[bench.view()], &label, &mask, 5, 5);
+        let res_base = calc_spanning_metrics(&pure_alpha, &[bench.view()], &label, &mask, 5, 1);
+
+        prop_assert!(res_shifted.valid_days > 0);
+        prop_assert!((res_shifted.icir - res_base.icir).abs() < 1e-12);
+        prop_assert!((res_shifted.t_stat_adj - res_base.t_stat / 5.0_f64.sqrt()).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn test_spanning_rejects_exact_linear_combination() {
+    let t = 10;
+    let n = 12;
+    let mut b1 = Array2::<f64>::zeros((t, n).f());
+    let mut b2 = Array2::<f64>::zeros((t, n).f());
+    let mut cand_spanned = Array2::<f64>::zeros((t, n).f());
+    let mut label = Array2::<f64>::zeros((t, n).f());
+    let mask = Array2::<bool>::from_elem((t, n).f(), true);
+
+    for r in 0..t {
+        for c in 0..n {
+            let v1 = ((c as f64) + 1.0) * (1.0 + 0.05 * (r as f64));
+            let v2 = ((c * c) as f64) * 0.1 - (r as f64) * 0.2;
+            b1[[r, c]] = v1;
+            b2[[r, c]] = v2;
+            cand_spanned[[r, c]] = 1.5 * v1 - 0.8 * v2 + 3.0;
+            label[[r, c]] = v1 * 0.01;
+        }
+    }
+
+    let metrics =
+        calc_spanning_metrics(&cand_spanned, &[b1.view(), b2.view()], &label, &mask, 5, 5);
+    assert_eq!(metrics.valid_days, 0);
+    assert_eq!(metrics.icir, 0.0);
+    assert_eq!(metrics.t_stat, 0.0);
 }

@@ -1456,18 +1456,20 @@ class FactorWorkbenchService:
             # A 股默认内置 3 个经典截面种子因子
             from factorlib.core.evaluate import evaluate_factor
 
+            price_col = "close_hfq" if "close_hfq" in panel.fields else "close"
+            liq_col = "turnover_rate" if "turnover_rate" in panel.fields else "log_amount"
             stk_seeds = [
                 {
                     "name": "stk_rev_20d",
-                    "expr": "-pct_change(close, 20)",
+                    "expr": f"-pct_change({price_col}, 20)",
                     "sign": 1,
                     "description": "A股20日价格短期反转因子",
                 },
                 {
-                    "name": "stk_low_turnover_10d",
-                    "expr": "-ts_mean(turnover_rate, 10)",
+                    "name": "stk_low_liq_10d",
+                    "expr": f"-ts_mean({liq_col}, 10)",
                     "sign": 1,
-                    "description": "A股10日低换手率异象因子",
+                    "description": "A股10日低成交/换手异象因子",
                 },
                 {
                     "name": "stk_low_vol_20d",

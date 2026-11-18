@@ -1439,3 +1439,34 @@ class StockMarketAdapter(MarketAdapter):
 3. **配置校验与多市场构建入口**：
    - 新增 `configs/stocks/{data,universe,fees,backtest,gp_default,ml_default}.yaml` 与 `core/config.py` 强校验（费率非负、`min_commission >= 0`、`lot_size == 100`）；
    - `scripts/build_panel.py --market stocks` 支持独立构建 `data/derived/stocks/<version>/` 派生研究面板。
+
+---
+
+## 21. 混合投研控制面与 1m 扩展层契约 (Phase 1)
+
+依据 `docs/superpowers/specs/2026-11-14-hybrid-research-and-dl-alpha-design.md` 第一阶段规划，平台完成了共享控制面、双市场隔离与 `1m` 扩展特征包挂载底座构建：
+
+### 21.1 SQLite WAL 控制面与契约扩展 (`core/registry.py`)
+
+1. **并发与持久性**：`FactorRegistry` 所有连接统一强制开启 `PRAGMA journal_mode = WAL`、`PRAGMA synchronous = NORMAL` 与 `PRAGMA busy_timeout = 5000`，支撑 Web 轻量交互与 CLI 重计算进程并发读写。
+2. **双市场隔离与幂等迁移**：
+   - `factor` 与 `experiment_run` 表增加 `market` 字段（`futures` | `stocks`），`factor` 唯一键升级为 `(market, canon_hash)`；
+   - `_init_db()` 对旧版单市场 `factors.sqlite` 自动备份（`*.bak.<ts>`）并在事务内无损重建迁移至 `PRAGMA user_version = 2`。
+3. **命名特征池 (`feature_set`) 与不可变配方 (`research_recipe`)**：
+   - `feature_set` 表记录各市场的 `1d` 基础字段、挂载 `1m` 扩展包 ID、GP 算子/窗口/常数白名单、辅助因子 ID 与默认后处理 Preset；
+   - `research_recipe` 表对关联 `feature_set`、目标标签 `target_label`、样本切分 `splits`、超参 `params`、`extensions`、`data_version` 与随机种子执行**深拷贝冻结**，按规范化 JSON 内容哈希生成确定性 `recipe_id`（`rcp_<hash>`），并通过 SQLite `BEFORE UPDATE` 触发器禁止篡改历史配方。
+4. **`dl_alpha` 因子契约 (`core/registry.py`, `core/probe.py`, `ml/pipeline.py`)**：
+   - `factor_type` 与 `source` 扩展支持 `dl_alpha`（`experiment_run.kind` 扩展 `dl`，`status` 扩展 `queued`/`cancelled`）；
+   - `register_dl_alpha()` 统一将样本外 `(T, N)` 矩阵落盘至 `materialized/<market>/`、登记 `candidate` 因子并锁定初始不可变版本；`FactorDefinition` / `probe_factor` / `evaluate_factor_definition` / `WalkForwardPipeline.from_registry` 全面打通 `dl_alpha` 同构后处理与多因子合成。
+
+### 21.2 1m 扩展特征包挂载与双市场 CLI `--recipe` 闭环
+
+1. **扩展包契约 (`core/extensions.py`, `core/panel.py`)**：
+   - 扩展包目录包含 `pack.json` 与 `features.parquet`，强制声明 `lag_days >= 0` 与 `asof_rule`（`T_close` | `T+1_open`），未声明者拒绝解析；`kind="intraday_tensor"` 预留为远期多模态接口；
+   - `Panel.attach_extension()` 校验市场一致、按 `lag_days` 强制因果平移后写入 Fortran 列优先 `Panel.fields` 并记录进 `meta["extensions"]`。
+2. **`MarketProfile` 扩展接口 (`markets/{futures,stocks}/extensions.py`)**：
+   - `MarketProfile` 新增 `config_path()`、`list_extensions()`、`attach_extensions()`、`minute_pack_builder()`，并在 `PanelSpec.extensions` 中支持加载即挂载；
+   - `FuturesMinutePackBuilder` 独立封装期货 `1m` 扩展包产出（解耦自 `1d` 主面板）；`StocksMinutePackBuilder` 预留 A 股 `1m` 连续竞价抽取协议。
+3. **CLI 配方执行入口 (`scripts/run_gp.py`, `scripts/run_ml.py`)**：
+   - 新增 `--recipe <id>`、`--market {futures,stocks}` 与 `--extension <pack_id>` 参数；
+   - 通过 `--recipe` 启动时，直接由 `MarketProfile` 加载冻结面板与扩展包、使用冻结 `FeatureSet` 裁剪 `PrimitiveSet` / 合成特征池、写入 `experiment_run` 心跳与 `pid`，并将 `GP` 挖掘产出默认以 `status = 'candidate'` 入库等待审核。

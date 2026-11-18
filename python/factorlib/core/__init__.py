@@ -15,6 +15,13 @@ from factorlib.core.evaluate import (
     register_seed_factors,
     run_factor_workflow,
 )
+from factorlib.core.extensions import (
+    ExtensionPack,
+    ExtensionPackMeta,
+    discover_extension_packs,
+    resolve_extension_pack,
+    save_extension_pack,
+)
 from factorlib.core.panel import Panel
 from factorlib.core.probe import (
     FactorDefinition,
@@ -31,6 +38,8 @@ from factorlib.core.registry import (
     FactorRecord,
     FactorRegistry,
     FactorVersionRecord,
+    FeatureSetRecord,
+    ResearchRecipeRecord,
 )
 from factorlib.core.styles import (
     STYLE_DEFINITIONS,
@@ -46,6 +55,11 @@ from factorlib.core.workbench import (
 
 __all__ = [
     "Panel",
+    "ExtensionPack",
+    "ExtensionPackMeta",
+    "discover_extension_packs",
+    "resolve_extension_pack",
+    "save_extension_pack",
     "FactorCatalog",
     "POSTPROCESS_SPECS",
     "RECOMMENDED_POSTPROCESS_PRESETS",
@@ -64,6 +78,8 @@ __all__ = [
     "FactorRecord",
     "FactorMetricsRecord",
     "FactorVersionRecord",
+    "FeatureSetRecord",
+    "ResearchRecipeRecord",
     "ExperimentRunRecord",
     "FactorEvaluationResult",
     "DualLayerWorkflowResult",

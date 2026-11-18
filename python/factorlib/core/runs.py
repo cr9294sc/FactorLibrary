@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -44,6 +45,9 @@ class RunTracker:
         config_yaml: str = "",
         data_version: str = "v1",
         registry: FactorRegistry | None = None,
+        market: str = "futures",
+        recipe_id: str | None = None,
+        pid: int | None = None,
     ) -> None:
         now = dt.datetime.now(dt.UTC)
         if run_id is None:
@@ -52,6 +56,9 @@ class RunTracker:
 
         self.run_id = run_id
         self.kind = kind
+        self.market = str(market).strip().lower() or "futures"
+        self.recipe_id = recipe_id
+        self.pid = os.getpid() if pid is None else int(pid)
         self.runs_root = Path(runs_root)
         self.run_dir = self.runs_root / self.run_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -77,20 +84,28 @@ class RunTracker:
             self.registry.record_run(
                 ExperimentRunRecord(
                     run_id=self.run_id,
+                    market=self.market,
                     kind=self.kind,
+                    recipe_id=self.recipe_id,
                     config_yaml=self.config_yaml or f"{self.kind}_run",
                     data_version=self.data_version,
                     git_sha=self.git_sha,
                     n_evaluated=0,
                     started_at=self.started_at,
                     status="running",
+                    pid=self.pid,
+                    heartbeat_at=self.started_at,
+                    run_dir=str(self.run_dir),
                 )
             )
 
     def _write_meta(self) -> None:
         meta = {
             "run_id": self.run_id,
+            "market": self.market,
             "kind": self.kind,
+            "recipe_id": self.recipe_id,
+            "pid": self.pid,
             "data_version": self.data_version,
             "git_sha": self.git_sha,
             "started_at": self.started_at,
@@ -101,6 +116,35 @@ class RunTracker:
         (self.run_dir / "run_meta.json").write_text(
             json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+
+    def update_heartbeat(
+        self,
+        progress: dict[str, Any] | None = None,
+        log_tail: str | None = None,
+    ) -> None:
+        """刷新运行心跳（落盘 `heartbeat.json` 并同步 SQLite `experiment_run`）。"""
+        now_str = dt.datetime.now(dt.UTC).isoformat()
+        hb_payload = {
+            "run_id": self.run_id,
+            "market": self.market,
+            "kind": self.kind,
+            "recipe_id": self.recipe_id,
+            "pid": self.pid,
+            "heartbeat_at": now_str,
+            "progress": progress or {},
+            "log_tail": log_tail,
+        }
+        (self.run_dir / "heartbeat.json").write_text(
+            json.dumps(hb_payload, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        if self.registry is not None:
+            self.registry.update_run_heartbeat(
+                self.run_id,
+                progress=progress,
+                log_tail=log_tail,
+                pid=self.pid,
+            )
 
     def log_generation(self, stats: Any) -> None:
         """向 `generations.jsonl` 追加单代演化统计记录。"""

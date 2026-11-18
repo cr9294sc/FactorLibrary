@@ -20,9 +20,10 @@ from typing import Any
 
 import numpy as np
 
+from factorlib.core._hooks import resolve_panel_market
 from factorlib.core.config import GPConfig
 from factorlib.core.panel import Panel
-from factorlib.core.registry import FactorRegistry
+from factorlib.core.registry import FactorRegistry, FeatureSetRecord
 from factorlib.core.runs import RunTracker
 from factorlib.gp.admission import AdmissionPipeline, AdmissionSummary, AdmittedFactor
 from factorlib.gp.canon import canonicalize_population
@@ -76,11 +77,22 @@ class GPEngine:
         registry: FactorRegistry | None = None,
         pset: PrimitiveSet | None = None,
         tracker: RunTracker | None = None,
+        market: str | None = None,
+        recipe_id: str | None = None,
+        feature_set: FeatureSetRecord | dict[str, Any] | None = None,
+        register_status: str = "accepted",
     ) -> None:
         self.cfg = cfg
         self.panel = panel
         self.registry = registry
         self.tracker = tracker
+        self.market = (
+            str(market).strip().lower()
+            if market is not None
+            else resolve_panel_market(panel, default="futures")
+        )
+        self.recipe_id = recipe_id
+        self.register_status = register_status
         self.rust_engine = panel.to_rust_engine()
 
         # 解析目标预测标签与持有期 h
@@ -113,9 +125,32 @@ class GPEngine:
                 int(self.train_slice[1] * (1.0 - self.cfg.fitness.min_coverage + 0.20)),
             )
 
-        self.pset = (
-            pset if pset is not None else PrimitiveSet.from_panel(panel, max_window=max_cov_win)
-        )
+        if pset is not None:
+            self.pset = pset
+        else:
+            fs_dict = (
+                feature_set.to_snapshot_dict()
+                if isinstance(feature_set, FeatureSetRecord)
+                else (dict(feature_set) if isinstance(feature_set, dict) else {})
+            )
+            base_fields_wl = fs_dict.get("base_fields") or None
+            if base_fields_wl is not None:
+                wl_list = [str(x) for x in base_fields_wl]
+                for ext_item in getattr(panel, "attached_extensions", []):
+                    if isinstance(ext_item, dict):
+                        wl_list.extend(str(ef) for ef in ext_item.get("fields", []))
+                fields_wl: Sequence[str] | None = wl_list
+            else:
+                fields_wl = None
+
+            self.pset = PrimitiveSet.from_panel(
+                panel,
+                windows=fs_dict.get("windows") or None,
+                constants=fs_dict.get("constants") or None,
+                max_window=max_cov_win,
+                fields_whitelist=fields_wl,
+                operators_whitelist=fs_dict.get("operators") or None,
+            )
         self.variation = VariationPipeline(
             pset=self.pset,
             limits=self.cfg.limits,
@@ -261,23 +296,40 @@ class GPEngine:
         return tr_fallback, va_fallback, te_fallback, eff_splits, eff_min_names, max(1, tr_active)
 
     def _load_library_train_matrices(self) -> list[np.ndarray]:
-        """预加载 SQLite 注册表中已入库因子的训练集矩阵，用于计算冗余惩罚。"""
+        """预加载 SQLite 注册表中已入库因子的训练集矩阵，用于计算冗余惩罚（支持表达因子与 dl_alpha）。"""
         if self.registry is None:
             return []
-        lib_factors = self.registry.list_factors(status="accepted") + self.registry.list_factors(
-            status="active"
-        )
+        lib_factors = self.registry.list_factors(
+            status="accepted", market=self.market
+        ) + self.registry.list_factors(status="active", market=self.market)
         if not lib_factors:
             return []
 
-        exprs = list({f.canon_expr for f in lib_factors})
-        raw_mats = self.rust_engine.eval_batch_safe(exprs, use_cache=True, canonicalize=False)
-        s_row, e_row = self.train_slice
+        from factorlib.core.probe import _load_dl_alpha_matrix
+
+        exprs: list[str] = []
         mats: list[np.ndarray] = []
-        for m in raw_mats:
-            if m is not None:
-                arr = np.asfortranarray(np.asarray(m)[s_row:e_row])
-                mats.append(arr)
+        s_row, e_row = self.train_slice
+        seen_exprs: set[str] = set()
+
+        for f in lib_factors:
+            if f.factor_type == "expression":
+                if f.canon_expr not in seen_exprs:
+                    seen_exprs.add(f.canon_expr)
+                    exprs.append(f.canon_expr)
+            elif f.materialization_path:
+                try:
+                    full_mat = _load_dl_alpha_matrix(f.materialization_path, self.panel)
+                    mats.append(np.asfortranarray(full_mat[s_row:e_row]))
+                except Exception:
+                    continue
+
+        if exprs:
+            raw_mats = self.rust_engine.eval_batch_safe(exprs, use_cache=True, canonicalize=False)
+            for m in raw_mats:
+                if m is not None:
+                    arr = np.asfortranarray(np.asarray(m)[s_row:e_row])
+                    mats.append(arr)
         return mats
 
     @property
@@ -534,6 +586,19 @@ class GPEngine:
         # Gen 0 (初始种群评估) + Gen 1..generations 演化
         for gen_idx in range(self.cfg.generations + 1):
             stats = self.evolve_one_generation(gen_idx)
+            if self.tracker is not None and (
+                gen_idx == 0 or gen_idx % 5 == 0 or gen_idx == self.cfg.generations
+            ):
+                self.tracker.update_heartbeat(
+                    progress={
+                        "stage": "evolve",
+                        "generation": gen_idx,
+                        "total_generations": self.cfg.generations,
+                        "best_ic_ir": stats.best_ic_ir,
+                        "best_fitness": stats.best_fitness,
+                        "unique_evaluated": stats.total_unique_evaluated,
+                    }
+                )
             if gen_idx == 0 or gen_idx % 5 == 0 or gen_idx == self.cfg.generations:
                 logger.info(
                     "[Gen %02d/%02d] BestFit=%.4f | BestICIR=%+.3f | Unique=%d/%d | NewEval=%d | Nodes=%.1f | %.1fms | %s",
@@ -564,6 +629,9 @@ class GPEngine:
             mode=self.cfg.mode,
             data_version=data_version,
             splits=self.effective_splits,
+            market=self.market,
+            recipe_id=self.recipe_id,
+            register_status=self.register_status,
         )
         corr_slice = (self.train_slice[0], self.valid_slice[1])
         summary = admission_pipe.run(

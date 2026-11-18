@@ -74,9 +74,12 @@ class FactorEvaluationResult:
         name: str | None = None,
         factor_type: str = "expression",
         definition_json: str | None = None,
+        market: str = "futures",
+        recipe_id: str | None = None,
     ) -> FactorRecord:
         """转换为可直接写入 SQLite 注册表的 FactorRecord 对象。"""
         return FactorRecord(
+            market=market,
             canon_expr=self.canon_expr,
             canon_hash=self.canon_hash,
             mode="cs",
@@ -85,6 +88,7 @@ class FactorEvaluationResult:
             depth=self.depth,
             source=source,
             source_run=source_run,
+            recipe_id=recipe_id,
             data_version=data_version,
             status=status,
             metrics=list(self.all_metrics),
@@ -851,10 +855,12 @@ def run_factor_workflow(
     ver_num: int | None = None
     if registry is not None:
         rec = eval_res.to_factor_record(
-            source="manual",
+            source="dl_alpha" if defn.factor_type == "dl_alpha" else "manual",
             name=defn.name,
             factor_type=defn.factor_type,
             definition_json=defn.to_json(),
+            market=resolved_profile.name,
+            recipe_id=getattr(defn, "recipe_id", None),
         )
         fid = registry.register_factor(rec, upsert=True)
         if materialize:
@@ -924,10 +930,14 @@ def register_seed_factors(
     engine_or_panel: factorlib_core.Engine | Panel,
     run_id: str = "seed_init",
     status: str = "accepted",
+    market: str | None = None,
 ) -> list[int]:
     """批量评估并将 4 大经典种子因子原子化登记入库 factors.sqlite。"""
     seed_defs = get_seed_factors()
     registered_ids = []
+    eff_market = market or (
+        resolve_panel_market(engine_or_panel) if isinstance(engine_or_panel, Panel) else "futures"
+    )
 
     for s_def in seed_defs:
         res = evaluate_factor(
@@ -940,6 +950,7 @@ def register_seed_factors(
             source_run=run_id,
             status=status,
             name=s_def["name"],
+            market=eff_market,
         )
         fid = registry.register_factor(rec, run_id=run_id, upsert=True)
         registered_ids.append(fid)

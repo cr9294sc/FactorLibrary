@@ -415,10 +415,8 @@ class GPConfig:
         return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True)
 
 
-def load_gp_config(path: Path) -> GPConfig:
-    """加载并强校验 ``gp_default.yaml``。"""
-    raw = _load_yaml(path)
-
+def gp_config_from_dict(raw: dict[str, Any]) -> GPConfig:
+    """从字典构建并强校验 `GPConfig`（供 YAML 与 Recipe 快照共用）。"""
     mig = _section(raw, "migration")
     lim = _section(raw, "limits")
     var = _section(raw, "variation")
@@ -454,6 +452,11 @@ def load_gp_config(path: Path) -> GPConfig:
         fitness=FitnessConfig(**fit),
         admission=AdmissionConfig(**adm),
     )
+
+
+def load_gp_config(path: Path) -> GPConfig:
+    """加载并强校验 ``gp_default.yaml``。"""
+    return gp_config_from_dict(_load_yaml(path))
 
 
 @dataclass(frozen=True)
@@ -551,9 +554,8 @@ class MLConfig:
         return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True)
 
 
-def load_ml_config(path: Path) -> MLConfig:
-    """加载并强校验 ``ml_default.yaml``。"""
-    raw = _load_yaml(path)
+def ml_config_from_dict(raw: dict[str, Any]) -> MLConfig:
+    """从字典构建并强校验 `MLConfig`（供 YAML 与 Recipe 快照共用）。"""
     wf_sec = _section(raw, "walk_forward")
     lgb_sec = _section(raw, "lightgbm")
 
@@ -576,6 +578,11 @@ def load_ml_config(path: Path) -> MLConfig:
         lightgbm=LightGBMConfig(**lgb_sec),
         models=models_tuple,
     )
+
+
+def load_ml_config(path: Path) -> MLConfig:
+    """加载并强校验 ``ml_default.yaml``。"""
+    return ml_config_from_dict(_load_yaml(path))
 
 
 @dataclass(frozen=True)

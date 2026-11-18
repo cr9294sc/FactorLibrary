@@ -72,6 +72,16 @@ AUX_NON_DSL_FIELDS: frozenset[str] = frozenset(
         "adv20_turnover",
         "listed_days",
         "in_universe",
+        "in_universe_mask",
+        "limit_mask",
+        "ex_cum_factor",
+        "is_suspended",
+        "is_st",
+        "can_buy_mask",
+        "can_sell_mask",
+        "bench_fwd_open_1",
+        "bench_fwd_close_1",
+        "bench_ret",
     }
 )
 
@@ -180,11 +190,19 @@ class PrimitiveSet:
         constants: Sequence[float] | None = None,
         include_group_ops: bool = False,
         max_window: int | None = None,
+        fields_whitelist: Sequence[str] | None = None,
+        operators_whitelist: Sequence[str] | None = None,
     ) -> PrimitiveSet:
-        """从 `Panel` 实例自动提取合法 DSL 特征字段构建 `PrimitiveSet`。"""
+        """从 `Panel` 实例自动提取合法 DSL 特征字段构建 `PrimitiveSet`（支持特征池白名单裁剪）。"""
         all_fields = list(panel.fields.keys())
         dsl_fields = [f for f in all_fields if f not in AUX_NON_DSL_FIELDS]
-        if not dsl_fields:
+        if fields_whitelist is not None:
+            allowed = {str(f) for f in fields_whitelist if str(f).strip()}
+            filtered_fields = [f for f in dsl_fields if f in allowed]
+            if not filtered_fields:
+                raise ValueError(f"FeatureSet 字段白名单 {sorted(allowed)} 与面板可用字段无交集")
+            dsl_fields = filtered_fields
+        elif not dsl_fields:
             dsl_fields = all_fields
 
         win_pool = list(windows) if windows is not None else list(DEFAULT_WINDOWS)
@@ -193,10 +211,21 @@ class PrimitiveSet:
             win_pool = filtered if filtered else [min(win_pool)]
 
         const_pool = constants if constants is not None else DEFAULT_CONSTANTS
+
+        ops: tuple[OperatorPrimitive, ...] | None = None
+        if operators_whitelist is not None:
+            allowed_ops = {str(op).strip() for op in operators_whitelist if str(op).strip()}
+            all_ops = load_core_operators(include_group_ops=include_group_ops)
+            filtered_ops = tuple(op for op in all_ops if op.name in allowed_ops)
+            if not filtered_ops:
+                raise ValueError(f"FeatureSet 算子白名单 {sorted(allowed_ops)} 未匹配任何有效算子")
+            ops = filtered_ops
+
         return cls(
             fields=dsl_fields,
             windows=win_pool,
             constants=const_pool,
+            operators=ops,
             include_group_ops=include_group_ops,
         )
 

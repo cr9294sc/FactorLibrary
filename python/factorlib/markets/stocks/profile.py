@@ -15,16 +15,19 @@ from factorlib.core.config import (
     load_stock_data_config,
     load_stock_fees_config,
 )
+from factorlib.core.extensions import ExtensionPackMeta, discover_extension_packs
 from factorlib.core.panel import Panel
 from factorlib.core.probe import PostprocessSpec
 from factorlib.markets.profile import (
     Backtester,
     CostModelSpec,
     ExecutionRules,
+    MinutePackBuilder,
     PanelSpec,
     ResearchPaths,
 )
 from factorlib.markets.stocks.backtest import StocksBacktester
+from factorlib.markets.stocks.extensions import StocksMinutePackBuilder
 from factorlib.markets.stocks.panel_loader import STOCK_AUX_BACKTEST_FIELDS, StockPanelLoader
 from factorlib.markets.stocks.portfolio import build_stocks_portfolio_weights
 from factorlib.markets.stocks.styles import compute_stocks_styles
@@ -46,10 +49,25 @@ class StocksProfile:
             raw_dir=self.root / "data" / "raw" / "stocks",
             derived_dir=derived_dir,
             panel_dir=derived_dir / version,
-            db_path=self.root / "data" / "factors.sqlite",
+            db_path=self.root / "data" / "registry" / "factors.sqlite",
             runs_dir=self.root / "runs",
             config_dir=self.root / "configs" / "stocks",
+            extensions_dir=self.root / "data" / "extensions" / "stocks",
         )
+
+    def config_path(self, kind: str) -> Path:
+        mapping = {
+            "data": "data.yaml",
+            "universe": "universe.yaml",
+            "fees": "fees.yaml",
+            "backtest": "backtest.yaml",
+            "gp": "gp_default.yaml",
+            "ml": "ml_default.yaml",
+        }
+        fname = mapping.get(kind.strip().lower())
+        if fname is None:
+            raise ValueError(f"未知的配置类型 {kind!r}，可选: {sorted(mapping.keys())}")
+        return self.paths().config_dir / fname
 
     def load_panel(self, spec: PanelSpec | None = None) -> Panel:
         s = spec or PanelSpec()
@@ -63,6 +81,8 @@ class StocksProfile:
                 aux_field_names=STOCK_AUX_BACKTEST_FIELDS,
             )
             panel.meta.setdefault("market", self.name)
+            if s.extensions:
+                self.attach_extensions(panel, s.extensions)
             return panel
 
         # 回退从原始 stocks Parquet 目录加载并构造完整 labels + aux_fields
@@ -90,7 +110,31 @@ class StocksProfile:
             benchmark_id=bench_id,
             exec_price_mode=exec_mode,
         )
-        return sdata.to_panel(horizons=horizons)
+        panel = sdata.to_panel(horizons=horizons)
+        if s.extensions:
+            self.attach_extensions(panel, s.extensions)
+        return panel
+
+    def list_extensions(self) -> list[ExtensionPackMeta]:
+        ext_dir = self.paths().extensions_dir
+        if ext_dir is None:
+            return []
+        return discover_extension_packs(ext_dir, market=self.name)
+
+    def attach_extensions(
+        self,
+        panel: Panel,
+        pack_ids: Sequence[str],
+        *,
+        overwrite: bool = False,
+    ) -> Panel:
+        ext_dir = self.paths().extensions_dir
+        for pid in pack_ids:
+            panel.attach_extension(pid, extensions_dir=ext_dir, overwrite=overwrite)
+        return panel
+
+    def minute_pack_builder(self) -> MinutePackBuilder:
+        return StocksMinutePackBuilder(root=self.root)
 
     def build_labels(self, panel: Panel, horizons: Sequence[int]) -> dict[str, np.ndarray]:
         """调用 Rust `build_forward_labels` 统一生成 A 股 T+1 预测收益标签。"""

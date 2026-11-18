@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -18,9 +19,12 @@ import numpy as np
 import polars as pl
 from scipy.stats import spearmanr
 
+from factorlib.core._hooks import resolve_panel_market
 from factorlib.core.config import MLConfig
 from factorlib.core.panel import Panel
-from factorlib.core.registry import FactorRecord, FactorRegistry
+from factorlib.core.probe import FactorDefinition, evaluate_factor_definition
+from factorlib.core.registry import FactorRecord, FactorRegistry, FeatureSetRecord
+from factorlib.core.runs import RunTracker
 from factorlib.ml.dataset import MLDatasetBuilder
 from factorlib.ml.models import (
     EqualWeightModel,
@@ -154,19 +158,43 @@ class WalkForwardPipeline:
         panel: Panel,
         config: MLConfig,
         registry: FactorRegistry,
+        *,
+        market: str | None = None,
+        feature_set: FeatureSetRecord | dict[str, Any] | None = None,
+        factor_ids: Sequence[int] | None = None,
     ) -> WalkForwardPipeline:
-        """从 SQLite 因子库提取指定状态的因子并构建流水线。"""
-        # 按照配置过滤因子 (accepted, active 等)
-        all_factors = registry.list_factors()
-        target_factors: list[FactorRecord] = [
-            f for f in all_factors if f.status in config.features_status
-        ]
+        """从 SQLite 因子库提取指定市场与状态的因子并构建流水线（兼容 `expression`/`code`/`dl_alpha`）。"""
+        eff_market = (
+            str(market).strip().lower()
+            if market is not None
+            else resolve_panel_market(panel, default="futures")
+        )
+        all_factors = registry.list_factors(market=eff_market)
+
+        explicit_ids: set[int] = {int(fid) for fid in factor_ids} if factor_ids else set()
+        if not explicit_ids and feature_set is not None:
+            fs_dict = (
+                feature_set.to_snapshot_dict()
+                if isinstance(feature_set, FeatureSetRecord)
+                else dict(feature_set)
+            )
+            aux_ids = fs_dict.get("aux_factor_ids") or []
+            explicit_ids = {int(fid) for fid in aux_ids}
+
+        if explicit_ids:
+            target_factors: list[FactorRecord] = [
+                f for f in all_factors if f.id in explicit_ids or f.status in config.features_status
+            ]
+        else:
+            target_factors = [f for f in all_factors if f.status in config.features_status]
 
         if not target_factors:
-            # 若指定状态无因子，退回尝试 candidate 或全部因子
+            # 若指定状态无因子，退回尝试 candidate 或全部同市场因子
             target_factors = all_factors
             if not target_factors:
-                raise ValueError("因子注册库中没有任何因子，无法执行多因子合成")
+                raise ValueError(
+                    f"市场 {eff_market!r} 的因子注册库中没有任何因子，无法执行多因子合成"
+                )
 
         engine = panel.to_rust_engine()
         factor_matrices: dict[str, np.ndarray] = {}
@@ -174,7 +202,32 @@ class WalkForwardPipeline:
 
         for f in target_factors:
             name = f.canon_expr
-            factor_matrices[name] = np.asarray(engine.eval(f.canon_expr))
+            if f.factor_type == "expression":
+                mat = np.asarray(engine.eval(f.canon_expr))
+            elif f.factor_type in ("dl_alpha", "code"):
+                if f.definition_json:
+                    import json
+
+                    defn_dict = json.loads(f.definition_json)
+                    if f.materialization_path and not defn_dict.get("materialization_path"):
+                        defn_dict["materialization_path"] = f.materialization_path
+                    defn = FactorDefinition.from_dict(defn_dict)
+                    mat, _ = evaluate_factor_definition(defn, panel, engine=engine)
+                elif f.materialization_path and f.id is not None:
+                    loaded = registry.load_materialized_factor(f.id)
+                    if loaded is None:
+                        raise FileNotFoundError(
+                            f"因子 {f.id} ({f.factor_type}) 缺少可用物化文件: {f.materialization_path}"
+                        )
+                    mat = loaded[0]
+                else:
+                    raise ValueError(
+                        f"因子 {f.id} ({f.factor_type}) 既无 definition_json 也无 materialization_path"
+                    )
+            else:
+                mat = np.asarray(engine.eval(f.canon_expr))
+
+            factor_matrices[name] = mat
             factor_signs[name] = f.sign
 
         return cls(
@@ -185,7 +238,11 @@ class WalkForwardPipeline:
             feature_names=sorted(factor_matrices.keys()),
         )
 
-    def run(self, strict_min_years: bool = True) -> WalkForwardResult:
+    def run(
+        self,
+        strict_min_years: bool = True,
+        tracker: RunTracker | None = None,
+    ) -> WalkForwardResult:
         """执行全流程 Purged Walk-Forward 滚动重训与合成。"""
         # 1. 因子特征预处理
         ds_builder = MLDatasetBuilder(
@@ -227,12 +284,23 @@ class WalkForwardPipeline:
         feature_importances: dict[int, dict[str, float]] = {}
 
         # 3. 逐折推进演化与训练
+        total_folds = len(folds)
         for fold in folds:
             pred_year = fold.predict_year
             train_ds, val_ds, test_ds = ds_builder.get_fold_datasets(fold)
 
             if test_ds.n_samples == 0:
                 continue
+
+            if tracker is not None:
+                tracker.update_heartbeat(
+                    progress={
+                        "stage": "walk_forward",
+                        "fold_idx": fold.fold_idx,
+                        "total_folds": total_folds,
+                        "predict_year": pred_year,
+                    }
+                )
 
             fold_record: dict[str, Any] = {
                 "fold_idx": fold.fold_idx,

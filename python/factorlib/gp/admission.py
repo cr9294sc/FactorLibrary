@@ -102,6 +102,9 @@ class AdmissionPipeline:
         mode: str = "cs",
         data_version: str = "v1",
         splits: dict[str, tuple[str, str]] | None = None,
+        market: str = "futures",
+        recipe_id: str | None = None,
+        register_status: str = "accepted",
     ) -> None:
         self.cfg = cfg or AdmissionConfig()
         self.label_name = label_name
@@ -110,6 +113,9 @@ class AdmissionPipeline:
         self.mode = mode
         self.data_version = data_version
         self.splits = splits
+        self.market = str(market).strip().lower() or "futures"
+        self.recipe_id = recipe_id
+        self.register_status = register_status
 
     def run(
         self,
@@ -134,9 +140,9 @@ class AdmissionPipeline:
         existing_hashes: set[str] = set()
         library_matrices: list[np.ndarray] = []
         if registry is not None:
-            lib_records = registry.list_factors(status="accepted") + registry.list_factors(
-                status="active"
-            )
+            lib_records = registry.list_factors(
+                status="accepted", market=self.market
+            ) + registry.list_factors(status="active", market=self.market)
             lib_exprs: list[str] = []
             for rec in lib_records:
                 existing_hashes.add(rec.canon_hash)
@@ -313,7 +319,9 @@ class AdmissionPipeline:
                     source="gp",
                     source_run=run_id,
                     data_version=self.data_version,
-                    status="accepted",
+                    status=self.register_status,
+                    market=self.market,
+                    recipe_id=self.recipe_id,
                 )
                 f_rec.mode = self.mode
                 fid = registry.register_factor(f_rec, run_id=run_id, upsert=True)
@@ -333,7 +341,7 @@ class AdmissionPipeline:
                 valid_ic_ir=val_ir,
                 valid_turnover=turnover_val,
                 max_corr=max_abs_rho,
-                status="accepted",
+                status=self.register_status,
                 evaluation=eval_res,
             )
             summary.admitted.append(admitted_obj)

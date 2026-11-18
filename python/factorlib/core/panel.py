@@ -19,6 +19,12 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorlib.core._hooks import resolve_panel_market, resolve_profile
+from factorlib.core.extensions import (
+    ExtensionPack,
+    resolve_extension_pack,
+)
+
 # 允许留在 panel.fields 中供分组与掩码算子使用的结构化辅助字段
 STRUCTURAL_PANEL_AUX_FIELDS: frozenset[str] = frozenset(
     {"sector", "listed_days", "in_universe_mask", "limit_mask"}
@@ -424,3 +430,94 @@ class Panel:
             cache_mb=cache_mb,
             n_threads=n_threads or 0,
         )
+
+    @property
+    def attached_extensions(self) -> list[dict[str, Any]]:
+        """返回当前面板已挂载的扩展特征包元数据列表。"""
+        raw = self.meta.get("extensions", [])
+        return list(raw) if isinstance(raw, list) else []
+
+    def attach_extension(
+        self,
+        pack: ExtensionPack | str | Path,
+        *,
+        fields_subset: Sequence[str] | None = None,
+        overwrite: bool = False,
+        extensions_dir: Path | None = None,
+    ) -> list[str]:
+        """按需挂载日频扩展特征包（例如 1m 微观结构扩展包）到 `Panel.fields`。
+
+        严格校验：
+        1. 扩展包必须显式声明 `lag_days >= 0` 与 `asof_rule`；
+        2. 禁止跨市场挂载（`pack.meta.market` 须与 `panel.meta['market']` 一致）；
+        3. 禁止覆盖 `aux_fields` 与结构化字段；
+        4. 按 `lag_days` 执行严格向前平移后以 Fortran 列优先写入 `self.fields`。
+        """
+        if isinstance(pack, ExtensionPack):
+            ext_pack = pack
+        else:
+            resolved_dir = extensions_dir
+            if resolved_dir is None and not Path(pack).is_dir():
+                market = resolve_panel_market(self)
+                prof = resolve_profile(market)
+                resolved_dir = getattr(prof.paths(), "extensions_dir", None)
+            ext_pack = resolve_extension_pack(pack, extensions_dir=resolved_dir)
+
+        panel_market = self.meta.get("market")
+        if isinstance(panel_market, str) and panel_market.strip():
+            if ext_pack.meta.market != panel_market.strip().lower():
+                raise ValueError(
+                    f"禁止跨市场挂载扩展包: 面板市场为 {panel_market!r}, "
+                    f"扩展包 {ext_pack.meta.pack_id!r} 市场为 {ext_pack.meta.market!r}"
+                )
+
+        aligned = ext_pack.load_aligned_matrices(
+            dates=self.dates,
+            symbols=self.symbols,
+            fields_subset=fields_subset,
+        )
+        attached_cols: list[str] = []
+        for col_name, mat in aligned.items():
+            if col_name in STRUCTURAL_PANEL_AUX_FIELDS or col_name in self.aux_fields:
+                raise ValueError(f"扩展包字段 {col_name!r} 与受保护结构/辅助字段冲突，拒绝挂载")
+            if col_name in self.fields and not overwrite:
+                continue
+            self.fields[col_name] = np.asfortranarray(mat, dtype=np.float64)
+            attached_cols.append(col_name)
+
+        exts = [
+            item
+            for item in self.attached_extensions
+            if isinstance(item, dict) and item.get("pack_id") != ext_pack.meta.pack_id
+        ]
+        exts.append(
+            {
+                "pack_id": ext_pack.meta.pack_id,
+                "version": ext_pack.meta.version,
+                "qualified_id": ext_pack.meta.qualified_id,
+                "market": ext_pack.meta.market,
+                "kind": ext_pack.meta.kind,
+                "lag_days": ext_pack.meta.lag_days,
+                "asof_rule": ext_pack.meta.asof_rule,
+                "source_fingerprint": ext_pack.meta.source_fingerprint,
+                "fields": attached_cols,
+            }
+        )
+        self.meta["extensions"] = exts
+        return attached_cols
+
+    def detach_extension(self, pack_id: str) -> list[str]:
+        """卸载指定 `pack_id`（或 `pack_id@version`）的已挂载扩展字段。"""
+        target_id = str(pack_id).split("@", 1)[0].strip()
+        removed: list[str] = []
+        remaining: list[dict[str, Any]] = []
+        for item in self.attached_extensions:
+            if isinstance(item, dict) and item.get("pack_id") == target_id:
+                for col in item.get("fields", []):
+                    if col in self.fields:
+                        del self.fields[col]
+                        removed.append(col)
+            elif isinstance(item, dict):
+                remaining.append(item)
+        self.meta["extensions"] = remaining
+        return removed

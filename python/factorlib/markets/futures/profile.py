@@ -12,16 +12,19 @@ import yaml
 
 from factorlib.core.catalog import RECOMMENDED_POSTPROCESS_PRESETS
 from factorlib.core.config import PortfolioConfig
+from factorlib.core.extensions import ExtensionPackMeta, discover_extension_packs
 from factorlib.core.panel import Panel
 from factorlib.core.probe import PostprocessSpec
 from factorlib.markets.futures.backtest import FuturesBacktester
 from factorlib.markets.futures.etl.fields import AUX_BACKTEST_FIELDS
+from factorlib.markets.futures.extensions import FuturesMinutePackBuilder
 from factorlib.markets.futures.portfolio import build_futures_portfolio_weights
 from factorlib.markets.futures.styles import compute_futures_styles
 from factorlib.markets.profile import (
     Backtester,
     CostModelSpec,
     ExecutionRules,
+    MinutePackBuilder,
     PanelSpec,
     ResearchPaths,
 )
@@ -43,10 +46,25 @@ class FuturesProfile:
             raw_dir=self.root / "exports",
             derived_dir=derived_dir,
             panel_dir=derived_dir / version,
-            db_path=self.root / "data" / "factors.sqlite",
+            db_path=self.root / "data" / "registry" / "factors.sqlite",
             runs_dir=self.root / "runs",
             config_dir=self.root / "configs" / "futures",
+            extensions_dir=self.root / "data" / "extensions" / "futures",
         )
+
+    def config_path(self, kind: str) -> Path:
+        mapping = {
+            "data": "data.yaml",
+            "universe": "universe.yaml",
+            "fees": "fees.yaml",
+            "backtest": "backtest.yaml",
+            "gp": "gp_default.yaml",
+            "ml": "ml_default.yaml",
+        }
+        fname = mapping.get(kind.strip().lower())
+        if fname is None:
+            raise ValueError(f"未知的配置类型 {kind!r}，可选: {sorted(mapping.keys())}")
+        return self.paths().config_dir / fname
 
     def load_panel(self, spec: PanelSpec | None = None) -> Panel:
         s = spec or PanelSpec()
@@ -58,7 +76,30 @@ class FuturesProfile:
             aux_field_names=AUX_BACKTEST_FIELDS,
         )
         panel.meta.setdefault("market", self.name)
+        if s.extensions:
+            self.attach_extensions(panel, s.extensions)
         return panel
+
+    def list_extensions(self) -> list[ExtensionPackMeta]:
+        ext_dir = self.paths().extensions_dir
+        if ext_dir is None:
+            return []
+        return discover_extension_packs(ext_dir, market=self.name)
+
+    def attach_extensions(
+        self,
+        panel: Panel,
+        pack_ids: Sequence[str],
+        *,
+        overwrite: bool = False,
+    ) -> Panel:
+        ext_dir = self.paths().extensions_dir
+        for pid in pack_ids:
+            panel.attach_extension(pid, extensions_dir=ext_dir, overwrite=overwrite)
+        return panel
+
+    def minute_pack_builder(self) -> MinutePackBuilder:
+        return FuturesMinutePackBuilder(root=self.root)
 
     def build_labels(self, panel: Panel, horizons: Sequence[int]) -> dict[str, np.ndarray]:
         """基于 panel 中的 `exec_vwap` 与 `exec_vwap_old` 调用 Rust 构造期货链式标签。"""

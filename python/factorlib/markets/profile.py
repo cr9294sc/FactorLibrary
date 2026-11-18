@@ -12,6 +12,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from factorlib.core.backtest import BacktestResult
+    from factorlib.core.extensions import ExtensionPackMeta
     from factorlib.core.panel import Panel
     from factorlib.core.probe import PostprocessSpec
 
@@ -40,6 +41,7 @@ class ResearchPaths:
     db_path: Path
     runs_dir: Path
     config_dir: Path
+    extensions_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class PanelSpec:
     start_date: date | str | None = None
     end_date: date | str | None = None
     data_config_path: Path | None = None
+    extensions: Sequence[str] = ()
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -87,14 +90,43 @@ class Backtester(Protocol):
 
 
 @runtime_checkable
+class MinutePackBuilder(Protocol):
+    """各市场 1m 高频日频扩展特征包离线抽取协议。"""
+
+    market: str
+
+    def build_pack(
+        self,
+        output_dir: Path,
+        pack_id: str,
+        version: str = "v1",
+        **kwargs: Any,
+    ) -> ExtensionPackMeta: ...
+
+
+@runtime_checkable
 class MarketProfile(Protocol):
-    """市场领域隔离协议：统一封装路径、面板加载、标签、风格、后处理、组合构建与回测。"""
+    """市场领域隔离协议：统一封装路径、面板加载、扩展挂载、标签、风格、后处理、组合构建与回测。"""
 
     name: str
 
     def paths(self, version: str = "v1") -> ResearchPaths: ...
 
+    def config_path(self, kind: str) -> Path: ...
+
     def load_panel(self, spec: PanelSpec | None = None) -> Panel: ...
+
+    def list_extensions(self) -> list[ExtensionPackMeta]: ...
+
+    def attach_extensions(
+        self,
+        panel: Panel,
+        pack_ids: Sequence[str],
+        *,
+        overwrite: bool = False,
+    ) -> Panel: ...
+
+    def minute_pack_builder(self) -> MinutePackBuilder: ...
 
     def build_labels(self, panel: Panel, horizons: Sequence[int]) -> dict[str, np.ndarray]: ...
 

@@ -272,7 +272,7 @@ def create_synthetic_futures_panel(n_days: int = 120, seed: int = 42) -> Panel:
         mask=valid_mask,
         labels=labels,
         aux_fields=aux_fields,
-        meta={"panel_version": "synthetic_v1", "synthetic": True},
+        meta={"panel_version": "synthetic_v1", "synthetic": True, "market": "futures"},
     )
 
 
@@ -289,7 +289,9 @@ class FactorWorkbenchService:
         gp_config_path: str | Path = "configs/futures/gp_default.yaml",
         ml_config_path: str | Path = "configs/futures/ml_default.yaml",
         force_synthetic: bool = False,
+        market: str = "futures",
     ) -> None:
+        self.market = str(market).strip().lower() or "futures"
         self.panel_dir = Path(panel_dir)
         self.db_path = Path(db_path)
         self.runs_dir = Path(runs_dir)
@@ -300,15 +302,15 @@ class FactorWorkbenchService:
 
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.registry = FactorRegistry(db_path=self.db_path)
-        self.catalog = FactorCatalog(panel_dir=self.panel_dir)
-
         self.panel_source: str = "synthetic"
         self.panel: Panel = self._load_panel(force_synthetic=force_synthetic)
+        self.catalog = FactorCatalog(panel_dir=self.panel_dir, market=self.market, panel=self.panel)
 
     def _load_panel(self, force_synthetic: bool = False) -> Panel:
         if not force_synthetic and (self.panel_dir / "panel_daily.parquet").exists():
             try:
                 p = Panel.load(self.panel_dir)
+                p.meta.setdefault("market", self.market)
                 self.panel_source = "real"
                 return p
             except Exception:
@@ -326,12 +328,12 @@ class FactorWorkbenchService:
         """动态切换真实研究面板与合成演示面板。"""
         if panel_dir is not None:
             self.panel_dir = Path(panel_dir)
-            self.catalog = FactorCatalog(panel_dir=self.panel_dir)
         m = mode.strip().lower()
         if m == "synthetic":
             self.panel = self._load_panel(force_synthetic=True)
         else:
             self.panel = self._load_panel(force_synthetic=False)
+        self.catalog = FactorCatalog(panel_dir=self.panel_dir, market=self.market, panel=self.panel)
         return self.get_context()
 
     # =========================================================================
@@ -342,7 +344,7 @@ class FactorWorkbenchService:
         """Stage 0 获取工作台完整上下文、面板规格、因子库统计与内置模板。"""
         base_ctx = self.catalog.get_context()
         T, N = self.panel.shape
-        all_factors = self.registry.list_factors()
+        all_factors = self.registry.list_factors(market=self.market)
         status_counts = {"candidate": 0, "accepted": 0, "active": 0, "deprecated": 0}
         for f in all_factors:
             status_counts[f.status] = status_counts.get(f.status, 0) + 1
@@ -662,6 +664,7 @@ class FactorWorkbenchService:
             min_icir=min_icir,
             split=split,
             horizon=horizon,
+            market=self.market,
         )
         out: list[dict[str, Any]] = []
         for r in records:
@@ -729,6 +732,7 @@ class FactorWorkbenchService:
             engine_or_panel=self.panel,
             run_id="workbench_seed_init",
             status="accepted",
+            market=self.market,
         )
         return _sanitize_json_value(
             {

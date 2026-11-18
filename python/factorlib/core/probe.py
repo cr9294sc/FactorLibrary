@@ -166,32 +166,42 @@ def parse_postprocess_pipeline(
 
 @dataclass
 class FactorDefinition:
-    """统一因子定义模型（支持 DSL 表达式或 Python `compute(context)` 代码 + 声明式后处理管线）。"""
+    """统一因子定义模型（支持 DSL 表达式、Python `compute(context)` 与 `dl_alpha` 物化因子 + 声明式后处理管线）。"""
 
     name: str = "unnamed_factor"
-    factor_type: str = "expression"  # "expression" | "code"
+    factor_type: str = "expression"  # "expression" | "code" | "dl_alpha"
     expression: str = ""
     code: str = ""
     postprocess: list[PostprocessStep] = field(default_factory=list)
     description: str = ""
+    market: str = "futures"
+    recipe_id: str | None = None
+    materialization_path: str | None = None
 
     def __post_init__(self) -> None:
         self.factor_type = self.factor_type.strip().lower()
-        if self.factor_type not in ("expression", "code"):
+        if self.factor_type not in ("expression", "code", "dl_alpha"):
             raise ValueError(
-                f"factor_type 必须为 'expression' 或 'code', 收到: {self.factor_type!r}"
+                f"factor_type 必须为 'expression'、'code' 或 'dl_alpha', 收到: {self.factor_type!r}"
             )
+        self.market = str(self.market).strip().lower() or "futures"
         self.postprocess = parse_postprocess_pipeline(self.postprocess)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "name": self.name,
             "factor_type": self.factor_type,
             "expression": self.expression,
             "code": self.code,
             "postprocess": [s.to_dict() for s in self.postprocess],
             "description": self.description,
+            "market": self.market,
         }
+        if self.recipe_id is not None:
+            out["recipe_id"] = self.recipe_id
+        if self.materialization_path is not None:
+            out["materialization_path"] = self.materialization_path
+        return out
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
@@ -206,6 +216,13 @@ class FactorDefinition:
             code=str(data.get("code") or ""),
             postprocess=parse_postprocess_pipeline(data.get("postprocess")),
             description=str(data.get("description") or ""),
+            market=str(data.get("market") or "futures"),
+            recipe_id=str(data["recipe_id"]) if data.get("recipe_id") is not None else None,
+            materialization_path=(
+                str(data["materialization_path"])
+                if data.get("materialization_path") is not None
+                else None
+            ),
         )
 
     @classmethod
@@ -367,7 +384,7 @@ def probe_factor(
                         explicit_vars.append({"name": str(f_name), "window": int(f_win)})
             except Exception as exc:
                 errors.append(str(exc))
-    else:
+    elif defn.factor_type == "code":
         fw_list, code_errs = _extract_python_code_dependencies(defn.code)
         errors.extend(code_errs)
         for f_name, f_win in fw_list:
@@ -384,6 +401,17 @@ def probe_factor(
         base_canon_hash = hashlib.sha256(normalized_code.encode("utf-8")).hexdigest()[:16]
         n_nodes = max(1, len(normalized_code.splitlines()))
         depth = 2
+    else:
+        # dl_alpha 契约：基于已物化的纯样本外 (T, N) 矩阵进行相同后处理与准入评估
+        if not defn.recipe_id and not defn.materialization_path:
+            errors.append("dl_alpha 因子必须关联 `recipe_id` 或 `materialization_path`")
+        if defn.materialization_path and not Path(defn.materialization_path).exists():
+            errors.append(f"dl_alpha 物化矩阵文件不存在: {defn.materialization_path}")
+        dl_key = f"{defn.market}:{defn.recipe_id or ''}:{defn.name}"
+        base_canon_expr = f"dl_alpha({defn.recipe_id or defn.name})"
+        base_canon_hash = hashlib.sha256(dl_key.encode("utf-8")).hexdigest()[:16]
+        n_nodes = 1
+        depth = 1
 
     # 2. 分析后处理管线：阶段顺序检查、时序平滑回看窗口与隐式依赖窗口放大
     prev_stage = 0
@@ -778,6 +806,32 @@ def apply_postprocess_pipeline(
     return curr
 
 
+def _load_dl_alpha_matrix(mat_path: str | Path, panel: Panel) -> np.ndarray:
+    """从 `.npz` 物化文件加载 `dl_alpha` 原始样本外矩阵并严格对齐到当前 `Panel` 坐标轴。"""
+    p = Path(mat_path)
+    if not p.exists():
+        raise FileNotFoundError(f"dl_alpha 物化文件不存在: {p}")
+    with np.load(p, allow_pickle=False) as data:
+        src_mat = np.asarray(data["matrix"], dtype=np.float64)
+        src_dates = [str(d)[:10] for d in data["dates"].tolist()]
+        src_syms = [str(s) for s in data["symbols"].tolist()]
+
+    T, N = panel.shape
+    out = np.full((T, N), np.nan, dtype=np.float64, order="F")
+    p_date_map = {str(d)[:10]: i for i, d in enumerate(panel.dates)}
+    p_sym_map = {str(s): j for j, s in enumerate(panel.symbols)}
+
+    row_pairs = [(i, p_date_map[d]) for i, d in enumerate(src_dates) if d in p_date_map]
+    col_pairs = [(j, p_sym_map[s]) for j, s in enumerate(src_syms) if s in p_sym_map]
+    if row_pairs and col_pairs:
+        src_r = np.array([rp[0] for rp in row_pairs], dtype=np.int32)
+        dst_r = np.array([rp[1] for rp in row_pairs], dtype=np.int32)
+        src_c = np.array([cp[0] for cp in col_pairs], dtype=np.int32)
+        dst_c = np.array([cp[1] for cp in col_pairs], dtype=np.int32)
+        out[np.ix_(dst_r, dst_c)] = src_mat[np.ix_(src_r, src_c)]
+    return out
+
+
 def evaluate_factor_definition(
     definition: FactorDefinition | dict[str, Any] | str,
     panel: Panel,
@@ -800,8 +854,12 @@ def evaluate_factor_definition(
     if defn.factor_type == "expression":
         rust_engine = engine if engine is not None else panel.to_rust_engine()
         raw_mat = np.asfortranarray(rust_engine.eval(defn.expression), dtype=np.float64)
-    else:
+    elif defn.factor_type == "code":
         raw_mat = _execute_python_factor(defn.code, panel)
+    else:
+        if not defn.materialization_path:
+            raise ValueError(f"dl_alpha 因子 ({defn.name}) 缺少 materialization_path，无法加载求值")
+        raw_mat = _load_dl_alpha_matrix(defn.materialization_path, panel)
 
     final_mat = apply_postprocess_pipeline(raw_mat, defn.postprocess, panel, profile=profile)
     return final_mat, probe_rep

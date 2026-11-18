@@ -414,14 +414,24 @@ _FALLBACK_FIELDS: list[dict[str, Any]] = [
 class FactorCatalog:
     """统一管理因子开发所需的字段、算子、后处理步骤与风格字典。"""
 
-    def __init__(self, panel_dir: str | Path = "data/derived/futures/v1") -> None:
+    def __init__(
+        self,
+        panel_dir: str | Path = "data/derived/futures/v1",
+        market: str = "futures",
+        panel: Any | None = None,
+    ) -> None:
         self.panel_dir = Path(panel_dir)
-        self.variables: list[dict[str, Any]] = self._load_variables()
+        self.market = str(market).strip().lower() or "futures"
+        self.variables: list[dict[str, Any]] = self._load_variables(panel=panel)
         self.functions: list[dict[str, Any]] = self._load_functions()
         self.postprocess: list[dict[str, Any]] = list(POSTPROCESS_SPECS)
         self.styles: list[dict[str, Any]] = [{**s, "catalog": "styles"} for s in STYLE_DEFINITIONS]
 
-    def _load_variables(self) -> list[dict[str, Any]]:
+    def sync_panel(self, panel: Any) -> None:
+        """同步面板内已加载字段与已挂载 `1m` 扩展特征到变量目录。"""
+        self.variables = self._load_variables(panel=panel)
+
+    def _load_variables(self, panel: Any | None = None) -> list[dict[str, Any]]:
         fields_file = self.panel_dir / "fields.json"
         raw_fields: list[dict[str, Any]] = []
         if fields_file.exists():
@@ -429,8 +439,8 @@ class FactorCatalog:
                 data = json.loads(fields_file.read_text(encoding="utf-8"))
                 raw_fields = data.get("fields", [])
             except Exception:
-                raw_fields = list(_FALLBACK_FIELDS)
-        else:
+                raw_fields = list(_FALLBACK_FIELDS) if self.market == "futures" else []
+        elif self.market == "futures":
             raw_fields = list(_FALLBACK_FIELDS)
 
         out: list[dict[str, Any]] = []
@@ -450,6 +460,34 @@ class FactorCatalog:
                     "description": str(f.get("description", "")),
                 }
             )
+
+        # 补充内存面板中的字段及已挂载 1m 扩展特征包字段
+        if panel is not None and hasattr(panel, "fields"):
+            ext_field_sources: dict[str, str] = {}
+            for ext_meta in getattr(panel, "attached_extensions", []):
+                if isinstance(ext_meta, dict):
+                    pid = str(ext_meta.get("qualified_id") or ext_meta.get("pack_id") or "")
+                    for ef in ext_meta.get("fields", []):
+                        ext_field_sources[str(ef)] = pid
+            for f_name in panel.fields:
+                if f_name in seen:
+                    continue
+                seen.add(f_name)
+                src_pack = ext_field_sources.get(f_name)
+                out.append(
+                    {
+                        "name": f_name,
+                        "catalog": "variables",
+                        "category": "extension" if src_pack else "panel",
+                        "role": "aux"
+                        if f_name in ("sector", "listed_days", "in_universe_mask", "limit_mask")
+                        else "dsl",
+                        "dtype": "float64",
+                        "description": (
+                            f"扩展包 {src_pack} 挂载特征" if src_pack else f"面板字段 {f_name}"
+                        ),
+                    }
+                )
 
         # 确保隐式掩码字段在目录中可见
         for extra in [

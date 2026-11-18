@@ -143,6 +143,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="仅执行挖掘与准入验证，不将结果写入 SQLite 因子库",
     )
     parser.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="使用内置合成演示面板运行 (当本地派生面板未构建时)",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -297,17 +302,34 @@ def run_gp_cli(args: argparse.Namespace, root_dir: Path | None = None) -> int:
 
     cfg = _apply_cli_overrides(cfg, args)
 
-    panel_path = (
-        (args.panel if args.panel.is_absolute() else (root / args.panel))
-        if args.panel is not None
-        else default_panel_path
-    )
-    if not panel_path.exists():
-        logging.error("研究面板目录不存在: %s，请先构建对应市场研究面板", panel_path)
-        return 1
+    if args.synthetic:
+        from factorlib.core.synthetic import (
+            create_synthetic_futures_panel,
+            create_synthetic_stocks_panel,
+        )
 
-    logging.info("正在加载 [%s] 研究面板: %s (extensions=%s)...", market, panel_path, extensions)
-    panel = profile.load_panel(PanelSpec(panel_dir=panel_path, extensions=extensions))
+        logging.info("正在创建 [%s] 合成演示研究面板...", market)
+        panel = (
+            create_synthetic_stocks_panel()
+            if market == "stocks"
+            else create_synthetic_futures_panel()
+        )
+        if extensions:
+            profile.attach_extensions(panel, extensions)
+    else:
+        panel_path = (
+            (args.panel if args.panel.is_absolute() else (root / args.panel))
+            if args.panel is not None
+            else default_panel_path
+        )
+        if not panel_path.exists():
+            logging.error("研究面板目录不存在: %s，请先构建对应市场研究面板", panel_path)
+            return 1
+
+        logging.info(
+            "正在加载 [%s] 研究面板: %s (extensions=%s)...", market, panel_path, extensions
+        )
+        panel = profile.load_panel(PanelSpec(panel_dir=panel_path, extensions=extensions))
     logging.info(
         "面板加载完成: T=%d 交易日, N=%d 标的, %d 特征字段",
         panel.T,

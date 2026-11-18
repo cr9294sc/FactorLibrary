@@ -1470,3 +1470,20 @@ class StockMarketAdapter(MarketAdapter):
 3. **CLI 配方执行入口 (`scripts/run_gp.py`, `scripts/run_ml.py`)**：
    - 新增 `--recipe <id>`、`--market {futures,stocks}` 与 `--extension <pack_id>` 参数；
    - 通过 `--recipe` 启动时，直接由 `MarketProfile` 加载冻结面板与扩展包、使用冻结 `FeatureSet` 裁剪 `PrimitiveSet` / 合成特征池、写入 `experiment_run` 心跳与 `pid`，并将 `GP` 挖掘产出默认以 `status = 'candidate'` 入库等待审核。
+
+---
+
+## 22. Web 分市场工作区与异步闭环改造 (Phase 2)
+
+依据 `docs/superpowers/specs/2026-11-14-hybrid-research-and-dl-alpha-design.md` 第二阶段与架构计划 M5.3 / M7 规范，平台完成以下单栈服务端、双市场前端工作区与异步审核闭环改造：
+
+1. **FastAPI 单栈服务端与市场路由隔离 (`factorlib/workbench_server.py`, `core/workbench.py`, `core/synthetic.py`)**：
+   - 将 `fastapi` 与 `uvicorn` 正式纳入 `pyproject.toml` 必选依赖并锁定 `uv.lock`，移除旧标准库 `ThreadingHTTPServer` 分支；
+   - 所有 REST 接口统一迁移至 `/api/{market}/...`（`futures` | `stocks`），旧阻塞式 `/api/pipeline/run` 按 M5.3 返回 HTTP `410 Gone` 并指引至异步 `POST /api/{market}/runs`；
+   - `FactorWorkbenchService` 实现按市场惰性加载与隔离缓存（A 股面板缺省提供 `create_synthetic_stocks_panel()` 并支持按需切换 `data/raw/stocks` 真实数据）。
+2. **零构建 ES 模块化分市场工作区 (`python/factorlib/frontend/`)**：
+   - 彻底去除外部 CDN 依赖，基于原生 CSS 变量（`--mk` 期货蓝 / A 股红）与 `<script type="module">` 拆分为 `main.js`、`api.js`、`state.js`、`router.js`、`components/charts.js` 与 `pages/{data,lab,compare,mining,registry}.js`；
+   - 落地顶层市场域切换器与域内 5 大页面：`#/futures|stocks/data`（体检 + `1d` 真实 K 线/组合 + `1m` 扩展包挂载 + `FeatureSet` 编辑器）、`.../lab`（Catalog + 双模态 + 后处理链 + 实时探针）、`.../compare`（单因子双层诊断 + 2~6 因子严格交集 A/B 对比）、`.../mining`（配方冻结 + 独立后台子进程派发 + 实时心跳/日志抽屉）、`.../registry`（`candidate` 队列 + 批量三关准入审计 + 晋升/驳回）。
+3. **后台独立子进程闭环与三关准入审计 (`scripts/run_dl.py`, `core/admission_audit.py`)**：
+   - `POST /api/{market}/runs` 以 `start_new_session=True` 派生独立后台进程执行 `run_gp.py` / `run_ml.py` / `run_dl.py`（Phase 2 Purged Walk-Forward 基线预览），立即返回 `run_id` 与 `pid`，支持刷新恢复、日志尾行查看与 `SIGTERM` 中止；
+   - 新增 `core/admission_audit.py`，打通候选因子三关准入审计（关 1 Rust `cross_correlation` 去重 + 关 2 Spanning 截面正交残差 + 关 3 因果 Ridge 合成消融 `ΔSharpe`）与多因子 A/B 对比（Rust `factor_correlation_matrix`）。

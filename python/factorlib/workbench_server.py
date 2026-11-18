@@ -1,36 +1,115 @@
 #!/usr/bin/env python3
-"""FactorLibrary 研发工作台 REST API 与 Web 服务端 (factorlib/workbench_server.py)。
+"""FactorLibrary 研发工作台 FastAPI 单栈服务端 (factorlib/workbench_server.py)。
 
-支持双模启动：
-1. 标准库模式 (零外部依赖，内置 ThreadingHTTPServer，在基础 Python 虚拟环境中开箱即用)；
-2. FastAPI 模式 (若已安装 fastapi 与 uvicorn，自动挂载并暴露全局 ASGI 应用 `app`)。
-托管前端单页应用 (factorlib/frontend/index.html) 并提供全套 6 阶段量化因子研发 RESTful API。
+遵循架构重构计划 M5.3 与 Phase 2 规范：
+- 统一采用 FastAPI + Uvicorn 单栈 HTTP 服务，托管零构建原生 ES 模块前端；
+- 所有业务 API 均强制带有 `{market}` (`futures` | `stocks`) 路径前缀，实现双市场严格隔离；
+- 废弃阻塞式 `/api/pipeline/run`（返回 HTTP 410 Gone 并指引至 `POST /api/{market}/runs`），
+  全面升级为独立后台子进程派发与实时进度/日志看板；
+- 打通 `FeatureSet` CRUD、`1m` 扩展包挂载、`1d` K 线浏览、多因子 A/B 同台对比与三关准入批量审计。
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import mimetypes
 import sys
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from factorlib.core.workbench import FactorWorkbenchService
 
-# 全局默认服务实例
 DEFAULT_SERVICE: FactorWorkbenchService | None = None
 
 
-class _InvalidJsonBodyError(ValueError):
-    """客户端请求体不是合法 UTF-8 JSON 对象时抛出的 400 错误。"""
+class MarketName(StrEnum):
+    """支持的研究市场域枚举。"""
+
+    futures = "futures"
+    stocks = "stocks"
 
 
-def _resolve_frontend_dir() -> Path:
+class PanelSwitchRequest(BaseModel):
+    mode: str = "auto"
+    panel_dir: str | None = None
+
+
+class ExtensionMountRequest(BaseModel):
+    pack_id: str
+    action: str = "mount"
+
+
+class FeatureSetSaveRequest(BaseModel):
+    name: str
+    description: str = ""
+    base_fields: list[str] = Field(default_factory=list)
+    extensions: list[str] = Field(default_factory=list)
+    operators: list[str] | None = None
+    windows: list[int] | None = None
+    aux_factor_ids: list[int] = Field(default_factory=list)
+    default_postprocess: list[dict[str, Any]] = Field(default_factory=list)
+    upsert: bool = True
+
+
+class FactorStatusRequest(BaseModel):
+    status: str = "accepted"
+    sign: int | None = None
+
+
+class BatchFactorStatusRequest(BaseModel):
+    factor_ids: list[int] = Field(default_factory=list)
+    status: str = "accepted"
+    sign: int | None = None
+
+
+class BatchAuditRequest(BaseModel):
+    factor_ids: list[int] = Field(default_factory=list)
+    horizon: int = 5
+    min_valid_icir: float = 0.20
+    max_turnover: float = 0.85
+    max_corr_limit: float = 0.60
+    auto_promote: bool = False
+
+
+class CompareFactorsRequest(BaseModel):
+    factor_ids: list[int] = Field(default_factory=list)
+    horizon: int = 5
+
+
+class RecipeCreateRequest(BaseModel):
+    kind: str = "dl"
+    name: str = ""
+    feature_set_id: int | None = None
+    feature_set: dict[str, Any] | None = None
+    target_label: str = "y_5"
+    splits: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+    extensions: list[str] | None = None
+    seed: int = 42
+
+
+class RunLaunchRequest(BaseModel):
+    kind: str = "dl"
+    recipe_id: str | None = None
+    name: str = ""
+    feature_set_id: int | None = None
+    feature_set: dict[str, Any] | None = None
+    target_label: str = "y_5"
+    splits: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+    extensions: list[str] | None = None
+    seed: int = 42
+
+
+def resolve_frontend_dir() -> Path:
     """定位前端静态资源目录（优先包内路径，兼容源码根目录回退）。"""
     pkg_frontend = Path(__file__).resolve().parent / "frontend"
     if pkg_frontend.is_dir():
@@ -38,31 +117,12 @@ def _resolve_frontend_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "frontend"
 
 
-def _parse_json_object_bytes(raw_bytes: bytes) -> dict[str, Any]:
-    """将 HTTP 请求体字节解析为 JSON 字典；空请求体返回 {}，非法负载抛出 400 异常。"""
-    if not raw_bytes:
-        return {}
-    try:
-        raw_text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        logging.warning("请求体 UTF-8 解码失败: %s", exc, exc_info=True)
-        raise _InvalidJsonBodyError("Invalid UTF-8 request body") from exc
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        logging.warning("请求体 JSON 解析失败: %s", exc, exc_info=True)
-        raise _InvalidJsonBodyError(f"Invalid JSON request body: {exc.msg}") from exc
-    if not isinstance(parsed, dict):
-        logging.warning("请求体 JSON 顶层类型非法: %s", type(parsed).__name__)
-        raise _InvalidJsonBodyError("JSON request body must be an object")
-    return parsed
-
-
 def get_workbench_service(
     panel_dir: str | Path = "data/derived/futures/v1",
     db_path: str | Path = "data/registry/factors.sqlite",
     runs_dir: str | Path = "runs",
     force_synthetic: bool = False,
+    market: str = "futures",
 ) -> FactorWorkbenchService:
     global DEFAULT_SERVICE
     if DEFAULT_SERVICE is None:
@@ -71,266 +131,46 @@ def get_workbench_service(
             db_path=db_path,
             runs_dir=runs_dir,
             force_synthetic=force_synthetic,
+            market=market,
         )
     return DEFAULT_SERVICE
 
 
-def _json_response(handler: BaseHTTPRequestHandler, data: Any, status: int = 200) -> None:
-    body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-    handler.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-    handler.end_headers()
-    handler.wfile.write(body)
+def set_workbench_service(service: FactorWorkbenchService | None) -> None:
+    """替换全局默认工作台服务实例（便于 CLI 启动与测试注入）。"""
+    global DEFAULT_SERVICE
+    DEFAULT_SERVICE = service
 
 
-def _html_response(handler: BaseHTTPRequestHandler, html_str: str, status: int = 200) -> None:
-    body = html_str.encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+async def _read_json_dict(req: Request) -> dict[str, Any]:
+    raw = await req.body()
+    if not raw:
+        return {}
+    import json
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON request body: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="JSON request body must be an object")
+    return parsed
 
 
-def _serve_static_file(handler: BaseHTTPRequestHandler, file_path: Path, status: int = 200) -> None:
-    if not file_path.exists() or not file_path.is_file():
-        _json_response(handler, {"error": "File not found"}, status=404)
-        return
-    ctype, _ = mimetypes.guess_type(str(file_path))
-    if ctype is None:
-        ctype = "application/octet-stream"
-    body = file_path.read_bytes()
-    handler.send_response(status)
-    handler.send_header("Content-Type", f"{ctype}; charset=utf-8" if "text" in ctype else ctype)
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+def create_app(service: FactorWorkbenchService | None = None) -> FastAPI:
+    """构建并配置 FactorLibrary 双市场工作台 FastAPI 应用实例。"""
+    if service is not None:
+        set_workbench_service(service)
 
+    def _svc() -> FactorWorkbenchService:
+        return service if service is not None else get_workbench_service()
 
-class WorkbenchHTTPHandler(BaseHTTPRequestHandler):
-    """基于标准库的可并发 HTTP 请求处理器。"""
-
-    service: FactorWorkbenchService = None  # type: ignore[assignment]
-    frontend_dir: Path = _resolve_frontend_dir()
-
-    def log_message(self, format: str, *args: Any) -> None:
-        # 重定向至 Python 标准 logging 模块
-        logging.info("%s - %s", self.address_string(), format % args)
-
-    def do_OPTIONS(self) -> None:
-        self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.end_headers()
-
-    def _read_json_body(self) -> dict[str, Any]:
-        raw_clen = self.headers.get("Content-Length", "0")
-        try:
-            clen = int(raw_clen)
-        except ValueError as exc:
-            logging.warning("请求头 Content-Length 非法: %r", raw_clen, exc_info=True)
-            raise _InvalidJsonBodyError("Invalid Content-Length header") from exc
-        if clen < 0:
-            logging.warning("请求头 Content-Length 为负数: %d", clen)
-            raise _InvalidJsonBodyError("Negative Content-Length header")
-        if clen == 0:
-            return {}
-        return _parse_json_object_bytes(self.rfile.read(clen))
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-        qs = parse_qs(parsed.query)
-
-        # 1. 静态前端资源路由
-        if path in ("/", "/index.html"):
-            _serve_static_file(self, self.frontend_dir / "index.html")
-            return
-        if path in ("/styles.css", "/app.js"):
-            _serve_static_file(self, self.frontend_dir / path.lstrip("/"))
-            return
-
-        # 2. REST API 路由
-        try:
-            if path == "/api/context":
-                _json_response(self, self.service.get_context())
-            elif path == "/api/catalog/stats":
-                cat = qs.get("catalog", ["all"])[0]
-                _json_response(self, self.service.catalog_stats(catalog=cat))
-            elif path == "/api/catalog/search":
-                q = qs.get("query", [""])[0]
-                cat = qs.get("catalog", ["all"])[0]
-                category = qs.get("category", [""])[0]
-                limit = int(qs.get("limit", [100])[0])
-                _json_response(
-                    self,
-                    self.service.catalog_search(
-                        query=q, catalog=cat, category=category, limit=limit
-                    ),
-                )
-            elif path == "/api/catalog/info":
-                name = qs.get("name", [""])[0]
-                cat = qs.get("catalog", ["all"])[0]
-                entry = self.service.catalog_info(name=name, catalog=cat)
-                if entry is None:
-                    _json_response(self, {"error": f"Entry not found: {name}"}, status=404)
-                else:
-                    _json_response(self, entry)
-            elif path == "/api/factors":
-                status = qs.get("status", [None])[0]
-                source = qs.get("source", [None])[0]
-                mode = qs.get("mode", [None])[0]
-                min_icir = float(qs["min_icir"][0]) if "min_icir" in qs else None
-                split = qs.get("split", ["train"])[0]
-                horizon = int(qs.get("horizon", [5])[0])
-                factors = self.service.list_factors(
-                    status=status,
-                    source=source,
-                    mode=mode,
-                    min_icir=min_icir,
-                    split=split,
-                    horizon=horizon,
-                )
-                _json_response(self, factors)
-            elif path.startswith("/api/factors/"):
-                sub = path[len("/api/factors/") :]
-                if "/" not in sub and sub.isdigit():
-                    detail = self.service.get_factor_detail(int(sub))
-                    if detail is None:
-                        _json_response(self, {"error": "Factor not found"}, status=404)
-                    else:
-                        _json_response(self, detail)
-                else:
-                    _json_response(self, {"error": "Not found"}, status=404)
-            elif path == "/api/runs":
-                _json_response(self, self.service.list_runs())
-            elif path.startswith("/api/runs/") and path.endswith("/report"):
-                parts = path.strip("/").split("/")
-                if len(parts) == 4 and parts[1] == "runs":
-                    run_id = parts[2]
-                    html = self.service.get_run_report_html(run_id)
-                    if html:
-                        _html_response(self, html)
-                    else:
-                        _json_response(self, {"error": "Report not found"}, status=404)
-                else:
-                    _json_response(self, {"error": "Not found"}, status=404)
-            else:
-                _json_response(self, {"error": "Not found"}, status=404)
-        except Exception as exc:
-            logging.exception("处理 GET 请求失败: %s", exc)
-            _json_response(self, {"error": str(exc)}, status=500)
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        try:
-            body = self._read_json_body()
-            if path == "/api/probe":
-                _json_response(self, self.service.probe(body))
-            elif path == "/api/factors/draft":
-                res = self.service.save_draft(body)
-                _json_response(self, res)
-            elif path == "/api/workflow/run":
-                res = self.service.run_workflow(body)
-                _json_response(self, res)
-            elif path == "/api/factors/init-seeds":
-                res = self.service.init_seed_factors()
-                _json_response(self, res)
-            elif path == "/api/panel/switch":
-                mode = str(body.get("mode", "auto"))
-                p_dir = body.get("panel_dir")
-                res = self.service.switch_panel_source(mode=mode, panel_dir=p_dir)
-                _json_response(self, res)
-            elif path == "/api/pipeline/run":
-                res = self.service.run_e2e_pipeline(body)
-                _json_response(self, res)
-            else:
-                _json_response(self, {"error": "Not found"}, status=404)
-        except _InvalidJsonBodyError as exc:
-            _json_response(self, {"error": str(exc)}, status=400)
-        except Exception as exc:
-            logging.exception("处理 POST 请求失败: %s", exc)
-            _json_response(self, {"error": str(exc)}, status=500)
-
-    def do_PATCH(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        try:
-            body = self._read_json_body()
-            if path.startswith("/api/factors/") and path.endswith("/status"):
-                parts = path.strip("/").split("/")
-                fid = int(parts[2])
-                status = str(body.get("status", "accepted"))
-                sign = int(body["sign"]) if "sign" in body and body["sign"] in (-1, 1) else None
-                res = self.service.update_factor_status(fid, status=status, sign=sign)
-                _json_response(self, res)
-            else:
-                _json_response(self, {"error": "Not found"}, status=404)
-        except _InvalidJsonBodyError as exc:
-            _json_response(self, {"error": str(exc)}, status=400)
-        except Exception as exc:
-            logging.exception("处理 PATCH 请求失败: %s", exc)
-            _json_response(self, {"error": str(exc)}, status=500)
-
-    def do_DELETE(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        try:
-            if path.startswith("/api/factors/"):
-                sub = path[len("/api/factors/") :]
-                if sub.isdigit():
-                    fid = int(sub)
-                    res = self.service.delete_factor(fid)
-                    _json_response(self, res)
-                else:
-                    _json_response(self, {"error": "Not found"}, status=404)
-            else:
-                _json_response(self, {"error": "Not found"}, status=404)
-        except Exception as exc:
-            logging.exception("处理 DELETE 请求失败: %s", exc)
-            _json_response(self, {"error": str(exc)}, status=500)
-
-
-def run_std_server(
-    service: FactorWorkbenchService,
-    host: str = "127.0.0.1",
-    port: int = 8080,
-) -> ThreadingHTTPServer:
-    """启动零额外依赖的标准多线程 HTTP 服务。"""
-    WorkbenchHTTPHandler.service = service
-    server = ThreadingHTTPServer((host, port), WorkbenchHTTPHandler)
-    logging.info("=" * 70)
-    logging.info(" FactorLibrary 研发工作台已就绪 (Python Standard HTTP Server)")
-    logging.info(" 工作台 Web 界面: http://%s:%d", host, port)
-    logging.info(" REST API 入口  : http://%s:%d/api/context", host, port)
-    logging.info("=" * 70)
-    return server
-
-
-# =============================================================================
-# FastAPI 可选导出支持 (若环境安装了 fastapi，可直接由 uvicorn 挂载)
-# =============================================================================
-try:
-    from fastapi import FastAPI, HTTPException, Request
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse
-    from fastapi.staticfiles import StaticFiles
-
-    app = FastAPI(
+    fastapi_app = FastAPI(
         title="FactorLibrary Workbench API",
-        version="0.2.0",
-        description="FactorLibrary 6 阶段期货量化因子研发与实盘回测工作台 API",
+        version="0.3.0",
+        description="FactorLibrary 双市场量化因子混合投研工作台 API (Phase 2)",
     )
-    app.add_middleware(
+    fastapi_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=True,
@@ -338,129 +178,249 @@ try:
         allow_headers=["*"],
     )
 
-    @app.get("/api/context")
-    def api_context() -> dict[str, Any]:
-        return get_workbench_service().get_context()
+    @fastapi_app.exception_handler(ValueError)
+    async def _value_error_handler(_req: Request, exc: ValueError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
-    @app.get("/api/catalog/stats")
-    def api_catalog_stats(catalog: str = "all") -> dict[str, Any]:
-        return get_workbench_service().catalog_stats(catalog=catalog)
-
-    @app.get("/api/catalog/search")
-    def api_catalog_search(
-        query: str = "", catalog: str = "all", category: str = "", limit: int = 100
-    ) -> list[dict[str, Any]]:
-        return get_workbench_service().catalog_search(
-            query=query, catalog=catalog, category=category, limit=limit
+    # ------------------------------------------------------------------
+    # M5.3 废弃路由提示: 旧同步阻塞式 /api/pipeline/run 返回 410 Gone
+    # ------------------------------------------------------------------
+    @fastapi_app.api_route("/api/pipeline/run", methods=["GET", "POST"])
+    async def deprecated_pipeline_run() -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_410_GONE,
+            content={
+                "error": "阻塞式 /api/pipeline/run 已下线 (HTTP 410 Gone)。请改用异步子进程派发接口 POST /api/{market}/runs。",
+                "replacement": "/api/{market}/runs",
+            },
         )
 
-    @app.get("/api/catalog/info")
-    def api_catalog_info(name: str, catalog: str = "all") -> dict[str, Any]:
-        entry = get_workbench_service().catalog_info(name=name, catalog=catalog)
+    # ------------------------------------------------------------------
+    # 市场隔离 REST API (/api/{market}/...)
+    # ------------------------------------------------------------------
+    @fastapi_app.get("/api/{market}/context")
+    def api_context(market: MarketName) -> dict[str, Any]:
+        return _svc().get_context(market=market.value)
+
+    @fastapi_app.post("/api/{market}/panel/switch")
+    def api_switch_panel(market: MarketName, body: PanelSwitchRequest) -> dict[str, Any]:
+        return _svc().switch_panel_source(
+            mode=body.mode, panel_dir=body.panel_dir, market=market.value
+        )
+
+    @fastapi_app.get("/api/{market}/panel/kline")
+    def api_panel_kline(
+        market: MarketName,
+        symbol: str | None = None,
+        range_bars: int = 120,
+        adj: str = "hfq",
+        basket: str = "",
+    ) -> dict[str, Any]:
+        basket_list = [s.strip() for s in basket.split(",") if s.strip()] if basket else None
+        return _svc().get_kline(
+            market=market.value,
+            symbol=symbol,
+            range_bars=range_bars,
+            adj=adj,
+            basket=basket_list,
+        )
+
+    @fastapi_app.get("/api/{market}/extensions")
+    def api_list_extensions(market: MarketName) -> list[dict[str, Any]]:
+        return _svc().list_extensions(market=market.value)
+
+    @fastapi_app.post("/api/{market}/extensions/mount")
+    def api_mount_extension(market: MarketName, body: ExtensionMountRequest) -> dict[str, Any]:
+        return _svc().mount_extension(pack_id=body.pack_id, action=body.action, market=market.value)
+
+    @fastapi_app.get("/api/{market}/feature-sets")
+    def api_list_feature_sets(market: MarketName) -> list[dict[str, Any]]:
+        return _svc().list_feature_sets(market=market.value)
+
+    @fastapi_app.post("/api/{market}/feature-sets")
+    def api_save_feature_set(market: MarketName, body: FeatureSetSaveRequest) -> dict[str, Any]:
+        return _svc().save_feature_set(body.model_dump(), market=market.value)
+
+    @fastapi_app.delete("/api/{market}/feature-sets/{fs_id}")
+    def api_delete_feature_set(market: MarketName, fs_id: int) -> dict[str, Any]:
+        del market
+        return _svc().delete_feature_set(fs_id)
+
+    @fastapi_app.get("/api/{market}/catalog/stats")
+    def api_catalog_stats(market: MarketName, catalog: str = "all") -> dict[str, Any]:
+        return _svc().catalog_stats(catalog=catalog, market=market.value)
+
+    @fastapi_app.get("/api/{market}/catalog/search")
+    def api_catalog_search(
+        market: MarketName,
+        query: str = "",
+        catalog: str = "all",
+        category: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        return _svc().catalog_search(
+            query=query,
+            catalog=catalog,
+            category=category,
+            limit=limit,
+            market=market.value,
+        )
+
+    @fastapi_app.get("/api/{market}/catalog/info")
+    def api_catalog_info(market: MarketName, name: str, catalog: str = "all") -> dict[str, Any]:
+        entry = _svc().catalog_info(name=name, catalog=catalog, market=market.value)
         if entry is None:
-            raise HTTPException(status_code=404, detail="Entry not found")
+            raise HTTPException(status_code=404, detail=f"Entry not found: {name}")
         return entry
 
-    async def _read_fastapi_json_body(req: Request) -> dict[str, Any]:
-        try:
-            return _parse_json_object_bytes(await req.body())
-        except _InvalidJsonBodyError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    @fastapi_app.post("/api/{market}/probe")
+    async def api_probe(market: MarketName, req: Request) -> dict[str, Any]:
+        body = await _read_json_dict(req)
+        return _svc().probe(body, market=market.value)
 
-    @app.post("/api/probe")
-    async def api_probe(req: Request) -> dict[str, Any]:
-        body = await _read_fastapi_json_body(req)
-        return get_workbench_service().probe(body)
+    @fastapi_app.post("/api/{market}/factors/draft")
+    async def api_save_draft(market: MarketName, req: Request) -> dict[str, Any]:
+        body = await _read_json_dict(req)
+        return _svc().save_draft(body, market=market.value)
 
-    @app.post("/api/factors/draft")
-    async def api_save_draft(req: Request) -> dict[str, Any]:
-        body = await _read_fastapi_json_body(req)
-        return get_workbench_service().save_draft(body)
+    @fastapi_app.post("/api/{market}/workflow/run")
+    async def api_run_workflow(market: MarketName, req: Request) -> dict[str, Any]:
+        body = await _read_json_dict(req)
+        return _svc().run_workflow(body, market=market.value)
 
-    @app.post("/api/workflow/run")
-    async def api_run_workflow(req: Request) -> dict[str, Any]:
-        body = await _read_fastapi_json_body(req)
-        return get_workbench_service().run_workflow(body)
-
-    @app.get("/api/factors")
+    @fastapi_app.get("/api/{market}/factors")
     def api_list_factors(
+        market: MarketName,
         status: str | None = None,
         source: str | None = None,
         mode: str | None = None,
+        factor_type: str | None = None,
+        source_run: str | None = None,
         min_icir: float | None = None,
         split: str = "train",
         horizon: int = 5,
     ) -> list[dict[str, Any]]:
-        return get_workbench_service().list_factors(
+        return _svc().list_factors(
             status=status,
             source=source,
             mode=mode,
+            factor_type=factor_type,
+            source_run=source_run,
             min_icir=min_icir,
             split=split,
             horizon=horizon,
+            market=market.value,
         )
 
-    @app.get("/api/factors/{factor_id}")
-    def api_get_factor(factor_id: int) -> dict[str, Any]:
-        res = get_workbench_service().get_factor_detail(factor_id)
+    @fastapi_app.get("/api/{market}/factors/{factor_id}")
+    def api_get_factor(market: MarketName, factor_id: int) -> dict[str, Any]:
+        res = _svc().get_factor_detail(factor_id, market=market.value)
         if res is None:
             raise HTTPException(status_code=404, detail="Factor not found")
         return res
 
-    @app.patch("/api/factors/{factor_id}/status")
-    async def api_update_status(factor_id: int, req: Request) -> dict[str, Any]:
-        body = await _read_fastapi_json_body(req)
-        return get_workbench_service().update_factor_status(
+    @fastapi_app.patch("/api/{market}/factors/{factor_id}/status")
+    def api_update_status(
+        market: MarketName, factor_id: int, body: FactorStatusRequest
+    ) -> dict[str, Any]:
+        if body.sign is not None and body.sign not in (-1, 1):
+            raise HTTPException(status_code=400, detail="sign must be -1 or 1")
+        return _svc().update_factor_status(
             factor_id=factor_id,
-            status=body.get("status", "accepted"),
-            sign=body.get("sign"),
+            status=body.status,
+            sign=body.sign,
+            market=market.value,
         )
 
-    @app.delete("/api/factors/{factor_id}")
-    def api_delete_factor(factor_id: int) -> dict[str, Any]:
-        return get_workbench_service().delete_factor(factor_id)
-
-    @app.post("/api/factors/init-seeds")
-    def api_init_seeds() -> dict[str, Any]:
-        return get_workbench_service().init_seed_factors()
-
-    @app.post("/api/panel/switch")
-    async def api_switch_panel(req: Request) -> dict[str, Any]:
-        body = await _read_fastapi_json_body(req)
-        return get_workbench_service().switch_panel_source(
-            mode=body.get("mode", "auto"), panel_dir=body.get("panel_dir")
+    @fastapi_app.post("/api/{market}/factors/batch-status")
+    def api_batch_status(market: MarketName, body: BatchFactorStatusRequest) -> dict[str, Any]:
+        return _svc().batch_update_factor_status(
+            factor_ids=body.factor_ids,
+            status=body.status,
+            sign=body.sign,
+            market=market.value,
         )
 
-    @app.post("/api/pipeline/run")
-    async def api_run_pipeline(req: Request) -> dict[str, Any]:
-        body = await _read_fastapi_json_body(req)
-        return get_workbench_service().run_e2e_pipeline(body)
+    @fastapi_app.post("/api/{market}/factors/audit")
+    def api_batch_audit(market: MarketName, body: BatchAuditRequest) -> dict[str, Any]:
+        return _svc().batch_audit_factors(body.model_dump(), market=market.value)
 
-    @app.get("/api/runs")
-    def api_list_runs() -> list[dict[str, Any]]:
-        return get_workbench_service().list_runs()
+    @fastapi_app.delete("/api/{market}/factors/{factor_id}")
+    def api_delete_factor(market: MarketName, factor_id: int) -> dict[str, Any]:
+        return _svc().delete_factor(factor_id, market=market.value)
 
-    @app.get("/api/runs/{run_id}/report", response_class=HTMLResponse)
-    def api_run_report(run_id: str) -> str:
-        html = get_workbench_service().get_run_report_html(run_id)
+    @fastapi_app.post("/api/{market}/factors/init-seeds")
+    def api_init_seeds(market: MarketName) -> dict[str, Any]:
+        return _svc().init_seed_factors(market=market.value)
+
+    @fastapi_app.post("/api/{market}/compare")
+    def api_compare_factors(market: MarketName, body: CompareFactorsRequest) -> dict[str, Any]:
+        return _svc().compare_factors_ab(body.model_dump(), market=market.value)
+
+    @fastapi_app.get("/api/{market}/recipes")
+    def api_list_recipes(
+        market: MarketName, kind: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        return _svc().list_recipes(market=market.value, kind=kind, limit=limit)
+
+    @fastapi_app.post("/api/{market}/recipes")
+    def api_create_recipe(market: MarketName, body: RecipeCreateRequest) -> dict[str, Any]:
+        return _svc().create_recipe(body.model_dump(), market=market.value)
+
+    @fastapi_app.get("/api/{market}/runs")
+    def api_list_runs(market: MarketName) -> list[dict[str, Any]]:
+        return _svc().list_runs(market=market.value)
+
+    @fastapi_app.post("/api/{market}/runs", status_code=status.HTTP_202_ACCEPTED)
+    def api_launch_run(market: MarketName, body: RunLaunchRequest) -> dict[str, Any]:
+        return _svc().launch_run(body.model_dump(), market=market.value)
+
+    @fastapi_app.get("/api/{market}/runs/{run_id}")
+    def api_get_run_detail(market: MarketName, run_id: str) -> dict[str, Any]:
+        res = _svc().get_run_detail(run_id, market=market.value)
+        if res is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return res
+
+    @fastapi_app.post("/api/{market}/runs/{run_id}/cancel")
+    def api_cancel_run(market: MarketName, run_id: str) -> dict[str, Any]:
+        return _svc().cancel_run(run_id, market=market.value)
+
+    @fastapi_app.get("/api/{market}/runs/{run_id}/report", response_class=HTMLResponse)
+    def api_run_report(market: MarketName, run_id: str) -> str:
+        del market
+        html = _svc().get_run_report_html(run_id)
         if not html:
             raise HTTPException(status_code=404, detail="Report not found")
         return html
 
-    frontend_path = _resolve_frontend_dir()
+    frontend_path = resolve_frontend_dir()
     if frontend_path.exists():
-        app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
-except ImportError:
-    app = None  # type: ignore[assignment]
+        fastapi_app.mount(
+            "/", StaticFiles(directory=str(frontend_path), html=True), name="frontend"
+        )
+
+    return fastapi_app
+
+
+# 供 `uvicorn factorlib.workbench_server:app` 直接挂载的默认 ASGI 实例
+app = create_app()
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FactorLibrary 现代化 6 阶段量化因子研发工作台服务启动器",
+        description="FactorLibrary 双市场量化因子研发工作台服务启动器 (FastAPI + Uvicorn)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8080, help="监听端口")
+    parser.add_argument(
+        "--market",
+        type=str,
+        default="futures",
+        choices=["futures", "stocks"],
+        help="默认预热市场域",
+    )
     parser.add_argument(
         "--panel-dir",
         type=Path,
@@ -502,22 +462,29 @@ def main(cli_args: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    server: ThreadingHTTPServer | None = None
     try:
-        service = get_workbench_service(
+        svc = FactorWorkbenchService(
             panel_dir=args.panel_dir,
             db_path=args.db,
             runs_dir=args.runs_dir,
             force_synthetic=args.synthetic,
+            market=args.market,
         )
-        server = run_std_server(service, host=args.host, port=args.port)
-        server.serve_forever()
+        set_workbench_service(svc)
+        logging.info("=" * 70)
+        logging.info(" FactorLibrary 双市场研发工作台已就绪 (FastAPI + Uvicorn)")
+        logging.info(" 工作台 Web 界面: http://%s:%d", args.host, args.port)
+        logging.info(" REST API 文档  : http://%s:%d/docs", args.host, args.port)
+        logging.info("=" * 70)
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level=args.log_level.lower(),
+        )
         return 0
     except KeyboardInterrupt:
         logging.info("收到中断信号，正在安全关闭工作台服务...")
-        if server is not None:
-            server.shutdown()
-            server.server_close()
         return 0
     except Exception as exc:
         logging.exception("工作台服务运行失败: %s", exc)

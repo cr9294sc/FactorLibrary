@@ -7,6 +7,13 @@ from factorlib.markets.stocks.ares_bridge import (
     read_ares_table,
 )
 from factorlib.markets.stocks.backtest import StocksBacktester, run_stock_backtest_pipeline
+from factorlib.markets.stocks.barra import (
+    BarraRiskModelStore,
+    DynamicWLSResult,
+    compute_constrained_wls_idiosyncratic_returns,
+    estimate_dynamic_specific_variance,
+)
+from factorlib.markets.stocks.bridge import BridgeAuditReport, RiskView, SignalBridge
 from factorlib.markets.stocks.panel_loader import (
     STOCK_AUX_BACKTEST_FIELDS,
     StockPanelData,
@@ -16,7 +23,12 @@ from factorlib.markets.stocks.panel_loader import (
 from factorlib.markets.stocks.profile import StocksProfile
 
 __all__ = [
+    "BarraRiskModelStore",
+    "BridgeAuditReport",
+    "DynamicWLSResult",
+    "RiskView",
     "STOCK_AUX_BACKTEST_FIELDS",
+    "SignalBridge",
     "StockPanelData",
     "StockPanelLoader",
     "StocksBacktester",
@@ -24,6 +36,8 @@ __all__ = [
     "build_lb_barra_panel",
     "build_stock_panel",
     "compute_causal_ex_cum_factor",
+    "compute_constrained_wls_idiosyncratic_returns",
+    "estimate_dynamic_specific_variance",
     "load_lb_barra_panel",
     "read_ares_table",
     "run_stock_backtest_pipeline",

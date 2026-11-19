@@ -633,3 +633,129 @@ def test_stock_perturbation_causality(tmp_path: Path):
         )
         > 0.1
     )
+
+
+def test_lb_barra_and_bridge_perturbation_causality(tmp_path: Path):
+    """Phase 2 因果摄动测试：篡改 T > T_perturb 的 Barra 暴露/特质收益/市值，历史估计必须 0 差值。"""
+    from factorlib.core.config import StockDataConfig, StockUniverseFilterConfig
+    from factorlib.markets.profile import PanelSpec
+    from factorlib.markets.stocks.ares_bridge import BARRA_STYLE_FACTORS, build_lb_barra_panel
+    from factorlib.markets.stocks.barra import (
+        compute_constrained_wls_idiosyncratic_returns,
+        estimate_dynamic_specific_variance,
+    )
+    from factorlib.markets.stocks.bridge import RiskView, SignalBridge
+    from factorlib.markets.stocks.profile import StocksProfile
+
+    from tests.python.test_stocks_lb_barra_phase1 import _make_synthetic_lb_assets
+
+    T = 50
+    t_perturb = 32  # 原始序列索引 32；切片首行全 NaN 后对应索引 31
+    raw_base = tmp_path / "lb_raw_base"
+    raw_pert = tmp_path / "lb_raw_pert"
+    fx_base = _make_synthetic_lb_assets(raw_base, T=T, seed=101, perturb_from=None)
+    _make_synthetic_lb_assets(raw_pert, T=T, seed=101, perturb_from=t_perturb)
+
+    def _build_and_load(rdir: Path, pdir: Path) -> Panel:
+        cfg = StockDataConfig(
+            raw_dir=rdir,
+            derived_dir=pdir,
+            panel_version="lb_barra_v1",
+            source="local_backtest",
+            entry_window="vwap_open_30m",
+            exec_price_mode="vwap_open_30m_adj",
+            start_date=fx_base["dates"][0],
+            end_date=fx_base["dates"][-1],
+            universe_filters=StockUniverseFilterConfig(
+                use_source_base_univ_mask=True, exclude_bjse=False
+            ),
+            include_idiosyncratic_labels=True,
+        )
+        build_lb_barra_panel(cfg, pack_cov=False, show_progress=False)
+        return StocksProfile(root=pdir.parent.parent).load_panel(
+            PanelSpec(version="lb_barra_v1", panel_dir=cfg.panel_dir)
+        )
+
+    p_base = _build_and_load(raw_base, tmp_path / "derived_base")
+    p_pert = _build_and_load(raw_pert, tmp_path / "derived_pert")
+    t_cut = t_perturb - 1  # T <= t_cut-1 (含 t_perturb-1) 均不得受未来扰动影响
+
+    # 1. 因果 Constrained WLS 输出在 T <= T_perturb 绝对 0 差值
+    styles_base = {s: p_base.fields[f"barra_{s.lower()}"] for s in BARRA_STYLE_FACTORS}
+    styles_pert = {s: p_pert.fields[f"barra_{s.lower()}"] for s in BARRA_STYLE_FACTORS}
+    wls_base = compute_constrained_wls_idiosyncratic_returns(
+        p_base.fields["vwap30_ret"],
+        styles_base,
+        p_base.fields["barra_industry"],
+        p_base.fields["mkt_cap"],
+        valid_mask=p_base.mask,
+        exposure_lag_days=2,
+        min_obs=3,
+        industry_codes=(1, 2, 3, 4, 5),
+    )
+    wls_pert = compute_constrained_wls_idiosyncratic_returns(
+        p_pert.fields["vwap30_ret"],
+        styles_pert,
+        p_pert.fields["barra_industry"],
+        p_pert.fields["mkt_cap"],
+        valid_mask=p_pert.mask,
+        exposure_lag_days=2,
+        min_obs=3,
+        industry_codes=(1, 2, 3, 4, 5),
+    )
+    np.testing.assert_array_equal(
+        wls_base.spec_returns[:t_cut, :], wls_pert.spec_returns[:t_cut, :]
+    )
+    np.testing.assert_array_equal(
+        wls_base.factor_returns[:t_cut, :], wls_pert.factor_returns[:t_cut, :]
+    )
+
+    # 2. 动态特质方差 Δ_t (EWMA + NW + 贝叶斯收缩 + VRA) 在 T <= T_perturb 绝对 0 差值
+    sv_base = estimate_dynamic_specific_variance(
+        p_base.fields["spec_ret_vwap30"],
+        p_base.fields["mkt_cap"],
+        valid_mask=p_base.mask,
+        window_days=20,
+        half_life_days=10.0,
+        min_obs=5,
+    )
+    sv_pert = estimate_dynamic_specific_variance(
+        p_pert.fields["spec_ret_vwap30"],
+        p_pert.fields["mkt_cap"],
+        valid_mask=p_pert.mask,
+        window_days=20,
+        half_life_days=10.0,
+        min_obs=5,
+    )
+    np.testing.assert_array_equal(sv_base[:t_cut, :], sv_pert[:t_cut, :])
+
+    # 3. SignalBridge 投影与 RiskView 挂载在 T <= T_perturb 绝对 0 差值
+    proj_base, _ = SignalBridge.from_panel(
+        p_base, p_base.fields["spec_ret_vwap30"], p_base, input_signal_alignment="T_close"
+    )
+    proj_pert, _ = SignalBridge.from_panel(
+        p_pert, p_pert.fields["spec_ret_vwap30"], p_pert, input_signal_alignment="T_close"
+    )
+    np.testing.assert_array_equal(proj_base[:t_cut, :], proj_pert[:t_cut, :])
+
+    rq_clone_a = Panel(
+        dates=p_base.dates.copy(),
+        symbols=list(p_base.symbols),
+        fields={"c2c_ret": p_base.fields["c2c_ret"][:, :].copy()},
+        mask=p_base.mask.copy(),
+        meta={"market": "stocks"},
+    )
+    rq_clone_b = Panel(
+        dates=p_pert.dates.copy(),
+        symbols=list(p_pert.symbols),
+        fields={"c2c_ret": p_pert.fields["c2c_ret"][:, :].copy()},
+        mask=p_pert.mask.copy(),
+        meta={"market": "stocks"},
+    )
+    RiskView.attach(rq_clone_a, p_base)
+    RiskView.attach(rq_clone_b, p_pert)
+    prof = StocksProfile()
+    st_a = prof.style_factors(rq_clone_a)
+    st_b = prof.style_factors(rq_clone_b)
+    for s_name in BARRA_STYLE_FACTORS:
+        np.testing.assert_array_equal(st_a[s_name][:t_cut, :], st_b[s_name][:t_cut, :])

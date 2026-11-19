@@ -23,6 +23,18 @@ from factorlib.core.registry import FactorRecord
 from factorlib.ml.splits import WalkForwardFold
 
 
+def parse_label_horizon(target_label: str, default: int = 5) -> int:
+    """从标签名（如 ``y_5``、``y_idio_5``、``r_exec_next``）提取预测持有期天数 ``h``。"""
+    label = str(target_label).strip()
+    if label == "r_exec_next":
+        return 1
+    if "_" in label:
+        tail = label.rsplit("_", 1)[-1].rstrip("dD")
+        if tail.isdigit():
+            return max(1, int(tail))
+    return max(1, int(default))
+
+
 def mad_winsorize(
     mat: np.ndarray,
     mask: np.ndarray | None = None,
@@ -194,9 +206,14 @@ class MLDatasetBuilder:
 
         # 准备目标标签矩阵 (T, N)
         if target_matrix is not None:
-            self.y_matrix = np.asfortranarray(target_matrix)
+            self.y_matrix = np.asfortranarray(target_matrix, dtype=np.float64)
         else:
-            self.y_matrix = np.asfortranarray(panel.get_label(target_label))
+            if target_label not in panel.labels and str(target_label).startswith("y_idio_"):
+                raise KeyError(
+                    f"面板中未找到纯特质标签 {target_label!r}；"
+                    "请使用 lb_barra_v1 数据集或先通过 RiskView.attach(..., compute_dynamic_idio=True) 挂载"
+                )
+            self.y_matrix = np.asfortranarray(panel.get_label(target_label), dtype=np.float64)
 
         if self.rank_gauss_target:
             self.y_matrix = rank_gauss_transform(self.y_matrix, mask=panel.mask)

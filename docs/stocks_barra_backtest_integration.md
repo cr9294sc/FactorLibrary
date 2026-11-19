@@ -635,10 +635,10 @@ execution:
 - [x] 升级 [`StocksProfile`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/profile.py) 与 `configs/stocks/data.yaml` 支持 `rq_v1` 与 `lb_barra_v1` 双数据集独立加载
 
 ### Phase 2：动态特质收益、风险模型内核与轻量桥接层
-- [ ] 实现 `python/factorlib/markets/stocks/barra.py`（`BarraRiskModelStore`、因果 Constrained WLS、EWMA + Newey-West + 市值分层贝叶斯收缩 + VRA 动态 $\Delta_t$）
-- [ ] 实现 `python/factorlib/markets/stocks/bridge.py`（`SignalBridge` 跨源信号投影与覆盖率审计、`RiskView` 只读风险视图）
-- [ ] 升级 [`markets/stocks/styles.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/styles.py) 支持 10 维 Barra 风格自适应，并打通 `ml/` 与 `dl/` 的 `y_idio_h` 目标标签支持
-- [ ] 补齐 `tests/python/test_stocks_barra.py` 与 `tests/python/test_perturbation.py` 因果摄动用例
+- [x] 实现 `python/factorlib/markets/stocks/barra.py`（`BarraRiskModelStore`、因果 Constrained WLS、EWMA + Newey-West + 市值分层贝叶斯收缩 + VRA 动态 $\Delta_t$）
+- [x] 实现 `python/factorlib/markets/stocks/bridge.py`（`SignalBridge` 跨源信号投影与覆盖率审计、`RiskView` 只读风险视图）
+- [x] 升级 [`markets/stocks/styles.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/styles.py) 支持 10 维 Barra 风格自适应，并打通 `ml/` 与 `dl/` 的 `y_idio_h` 目标标签支持
+- [x] 补齐 `tests/python/test_stocks_barra.py` 与 `tests/python/test_perturbation.py` 因果摄动用例
 
 ### Phase 3：原生 Barra 组合优化器与双源回测服务
 - [ ] 新增 `configs/stocks/barra.yaml`，升级 `configs/stocks/backtest.yaml` 与 [`core/config.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/config.py) 配置校验

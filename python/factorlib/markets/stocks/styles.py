@@ -1,4 +1,13 @@
-"""A 股风格因子因果计算实现 (markets/stocks/styles.py)。"""
+"""A 股风格因子因果计算实现 (markets/stocks/styles.py)。
+
+支持自适应双模式：
+1. 若面板包含官方 Barra CNE5 暴露（``barra_*``，例如 ``lb_barra_v1`` 或通过 ``RiskView``
+   挂载的 ``rq`` 面板），直接返回全部 **10 维 Barra CNE5 风格矩阵**
+   (``BETA``, ``BTOP``, ``EARNYILD``, ``GROWTH``, ``LEVERAGE``, ``LIQUIDTY``,
+   ``MOMENTUM``, ``RESVOL``, ``SIZE``, ``SIZENL``)，并保留兼容别名
+   ``LIQUIDITY -> LIQUIDTY`` 与 ``VOLATILITY -> RESVOL``；
+2. 否则平滑回退至基于量价字段的 4 风格近似（``SIZE``, ``LIQUIDITY``, ``VOLATILITY``, ``MOMENTUM``）。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +21,19 @@ from factorlib.core.styles import (
     _normalize_style_matrix,
 )
 
+BARRA_CNE5_STYLE_NAMES: tuple[str, ...] = (
+    "BETA",
+    "BTOP",
+    "EARNYILD",
+    "GROWTH",
+    "LEVERAGE",
+    "LIQUIDTY",
+    "MOMENTUM",
+    "RESVOL",
+    "SIZE",
+    "SIZENL",
+)
+
 STOCK_STYLE_NAMES: tuple[str, ...] = (
     "SIZE",
     "VOLATILITY",
@@ -21,17 +43,21 @@ STOCK_STYLE_NAMES: tuple[str, ...] = (
 
 
 def compute_stocks_styles(panel: Panel) -> dict[str, np.ndarray]:
-    """根据当前股票 Panel 因果计算标准风格暴露矩阵字典 (形状 [T, N])，支持面板级缓存。"""
+    """根据当前股票 Panel 因果计算或提取风格暴露矩阵字典 (形状 [T, N])，支持面板级缓存。"""
     T, N = panel.shape
     fields = panel.fields
 
+    has_barra = any(f"barra_{name.lower()}" in fields for name in BARRA_CNE5_STYLE_NAMES)
+
     # 缓存键：绑定面板形状与核心输入字段内存标识及末行校验值，确保摄动测试修改字段后自动失效重算
-    close_mat = fields.get("close_hfq", fields.get("close"))
+    close_mat = fields.get("close_hfq", fields.get("close_adj", fields.get("close")))
     amt_mat = fields.get("amount", fields.get("log_amount"))
     c2c_mat = fields.get("c2c_ret")
+    barra_probe = fields.get("barra_size", fields.get("barra_beta"))
     cache_key = (
         T,
         N,
+        has_barra,
         id(panel.valid_mask),
         int(np.sum(panel.valid_mask[-1])) if T > 0 else 0,
         id(close_mat),
@@ -46,12 +72,31 @@ def compute_stocks_styles(panel: Panel) -> dict[str, np.ndarray]:
         float(np.nan_to_num(c2c_mat[-1, 0], nan=-999.0))
         if c2c_mat is not None and c2c_mat.size
         else 0.0,
+        id(barra_probe),
+        float(np.nan_to_num(barra_probe[-1, 0], nan=-999.0))
+        if barra_probe is not None and barra_probe.size
+        else 0.0,
     )
     cached = getattr(panel, "_cached_stocks_styles", None)
     if cached is not None and cached[0] == cache_key:
         return cached[1]
 
     styles: dict[str, np.ndarray] = {}
+
+    if has_barra:
+        for s_name in BARRA_CNE5_STYLE_NAMES:
+            f_key = f"barra_{s_name.lower()}"
+            if f_key in fields:
+                masked = np.where(panel.valid_mask, fields[f_key], np.nan)
+                styles[s_name] = np.asfortranarray(masked, dtype=np.float64)
+        # 兼容既有风格键名别名
+        if "LIQUIDTY" in styles and "LIQUIDITY" not in styles:
+            styles["LIQUIDITY"] = styles["LIQUIDTY"]
+        if "RESVOL" in styles and "VOLATILITY" not in styles:
+            styles["VOLATILITY"] = styles["RESVOL"]
+
+        object.__setattr__(panel, "_cached_stocks_styles", (cache_key, styles))
+        return styles
 
     # 1. SIZE / LIQUIDITY: 基于 20 日均成交额对数（缺失时回退 log_amount）
     if "amount" in fields:

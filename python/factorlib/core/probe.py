@@ -357,6 +357,22 @@ def probe_factor(
     if has_listed_days:
         known_fields.add("listed_days")
     known_fields.update(STYLE_NAMES)
+    if panel is not None and any(k.startswith("barra_") for k in panel.fields):
+        known_fields.update(
+            {
+                "BETA",
+                "BTOP",
+                "EARNYILD",
+                "GROWTH",
+                "LEVERAGE",
+                "LIQUIDTY",
+                "LIQUIDITY",
+                "MOMENTUM",
+                "RESVOL",
+                "SIZE",
+                "SIZENL",
+            }
+        )
 
     errors: list[str] = []
     stage_warnings: list[str] = []
@@ -723,7 +739,22 @@ def _resolve_implicit_field(
         # 若合成测试面板无 sector，默认赋同一板块编码 1.0
         return np.asfortranarray(np.ones((T, N), dtype=np.float64)), styles_cache
 
-    if field_name in STYLE_NAMES or (styles_cache is not None and field_name in styles_cache):
+    _extra_stock_styles = {
+        "BETA",
+        "BTOP",
+        "EARNYILD",
+        "GROWTH",
+        "LEVERAGE",
+        "LIQUIDTY",
+        "LIQUIDITY",
+        "RESVOL",
+        "SIZENL",
+    }
+    if (
+        field_name in STYLE_NAMES
+        or field_name in _extra_stock_styles
+        or (styles_cache is not None and field_name in styles_cache)
+    ):
         if styles_cache is None:
             resolved_profile = (
                 profile if profile is not None else resolve_profile(resolve_panel_market(panel))

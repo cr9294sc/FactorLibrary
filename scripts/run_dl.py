@@ -33,6 +33,7 @@ from factorlib.dl.models import default_model_hparams, normalize_model_arch
 from factorlib.dl.trainer import DLTrainConfig, train_dl_walk_forward
 from factorlib.markets.profile import PanelSpec
 from factorlib.markets.registry import get_profile
+from factorlib.ml.dataset import parse_label_horizon
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -81,6 +82,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default=None,
         help="模型骨架覆盖 (gated_mlp | gru | tcn | st_attention)",
+    )
+    parser.add_argument(
+        "--target-label",
+        type=str,
+        default=None,
+        help="覆盖预测目标标签 (如 y_5 或纯特质标签 y_idio_5)",
     )
     parser.add_argument(
         "--seq-len",
@@ -200,13 +207,15 @@ def run_dl_cli(args: argparse.Namespace, root_dir: Path | None = None) -> int:
 
     data_version = str(panel.meta.get("panel_version", recipe.data_version if recipe else "v1"))
     params = dict(recipe.params) if recipe is not None else {}
-    target_label = recipe.target_label if recipe is not None else "y_5"
+    target_label = (
+        args.target_label
+        if getattr(args, "target_label", None)
+        else (recipe.target_label if recipe is not None else "y_5")
+    )
     if target_label not in panel.labels:
         target_label = "y_5" if "y_5" in panel.labels else next(iter(panel.labels.keys()))
 
-    horizon = (
-        int(target_label[2:]) if target_label.startswith("y_") and target_label[2:].isdigit() else 5
-    )
+    horizon = parse_label_horizon(target_label, default=5)
     arch_key = normalize_model_arch(args.arch or params.get("model"), market=market)
     arch_defaults = default_model_hparams(market=market, arch=arch_key)
 

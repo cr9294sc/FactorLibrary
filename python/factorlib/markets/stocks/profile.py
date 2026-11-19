@@ -31,6 +31,8 @@ from factorlib.markets.profile import (
 )
 from factorlib.markets.stocks.ares_bridge import load_lb_barra_panel
 from factorlib.markets.stocks.backtest import StocksBacktester
+from factorlib.markets.stocks.barra import BarraRiskModelStore
+from factorlib.markets.stocks.bridge import BridgeAuditReport, SignalBridge
 from factorlib.markets.stocks.extensions import StocksMinutePackBuilder
 from factorlib.markets.stocks.panel_loader import STOCK_AUX_BACKTEST_FIELDS, StockPanelLoader
 from factorlib.markets.stocks.portfolio import build_stocks_portfolio_weights
@@ -92,6 +94,42 @@ class StocksProfile:
         """读取指定数据集（如 ``rq_v1`` / ``lb_barra_v1``）的配置对象。"""
         cfg_path = data_config_path or (self.root / "configs" / "stocks" / "data.yaml")
         return load_stock_data_config(cfg_path, root=self.root, dataset=dataset)
+
+    def load_risk_model(
+        self,
+        version: str = "lb_barra_v1",
+        *,
+        risk_store_dir: Path | None = None,
+    ) -> BarraRiskModelStore:
+        """加载指定数据集对应的旁路 ``BarraRiskModelStore``。"""
+        store_dir = (
+            Path(risk_store_dir)
+            if risk_store_dir is not None
+            else (self.paths(version).panel_dir / "risk_store")
+        )
+        return BarraRiskModelStore.load(store_dir)
+
+    def bridge_signal(
+        self,
+        scores_src: np.ndarray,
+        source_panel: Panel,
+        target_panel: Panel,
+        *,
+        input_signal_alignment: str = "T_close",
+        min_symbol_match_ratio: float = 0.90,
+        start_date: Any | None = None,
+        end_date: Any | None = None,
+    ) -> tuple[np.ndarray, BridgeAuditReport]:
+        """运行期轻量单向信号桥接（如 ``rq_v1 -> lb_barra_v1``）。"""
+        return SignalBridge.from_panel(
+            source_panel=source_panel,
+            scores_src=scores_src,
+            target_panel=target_panel,
+            input_signal_alignment=input_signal_alignment,
+            min_symbol_match_ratio=min_symbol_match_ratio,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def paths(self, version: str = "v1") -> ResearchPaths:
         phys_version = self._resolve_panel_version(version)

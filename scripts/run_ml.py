@@ -121,6 +121,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="覆盖 Purge 隔离天数 h",
     )
     parser.add_argument(
+        "--target-label",
+        type=str,
+        default=None,
+        help="覆盖预测目标标签名 (如 y_5 或纯特质标签 y_idio_5)",
+    )
+    parser.add_argument(
         "--strict-min-years",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -160,7 +166,9 @@ def _apply_cli_overrides(cfg: MLConfig, args: argparse.Namespace) -> MLConfig:
 
     if wf_updates:
         new_wf = dataclasses.replace(cfg.walk_forward, **wf_updates)  # type: ignore[arg-type]
-        return dataclasses.replace(cfg, walk_forward=new_wf)
+        cfg = dataclasses.replace(cfg, walk_forward=new_wf)
+    if getattr(args, "target_label", None):
+        cfg = dataclasses.replace(cfg, target_label=str(args.target_label))
     return cfg
 
 

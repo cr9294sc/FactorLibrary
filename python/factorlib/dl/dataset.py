@@ -324,7 +324,14 @@ def prepare_dl_panel_data(
 ) -> DLPreparedData:
     """从 `Panel` 严格无前视地构造 1d DL 特征立方体与中性化标签。"""
     if target_label not in panel.labels:
-        raise ValueError(f"面板缺少目标标签 {target_label!r} (可用: {list(panel.labels.keys())})")
+        hint = (
+            "（请使用 lb_barra_v1 数据集或先通过 RiskView.attach(..., compute_dynamic_idio=True) 挂载）"
+            if str(target_label).startswith("y_idio_")
+            else ""
+        )
+        raise ValueError(
+            f"面板缺少目标标签 {target_label!r}{hint} (可用: {list(panel.labels.keys())})"
+        )
 
     # 严格屏蔽 aux_fields 与 labels，确保特征仅来自合法观测字段（含已挂载 1m 扩展特征）
     blocked = set(panel.aux_fields.keys()) | set(panel.labels.keys())
@@ -339,9 +346,15 @@ def prepare_dl_panel_data(
         fallback_order = (
             "close",
             "close_hfq",
+            "close_adj",
+            "vwap_open_30m_adj",
             "volume",
             "log_amount",
+            "log_mkt_cap",
             "c2c_ret",
+            "vwap30_ret",
+            "spec_ret_vwap30",
+            "spec_vol_ewma",
             "ry_ann",
             "wh_z60",
             "mr_net_ratio",

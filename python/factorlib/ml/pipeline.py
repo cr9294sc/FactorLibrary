@@ -25,7 +25,7 @@ from factorlib.core.panel import Panel
 from factorlib.core.probe import FactorDefinition, evaluate_factor_definition
 from factorlib.core.registry import FactorRecord, FactorRegistry, FeatureSetRecord
 from factorlib.core.runs import RunTracker
-from factorlib.ml.dataset import MLDatasetBuilder
+from factorlib.ml.dataset import MLDatasetBuilder, parse_label_horizon
 from factorlib.ml.models import (
     EqualWeightModel,
     LightGBMModel,
@@ -258,11 +258,7 @@ class WalkForwardPipeline:
         T, N = self.panel.shape
 
         # 2. 初始化切分器并生成时序折叠 (P0-05: 强制校验 purge_window >= 标签预测周期 h)
-        lbl_horizon = 1
-        if "_" in self.config.target_label:
-            tail = self.config.target_label.rsplit("_", 1)[-1].rstrip("dD")
-            if tail.isdigit():
-                lbl_horizon = max(1, int(tail))
+        lbl_horizon = parse_label_horizon(self.config.target_label, default=1)
         effective_purge = max(self.config.walk_forward.purge_window, lbl_horizon)
         wf_cfg = replace(self.config.walk_forward, purge_window=effective_purge)
 

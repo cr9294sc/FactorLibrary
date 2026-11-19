@@ -38,6 +38,7 @@ from factorlib.dl.models import (
     normalize_model_arch,
 )
 from factorlib.dl.stitch import bag_seed_predictions, stitch_oos_folds
+from factorlib.ml.dataset import parse_label_horizon
 from factorlib.ml.splits import WalkForwardFold
 
 
@@ -80,11 +81,7 @@ class DLTrainConfig:
     def resolved(self) -> dict[str, Any]:
         arch_key = normalize_model_arch(self.arch, market=self.market)
         defaults = default_model_hparams(market=self.market, arch=arch_key)
-        horizon = (
-            int(self.target_label[2:])
-            if self.target_label.startswith("y_") and self.target_label[2:].isdigit()
-            else 5
-        )
+        horizon = parse_label_horizon(self.target_label, default=5)
         return {
             "market": str(self.market).strip().lower(),
             "arch": arch_key,

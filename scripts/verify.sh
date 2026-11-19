@@ -54,7 +54,7 @@ check_git_safety() {
     local staged_files
     staged_files=$(git diff --cached --name-only 2>/dev/null || true)
     
-    local forbidden_exts=("parquet" "sqlite" "arrow" "feather" "h5" "bin" "tar" "gz" "zip")
+    local forbidden_exts=("parquet" "sqlite" "arrow" "feather" "h5" "bin" "tar" "gz" "zip" "ares")
     local leak_detected=0
 
     if [[ -n "${staged_files}" ]]; then
@@ -62,7 +62,7 @@ check_git_safety() {
             [[ -z "${file}" ]] && continue
             
             # 1. 检查禁止的敏感目录与密钥文件
-            if [[ "${file}" =~ ^(exports/|data/|runs/|\.venv|\.env) ]]; then
+            if [[ "${file}" =~ ^(exports/|data/|runs/|local_backtest/|\.venv|\.env) ]]; then
                 log_fail "严禁将数据资产目录、虚拟环境或密钥文件暂存到 Git 仓库: ${file}"
                 leak_detected=1
             fi
@@ -222,6 +222,7 @@ check_anti_lookahead() {
 check_scripts() {
     log_info "Gate 6: 校验 scripts/ 工具脚本命令行入口健全性..."
     python scripts/build_panel.py --help > /dev/null
+    python scripts/build_stocks_lb_barra.py --help > /dev/null
     python scripts/audit_data.py --help > /dev/null
     python scripts/init_seed_factors.py --help > /dev/null
     python scripts/run_gp.py --help > /dev/null

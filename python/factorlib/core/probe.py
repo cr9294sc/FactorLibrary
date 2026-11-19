@@ -337,6 +337,12 @@ def probe_factor(
         defn = definition
 
     # 汇总可用字段集合
+    caps = (
+        panel.meta.get("capabilities")
+        if (panel is not None and isinstance(panel.meta, dict))
+        else None
+    )
+    has_listed_days = not (isinstance(caps, dict) and caps.get("has_listed_days") is False)
     known_fields: set[str] = set()
     if panel is not None:
         known_fields.update(panel.fields.keys())
@@ -347,7 +353,9 @@ def probe_factor(
 
         cat = FactorCatalog()
         known_fields.update(v["name"] for v in cat.variables)
-    known_fields.update({"in_universe_mask", "limit_mask", "sector", "listed_days"})
+    known_fields.update({"in_universe_mask", "limit_mask", "sector"})
+    if has_listed_days:
+        known_fields.add("listed_days")
     known_fields.update(STYLE_NAMES)
 
     errors: list[str] = []
@@ -459,6 +467,14 @@ def probe_factor(
                 }
             )
         elif step.op == "dropNewStock":
+            if not has_listed_days:
+                ds_name = (
+                    caps.get("dataset_id", "当前数据集") if isinstance(caps, dict) else "当前数据集"
+                )
+                errors.append(
+                    f"数据集 {ds_name!r} 缺少上市天数字段，不支持 'dropNewStock' 算子"
+                    "（建议在 rq_v1 域求值后通过 SignalBridge 桥接）"
+                )
             postprocess_vars.append(
                 {
                     "name": "listed_days",

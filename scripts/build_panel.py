@@ -28,6 +28,7 @@ from factorlib.core.config import (
     load_universe_config,
 )
 from factorlib.markets.futures.etl.build import build_panel
+from factorlib.markets.stocks.ares_bridge import build_lb_barra_panel
 from factorlib.markets.stocks.panel_loader import build_stock_panel
 
 
@@ -128,12 +129,20 @@ def main() -> int:
 
     try:
         if args.market == "stocks":
-            scfg = load_stock_data_config(config_path, root=root_dir)
+            scfg = load_stock_data_config(
+                config_path,
+                root=root_dir,
+                dataset=args.version,
+            )
             if overrides:
                 scfg = replace(scfg, **overrides)  # type: ignore[arg-type]
-            panel_df, _labels_df, meta = build_stock_panel(cfg=scfg, show_progress=True)
+            if scfg.source == "local_backtest":
+                panel_df, _labels_df, meta = build_lb_barra_panel(cfg=scfg, show_progress=True)
+                title = "FactorLibrary A 股 Barra 独立研究面板构建摘要"
+            else:
+                panel_df, _labels_df, meta = build_stock_panel(cfg=scfg, show_progress=True)
+                title = "FactorLibrary A 股标准研究面板构建摘要"
             panel_dir = scfg.panel_dir
-            title = "FactorLibrary A 股标准研究面板构建摘要"
         else:
             cfg = load_data_config(config_path, root=root_dir)
             ucfg = load_universe_config(universe_path) if universe_path.exists() else None

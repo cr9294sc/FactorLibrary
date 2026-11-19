@@ -30,8 +30,10 @@ STOCK_AUX_BACKTEST_FIELDS: frozenset[str] = frozenset(
     {
         "open_raw",
         "close_raw",
+        "pre_close_raw",
         "high_raw",
         "low_raw",
+        "vwap_open_30m_raw",
         "ex_cum_factor",
         "limit_up",
         "limit_down",
@@ -42,6 +44,7 @@ STOCK_AUX_BACKTEST_FIELDS: frozenset[str] = frozenset(
         "bench_fwd_open_1",
         "bench_fwd_close_1",
         "bench_ret",
+        "bench_c2c",
     }
 )
 
@@ -740,6 +743,8 @@ def build_stock_panel(
     meta_doc: dict[str, Any] = {
         "market": "stocks",
         "panel_version": cfg.panel_version,
+        "dataset_id": cfg.dataset_id or f"rq_{cfg.panel_version}",
+        "source": cfg.source,
         "generated_at": datetime.now().isoformat(),
         "build_duration_seconds": round(time.time() - t0, 2),
         "config_hash": cfg.hash(),
@@ -748,6 +753,19 @@ def build_stock_panel(
         "total_symbols": N,
         "total_records": len(panel_df),
         "in_universe_records": int(np.sum(panel.mask)),
+        "capabilities": {
+            "dataset_id": cfg.dataset_id or f"rq_{cfg.panel_version}",
+            "source": cfg.source,
+            "symbol_format": "rq",
+            "return_clock": cfg.exec_price_mode,
+            "has_ohlcv": True,
+            "has_volume_amount": True,
+            "has_directional_limit": True,
+            "has_listed_days": True,
+            "has_barra_exposures": False,
+            "has_barra_risk_store": False,
+            "has_vwap_open_30m": False,
+        },
         "config": cfg.to_dict(),
     }
     with meta_path.open("w", encoding="utf-8") as fh:

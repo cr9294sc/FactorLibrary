@@ -683,6 +683,8 @@ class StockUniverseFilterConfig:
     exclude_suspended: bool = True
     exclude_st: bool = True
     min_listed_days: int = 120
+    use_source_base_univ_mask: bool = False
+    exclude_bjse: bool = False
 
     def __post_init__(self) -> None:
         if self.min_listed_days < 0:
@@ -699,15 +701,23 @@ class StockDataConfig:
     benchmark_id: str = "000985.XSHG"
     price_basis: str = "hfq"  # hfq | raw
     entry_window: str = "open"  # open | vwap_open_30m
-    exec_price_mode: str = "open_adj"  # open_adj | vwap_adj
+    exec_price_mode: str = "open_adj"  # open_adj | vwap_adj | vwap_open_30m_adj
     start_date: date = date(2015, 11, 1)
     end_date: date = date(2024, 12, 31)
     universe_filters: StockUniverseFilterConfig = field(default_factory=StockUniverseFilterConfig)
     label_horizons: tuple[int, ...] = (1, 2, 5, 10)
+    source: str = "ricequant"  # ricequant | local_backtest
+    benchmark_csv: Path | None = None
+    include_idiosyncratic_labels: bool = False
+    dataset_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.start_date > self.end_date:
             raise ConfigError("timeline.start_date 不得晚于 end_date")
+        if self.source not in ("ricequant", "local_backtest"):
+            raise ConfigError(
+                f"stocks data.source 必须为 'ricequant' 或 'local_backtest', 实际 {self.source!r}"
+            )
         if self.price_basis not in ("hfq", "raw"):
             raise ConfigError(
                 f"stocks data.price_basis 必须为 'hfq' 或 'raw', 实际 {self.price_basis!r}"
@@ -716,9 +726,10 @@ class StockDataConfig:
             raise ConfigError(
                 f"stocks data.entry_window 必须为 'open' 或 'vwap_open_30m', 实际 {self.entry_window!r}"
             )
-        if self.exec_price_mode not in ("open_adj", "vwap_adj"):
+        if self.exec_price_mode not in ("open_adj", "vwap_adj", "vwap_open_30m_adj"):
             raise ConfigError(
-                f"stocks data.exec_price_mode 必须为 'open_adj' 或 'vwap_adj', 实际 {self.exec_price_mode!r}"
+                "stocks data.exec_price_mode 必须为 'open_adj', 'vwap_adj' 或 'vwap_open_30m_adj', "
+                f"实际 {self.exec_price_mode!r}"
             )
         if not self.benchmark_id:
             raise ConfigError("stocks data.benchmark_id 不能为空")
@@ -733,6 +744,7 @@ class StockDataConfig:
         out = asdict(self)
         out["raw_dir"] = str(self.raw_dir)
         out["derived_dir"] = str(self.derived_dir)
+        out["benchmark_csv"] = str(self.benchmark_csv) if self.benchmark_csv is not None else None
         out["start_date"] = self.start_date.isoformat()
         out["end_date"] = self.end_date.isoformat()
         out["label_horizons"] = list(self.label_horizons)
@@ -742,6 +754,7 @@ class StockDataConfig:
         payload = self.to_dict()
         payload.pop("raw_dir", None)
         payload.pop("derived_dir", None)
+        payload.pop("benchmark_csv", None)
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -828,19 +841,22 @@ class StockBacktestConfig:
         return asdict(self)
 
 
-def load_stock_data_config(path: Path, root: Path | None = None) -> StockDataConfig:
-    """加载并校验 ``configs/stocks/data.yaml``。"""
-    root = Path(root) if root is not None else Path.cwd()
-    raw = _load_yaml(path)
-
+def _parse_single_stock_dataset(
+    raw: dict[str, Any],
+    root: Path,
+    *,
+    dataset_id: str | None = None,
+) -> StockDataConfig:
     for key in ("raw_dir", "derived_dir"):
         if key not in raw:
-            raise ConfigError(f"stocks data.yaml 缺少必填项 {key}")
+            label = f"stocks data.yaml[{dataset_id}]" if dataset_id else "stocks data.yaml"
+            raise ConfigError(f"{label} 缺少必填项 {key}")
 
     tl = _section(raw, "timeline")
     uf = _section(raw, "universe_filters")
     lab = _section(raw, "labels")
 
+    bench_csv = raw.get("benchmark_csv")
     kwargs: dict[str, Any] = {
         "raw_dir": _resolve(raw["raw_dir"], root),
         "derived_dir": _resolve(raw["derived_dir"], root),
@@ -850,6 +866,10 @@ def load_stock_data_config(path: Path, root: Path | None = None) -> StockDataCon
         "entry_window": str(raw.get("entry_window", "open")),
         "exec_price_mode": str(raw.get("exec_price_mode", "open_adj")),
         "universe_filters": StockUniverseFilterConfig(**uf),
+        "source": str(raw.get("source", "ricequant")),
+        "benchmark_csv": _resolve(bench_csv, root) if bench_csv else None,
+        "include_idiosyncratic_labels": bool(lab.get("include_idiosyncratic", False)),
+        "dataset_id": dataset_id or raw.get("dataset_id"),
     }
     if "start_date" in tl:
         kwargs["start_date"] = _parse_date(tl["start_date"], "timeline.start_date")
@@ -858,6 +878,59 @@ def load_stock_data_config(path: Path, root: Path | None = None) -> StockDataCon
     if "horizons" in lab:
         kwargs["label_horizons"] = tuple(int(h) for h in lab["horizons"])
     return StockDataConfig(**kwargs)
+
+
+def load_stock_datasets_config(
+    path: Path,
+    root: Path | None = None,
+) -> tuple[str, dict[str, StockDataConfig]]:
+    """加载多数据源版 ``configs/stocks/data.yaml``，返回 ``(default_dataset, datasets_map)``。"""
+    root = Path(root) if root is not None else Path.cwd()
+    raw = _load_yaml(path)
+
+    if "datasets" not in raw:
+        single = _parse_single_stock_dataset(raw, root)
+        ds_key = single.dataset_id or single.panel_version
+        return ds_key, {ds_key: single}
+
+    datasets_raw = raw.get("datasets")
+    if not isinstance(datasets_raw, dict) or not datasets_raw:
+        raise ConfigError("stocks data.yaml 的 'datasets' 必须为非空映射")
+
+    parsed: dict[str, StockDataConfig] = {}
+    for ds_id, ds_node in datasets_raw.items():
+        if not isinstance(ds_node, dict):
+            raise ConfigError(f"stocks data.yaml datasets.{ds_id!r} 必须是映射")
+        parsed[str(ds_id)] = _parse_single_stock_dataset(ds_node, root, dataset_id=str(ds_id))
+
+    default_ds = str(raw.get("default_dataset") or next(iter(parsed.keys())))
+    if default_ds not in parsed:
+        raise ConfigError(
+            f"stocks data.yaml default_dataset={default_ds!r} 未在 datasets 中定义: {sorted(parsed.keys())}"
+        )
+    return default_ds, parsed
+
+
+def load_stock_data_config(
+    path: Path,
+    root: Path | None = None,
+    *,
+    dataset: str | None = None,
+) -> StockDataConfig:
+    """加载并校验 ``configs/stocks/data.yaml``（兼容单数据集与多数据集声明）。"""
+    root = Path(root) if root is not None else Path.cwd()
+    default_ds, datasets_map = load_stock_datasets_config(path, root=root)
+    if dataset is None:
+        return datasets_map[default_ds]
+    if dataset in datasets_map:
+        return datasets_map[dataset]
+    # 支持按 panel_version 匹配 (例如 "v1" -> "rq_v1")
+    for cfg in datasets_map.values():
+        if cfg.panel_version == dataset:
+            return cfg
+    raise ConfigError(
+        f"stocks data.yaml 未找到数据集 {dataset!r}，可选: {sorted(datasets_map.keys())}"
+    )
 
 
 def load_stock_fees_config(path: Path) -> StockFeesConfig:
@@ -903,8 +976,10 @@ def validate_profile_configs(market: str, config_dir: Path | None = None) -> dic
             "ml": load_ml_config(cfg_root / "ml_default.yaml"),
         }
     if m == "stocks":
+        _, datasets_map = load_stock_datasets_config(cfg_root / "data.yaml")
         return {
             "data": load_stock_data_config(cfg_root / "data.yaml"),
+            "datasets": datasets_map,
             "universe": load_universe_config(cfg_root / "universe.yaml"),
             "fees": load_stock_fees_config(cfg_root / "fees.yaml"),
             "backtest": load_stock_backtest_config(cfg_root / "backtest.yaml"),

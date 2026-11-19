@@ -327,3 +327,48 @@ def test_build_stock_panel_and_profile_load_derived(tmp_path: Path) -> None:
     assert "y_1" in panel.labels and "y_5" in panel.labels
     assert "bench_fwd_open_1" in panel.aux_fields
     assert "bench_fwd_open_1" not in panel.fields
+
+
+def test_stock_backtest_vwap_open_30m_anti_lookahead() -> None:
+    """验证 entry_window='vwap_open_30m' 必须使用 vwap_open_30m_adj，严禁静默回退全天 vwap_adj。"""
+    from factorlib.core.config import StockBacktestConfig, StockExecutionConfig
+    from factorlib.markets.stocks.backtest import (
+        _resolve_exec_and_close_prices,
+        run_stock_backtest_pipeline,
+    )
+
+    sdata = _make_synthetic_stock_panel_data(T=10, N=6, seed=11)
+    panel_no_30m = sdata.to_panel(horizons=(1,))
+    assert "vwap_adj" in panel_no_30m.fields
+    assert not panel_no_30m.has_any_field("vwap_open_30m_adj")
+
+    # 1. hfq 口径缺少 vwap_open_30m_adj 时禁止静默回退到全天 vwap_adj
+    with pytest.raises(ValueError, match="vwap_open_30m_adj"):
+        _resolve_exec_and_close_prices(
+            panel_no_30m, price_basis="hfq", entry_window="vwap_open_30m"
+        )
+
+    # 2. raw 口径缺少 vwap_open_30m_raw / exec_vwap 时禁止静默回退
+    with pytest.raises(ValueError, match="vwap_open_30m_raw"):
+        _resolve_exec_and_close_prices(
+            panel_no_30m, price_basis="raw", entry_window="vwap_open_30m"
+        )
+
+    # 3. 显式提供 vwap_open_30m_adj 时正确选取，且标注 bilateral_conservative
+    vwap30 = panel_no_30m.fields["open_adj"] * 1.005
+    panel_no_30m.fields["vwap_open_30m_adj"] = np.asfortranarray(vwap30)
+    panel_no_30m.meta["capabilities"] = {"has_directional_limit": False}
+
+    exec_p, close_p = _resolve_exec_and_close_prices(
+        panel_no_30m, price_basis="hfq", entry_window="vwap_open_30m"
+    )
+    np.testing.assert_allclose(exec_p, vwap30)
+    np.testing.assert_allclose(close_p, panel_no_30m.fields["close_hfq"])
+
+    weights = np.full(panel_no_30m.shape, 0.25, dtype=np.float64, order="F")
+    bt_cfg = StockBacktestConfig(
+        execution=StockExecutionConfig(entry_window="vwap_open_30m", price_basis="hfq")
+    )
+    res = run_stock_backtest_pipeline(panel_no_30m, weights, config=bt_cfg)
+    assert res.extras["limit_mask_mode"] == "bilateral_conservative"
+    assert res.extras["entry_window"] == "vwap_open_30m"

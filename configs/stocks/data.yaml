@@ -1,20 +1,43 @@
-raw_dir: "./data/raw/stocks"
-derived_dir: "./data/derived/stocks"
-panel_version: "v1"
+# configs/stocks/data.yaml (双数据源独立托管版)
+default_dataset: "rq_v1"                 # 默认研究数据集: "rq_v1" | "rq_v2" | "lb_barra_v1"
 
-benchmark_id: "000985.XSHG"          # 中证全指基准指数
-price_basis: "hfq"                   # 复权口径: "hfq" | "raw"
-entry_window: "open"                 # 执行价窗口: "open" | "vwap_open_30m"
-exec_price_mode: "open_adj"          # StockPanelLoader 执行价字段 ("open_adj" | "vwap_adj")
+datasets:
+  rq_v1:
+    source: "ricequant"
+    raw_dir: "./data/raw/stocks"
+    derived_dir: "./data/derived/stocks"
+    panel_version: "v1"                  # 物理路径 data/derived/stocks/v1 (向下兼容)
+    benchmark_id: "000985.XSHG"
+    price_basis: "hfq"
+    entry_window: "open"
+    exec_price_mode: "open_adj"
+    timeline:
+      start_date: "2015-11-01"
+      end_date: "2024-12-31"
+    universe_filters:
+      exclude_suspended: true            # 剔除停牌日
+      exclude_st: true                   # 剔除 ST / *ST 标的
+      min_listed_days: 120               # 新股剔除自然日天数阈值
+    labels:
+      horizons: [1, 2, 5, 10]
+      include_idiosyncratic: false       # rq 域默认仅算总收益标签, 可选通过 RiskView 动态算
 
-timeline:
-  start_date: "2015-11-01"
-  end_date: "2024-12-31"
-
-universe_filters:
-  exclude_suspended: true            # 剔除停牌日
-  exclude_st: true                   # 剔除 ST / *ST 标的
-  min_listed_days: 120               # 新股剔除自然日天数阈值
-
-labels:
-  horizons: [1, 2, 5, 10]
+  lb_barra_v1:
+    source: "local_backtest"
+    raw_dir: "./local_backtest/runtime_assets"
+    derived_dir: "./data/derived/stocks"
+    panel_version: "lb_barra_v1"         # 独立物理路径 data/derived/stocks/lb_barra_v1
+    benchmark_id: "000905.SH"
+    benchmark_csv: "./local_backtest/runtime_assets/benchmark_000905_SH.csv"
+    price_basis: "hfq"
+    entry_window: "vwap_open_30m"
+    exec_price_mode: "vwap_open_30m_adj"
+    timeline:
+      start_date: "2016-01-06"
+      end_date: "2026-11-10"
+    universe_filters:
+      use_source_base_univ_mask: true    # 直接使用反极性后的 StockMask2.BaseUnivMask
+      exclude_bjse: true                 # 默认剔除北交所 4/8/92 开头标的 (可按需放开)
+    labels:
+      horizons: [1, 2, 5, 10]
+      include_idiosyncratic: true        # 原生构建 y_idio_1/2/5/10 纯特质收益标签

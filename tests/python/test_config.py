@@ -25,6 +25,7 @@ from factorlib.core.config import (
     load_ml_config,
     load_stock_backtest_config,
     load_stock_data_config,
+    load_stock_datasets_config,
     load_stock_fees_config,
     load_universe_config,
     validate_profile_configs,
@@ -335,3 +336,39 @@ def test_stocks_configs_and_profile_validation(tmp_path: Path):
     bad_bt.write_text("execution:\n  lot_size: 50\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="lot_size"):
         load_stock_backtest_config(bad_bt)
+
+
+def test_stocks_dual_dataset_data_yaml(tmp_path: Path):
+    """验证双数据源版 configs/stocks/data.yaml 加载与数据集切换。"""
+    data_yaml = Path("configs/stocks/data.yaml")
+    default_ds, ds_map = load_stock_datasets_config(data_yaml)
+    assert default_ds == "rq_v1"
+    assert set(ds_map.keys()) >= {"rq_v1", "lb_barra_v1"}
+
+    rq_cfg = load_stock_data_config(data_yaml, dataset="rq_v1")
+    assert rq_cfg.source == "ricequant"
+    assert rq_cfg.panel_version == "v1"
+    assert rq_cfg.entry_window == "open"
+    assert rq_cfg.exec_price_mode == "open_adj"
+    assert rq_cfg.include_idiosyncratic_labels is False
+
+    # 按 panel_version='v1' 也能解析到 rq_v1
+    rq_alias = load_stock_data_config(data_yaml, dataset="v1")
+    assert rq_alias.panel_version == "v1"
+
+    lb_cfg = load_stock_data_config(data_yaml, dataset="lb_barra_v1")
+    assert lb_cfg.source == "local_backtest"
+    assert lb_cfg.panel_version == "lb_barra_v1"
+    assert lb_cfg.entry_window == "vwap_open_30m"
+    assert lb_cfg.exec_price_mode == "vwap_open_30m_adj"
+    assert lb_cfg.include_idiosyncratic_labels is True
+    assert lb_cfg.universe_filters.use_source_base_univ_mask is True
+    assert lb_cfg.universe_filters.exclude_bjse is True
+
+    bad_src = tmp_path / "bad_src.yaml"
+    bad_src.write_text(
+        'raw_dir: "./r"\nderived_dir: "./d"\nsource: "unknown_src"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="source"):
+        load_stock_data_config(bad_src, root=tmp_path)

@@ -23,10 +23,22 @@ def _resolve_exec_and_close_prices(
     price_basis: str,
     entry_window: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """根据 price_basis ('hfq' | 'raw') 与 entry_window 解析股票执行价与盯市收盘价。"""
+    """根据 price_basis ('hfq' | 'raw') 与 entry_window 解析股票执行价与盯市收盘价。
+
+    防前视红线：当 entry_window == 'vwap_open_30m' 时，严禁静默回退至全天 'vwap_adj'
+    或收盘/开盘价，缺少开盘 30 分钟 VWAP 字段必须显式报错。
+    """
     if price_basis == "raw":
-        if entry_window == "vwap_open_30m" and panel.has_any_field("exec_vwap"):
-            exec_p = panel.get_any_field("exec_vwap")
+        if entry_window == "vwap_open_30m":
+            if panel.has_any_field("vwap_open_30m_raw"):
+                exec_p = panel.get_any_field("vwap_open_30m_raw")
+            elif panel.has_any_field("exec_vwap"):
+                exec_p = panel.get_any_field("exec_vwap")
+            else:
+                raise ValueError(
+                    "entry_window='vwap_open_30m' (price_basis='raw') 需要 'vwap_open_30m_raw' "
+                    "或 'exec_vwap' 字段；拒绝静默回退至全天均价或开盘/收盘价以防前视偏差"
+                )
         elif panel.has_any_field("open_raw"):
             exec_p = panel.get_any_field("open_raw")
         elif panel.has_any_field("open"):
@@ -38,22 +50,34 @@ def _resolve_exec_and_close_prices(
             close_p = panel.get_any_field("close_raw")
         elif panel.has_any_field("close"):
             close_p = panel.get_any_field("close")
-        else:
+        elif panel.has_any_field("close_hfq"):
             close_p = panel.get_any_field("close_hfq")
+        else:
+            close_p = panel.get_any_field("close_adj")
         return exec_p, close_p
 
     # 默认 hfq 复权口径
-    if entry_window == "vwap_open_30m" and panel.has_any_field("vwap_adj"):
-        exec_p = panel.get_any_field("vwap_adj")
+    if entry_window == "vwap_open_30m":
+        if panel.has_any_field("vwap_open_30m_adj"):
+            exec_p = panel.get_any_field("vwap_open_30m_adj")
+        else:
+            raise ValueError(
+                "entry_window='vwap_open_30m' (price_basis='hfq') 需要 'vwap_open_30m_adj' 字段；"
+                "拒绝静默回退至全天 'vwap_adj' 或 'open_adj' 以防日内前视偏差"
+            )
     elif panel.has_any_field("open_adj"):
         exec_p = panel.get_any_field("open_adj")
     elif panel.has_any_field("open_raw"):
         exec_p = panel.get_any_field("open_raw")
-    else:
+    elif panel.has_any_field("close_hfq"):
         exec_p = panel.get_any_field("close_hfq")
+    else:
+        exec_p = panel.get_any_field("close_adj")
 
     if panel.has_any_field("close_hfq"):
         close_p = panel.get_any_field("close_hfq")
+    elif panel.has_any_field("close_adj"):
+        close_p = panel.get_any_field("close_adj")
     elif panel.has_any_field("close"):
         close_p = panel.get_any_field("close")
     else:
@@ -130,11 +154,20 @@ def run_stock_backtest_pipeline(
         slip_bps=float(fee_cfg.slip_bps),
     )
 
+    caps = panel.meta.get("capabilities")
+    limit_mode = (
+        "bilateral_conservative"
+        if isinstance(caps, dict) and caps.get("has_directional_limit") is False
+        else "directional"
+    )
     zeros_t = np.zeros(T, dtype=np.float64)
     extras: dict[str, Any] = {
         "tax": raw_res["tax"],
         "blocked_orders": raw_res["blocked_orders"],
         "excess_returns": raw_res["excess_returns"],
+        "limit_mask_mode": limit_mode,
+        "entry_window": bt_cfg.execution.entry_window,
+        "price_basis": bt_cfg.execution.price_basis,
     }
     if bench_arr is not None:
         clean_b = np.where(np.isfinite(bench_arr), bench_arr, 0.0)

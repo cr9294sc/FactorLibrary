@@ -39,6 +39,16 @@ from factorlib.markets.stocks.portfolio import build_stocks_portfolio_weights
 from factorlib.markets.stocks.styles import compute_stocks_styles
 
 
+def _symbol_key(value: Any) -> str:
+    """跨源证券代码归一：`000001.XSHE` / `SZ000001` / `000001` 统一为 `000001`。"""
+    s = str(value).strip().upper()
+    if "." in s:
+        s = s.split(".", 1)[0]
+    if s.startswith(("SH", "SZ", "BJ")):
+        s = s[2:]
+    return s.zfill(6) if s.isdigit() and len(s) < 6 else s
+
+
 def _normalize_date(value: Any) -> str:
     """把 `date` / `datetime` / `YYYYMMDD` / `YYYY-MM-DD` 统一归一化为 ISO 日期字符串。"""
     from datetime import date as _date
@@ -605,14 +615,20 @@ class StocksProfile:
         T, N = panel.shape
         dates = [_normalize_date(d) for d in panel.dates]
         d_map = {d: i for i, d in enumerate(dates)}
-        s_map = {str(s): j for j, s in enumerate(panel.symbols)}
+        # 跨源代码归一：米筐 `000001.XSHE` 与 lb_barra 6 位代码 `000001` 统一为 6 位逻辑键
+        s_map = {_symbol_key(s): j for j, s in enumerate(panel.symbols)}
         out = np.zeros((T, N), dtype=np.float64, order="F")
+        hit = 0
         for d_val, s_val, w_val in df.select(["trading_date", "symbol", "weight"]).iter_rows():
             ti = d_map.get(_normalize_date(d_val))
-            nj = s_map.get(str(s_val))
+            nj = s_map.get(_symbol_key(s_val))
             if ti is None or nj is None:
                 continue
             out[ti, nj] = float(w_val)
+            hit += 1
+        # 零命中或全零权重视为不可用，交由 `mkt_cap_proxy` 降级
+        if hit == 0 or not np.any(out > 0.0):
+            return None
         return out
 
     def _build_barra_qp_weights(

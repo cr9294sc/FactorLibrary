@@ -115,9 +115,16 @@ where
         abs_devs.sort_by(|a, b| cmp_f64(*a, *b));
         let mad = abs_devs[(k - 1) / 2];
 
-        let radius = threshold * 1.4826 * mad;
+        // 防御性鲁棒化：阈值取绝对值并强制有界（负阈值或非有限阈值绝不允许触发 clamp panic）
+        let radius = (threshold.abs() * 1.4826 * mad).min(f64::MAX);
+        if !med.is_finite() || !radius.is_finite() {
+            continue;
+        }
         let lo = med - radius;
         let hi = med + radius;
+        if lo > hi {
+            continue;
+        }
 
         for col in 0..n {
             let v = x1[[row, col]];
@@ -173,6 +180,9 @@ where
         finite_vals.sort_by(|a, b| cmp_f64(*a, *b));
         let lo = linear_quantile_sorted(&finite_vals, q);
         let hi = linear_quantile_sorted(&finite_vals, 1.0 - q);
+        if !lo.is_finite() || !hi.is_finite() || lo > hi {
+            continue;
+        }
 
         for col in 0..n {
             let v = x1[[row, col]];

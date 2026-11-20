@@ -143,6 +143,48 @@ pub fn infer_type(
             }
             Ok(out_type)
         }
+        ASTNode::NaryCall { op, args } => {
+            let mut actual: Vec<DataType> = Vec::with_capacity(args.len());
+            for a in args {
+                actual.push(infer_type(a, available_fields, forbidden_labels)?);
+            }
+            let has_intercept = matches!(actual.last(), Some(DataType::Constant));
+            let positional = if has_intercept {
+                actual.len() - 1
+            } else {
+                actual.len()
+            };
+            if positional < op.min_args() {
+                return Err(TypeError::ArgTypeMismatch {
+                    op: op.name().to_string(),
+                    arg_idx: positional.saturating_sub(1),
+                    expected: DataType::Series,
+                    actual: DataType::Window,
+                });
+            }
+            for (idx, ty) in actual.iter().enumerate().take(positional) {
+                if *ty != DataType::Series {
+                    return Err(TypeError::ArgTypeMismatch {
+                        op: op.name().to_string(),
+                        arg_idx: idx,
+                        expected: DataType::Series,
+                        actual: *ty,
+                    });
+                }
+            }
+            if has_intercept {
+                let idx = actual.len() - 1;
+                if actual[idx] != DataType::Constant {
+                    return Err(TypeError::ArgTypeMismatch {
+                        op: op.name().to_string(),
+                        arg_idx: idx,
+                        expected: DataType::Constant,
+                        actual: actual[idx],
+                    });
+                }
+            }
+            Ok(DataType::Series)
+        }
     }
 }
 
@@ -223,6 +265,11 @@ fn collect_warnings_rec(node: &ASTNode, out: &mut Vec<String>) {
             collect_warnings_rec(cond, out);
             collect_warnings_rec(then_branch, out);
             collect_warnings_rec(else_branch, out);
+        }
+        ASTNode::NaryCall { args, .. } => {
+            for a in args {
+                collect_warnings_rec(a, out);
+            }
         }
     }
 }

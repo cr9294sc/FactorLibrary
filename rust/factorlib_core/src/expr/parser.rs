@@ -8,7 +8,7 @@
 use crate::expr::ast::ASTNode;
 use crate::expr::lexer::{tokenize, LexError, Token, TokenKind};
 use crate::expr::types::DataType;
-use crate::ops::{BinaryOp, TernaryOp, UnaryOp};
+use crate::ops::{BinaryOp, NaryOp, TernaryOp, UnaryOp};
 use crate::panel::is_reserved_label_name;
 use thiserror::Error;
 
@@ -379,6 +379,40 @@ fn build_call_node(name: &str, mut args: Vec<ASTNode>) -> Result<ASTNode, ParseE
             cond: Box::new(a0),
             then_branch: Box::new(a1),
             else_branch: Box::new(a2),
+        });
+    }
+
+    if let Some(op) = NaryOp::from_name(name) {
+        let min_args = op.min_args();
+        if args.len() < min_args {
+            return Err(ParseError::ArityMismatch {
+                op: name.to_string(),
+                expected: min_args,
+                actual: args.len(),
+            });
+        }
+        // 尾部整数字面量（Window）在常数槽位自动提升为 Constant；
+        // 若尾部本身为 Constant 则视为 `intercept` 开关。
+        if let Some(ASTNode::Window(w)) = args.last().cloned() {
+            let n_last = args.len();
+            args[n_last - 1] = ASTNode::Constant(w as f64);
+        }
+        let has_intercept = matches!(args.last(), Some(ASTNode::Constant(_)));
+        let positional = if has_intercept {
+            args.len() - 1
+        } else {
+            args.len()
+        };
+        if positional < min_args {
+            return Err(ParseError::ArityMismatch {
+                op: name.to_string(),
+                expected: min_args,
+                actual: positional,
+            });
+        }
+        return Ok(ASTNode::NaryCall {
+            op,
+            args: args.into_iter().map(Box::new).collect(),
         });
     }
 

@@ -1,7 +1,7 @@
 r"""P2 验收测试：Rust 计算内核 (`factorlib_core`) 与 Python 参考实现 (`ops_ref.py`) 全量对账与压测。
 
 涵盖白皮书 P2 全部验收指标：
-1. 68 个算子（逐元素一元/二元/常数/条件逻辑、时序滚动增量 Welford/单调队列/二分排名、横截面、板块分组）
+1. 全量算子（逐元素一元/二元/常数/条件逻辑、时序滚动增量 Welford/单调队列/二分排名、横截面、板块分组、变参多元回归）
    在随机噪声矩阵（含高密度 NaN、正负无穷、并列极值、不同尺度数值）下与 `ops_ref.py` 对账，
    最大相对/绝对浮点误差严格 $< 10^{-9}$；
 2. 基于 `hypothesis` 的性质测试（Property-based Testing）；
@@ -59,6 +59,11 @@ def _assert_close_with_nan(
             atol=tol,
             err_msg=f"{msg}: 数值误差超过 {tol}",
         )
+
+
+def _sanitize(mat: np.ndarray) -> np.ndarray:
+    """按平台 NaN 策略把 ±Inf 归一为 NaN（对齐 Rust `into_fortran_f64` 装载边界）。"""
+    return np.asfortranarray(np.where(np.isfinite(mat), mat, np.nan), dtype=np.float64)
 
 
 def test_all_68_operators_reconciliation_against_ops_ref():
@@ -231,7 +236,8 @@ def test_hypothesis_property_reconciliation(seed: int, window: int, nan_prob: fl
 def test_dsl_sugar_typechecking_and_canon():
     """测试 Python DSL 语法糖、类型检查阻断、未来函数标签拦截与代数规范化。"""
     specs = get_operator_specs()
-    assert len(specs) == 68
+    assert len(specs) >= 106, "Rust 内核必须完整覆盖 FactorLab MCP 目录的 106 个 1d 算子"
+    assert len({s["name"] for s in specs}) == len(specs)
     assert set(ops_ref.OPS_REF_REGISTRY.keys()) == {s["name"] for s in specs}
 
     # Expr 链式语法糖与中缀表达式
@@ -811,3 +817,208 @@ def test_spanning_test_rust_parity_and_collinearity():
     )
     assert abs(slice_res["icir"] - sub_ref["icir"]) < 1e-9
     assert [r - 10 for r in slice_res["row_indices"]] == sub_ref["row_indices"]
+
+
+# ==============================================================================
+# FactorLab MCP 1d 算子全量对齐对账（P0-2）
+# ==============================================================================
+
+_FACTORLAB_UNARY_OPS: list[str] = [
+    "exp",
+    "ceil",
+    "sign_power",
+    "unique_count",
+    "is_inf",
+    "is_nan",
+    "purify",
+    "zero_to_nan",
+    "cs_sum",
+    "cs_mean",
+    "cs_std",
+    "cs_var",
+    "cs_max",
+    "cs_min",
+    "cs_median",
+    "cs_nonan_num",
+    "cs_argmax",
+    "cs_argmin",
+    "cs_pct_rank",
+    "cs_dense_rank",
+    "cs_dense_pct_rank",
+    "cs_skew",
+    "cs_kurt",
+    "cs_mad",
+    "rank_ts",
+    "pct_rank_ts",
+    "dense_rank_ts",
+    "pct_dense_rank_ts",
+    "ts_cumprod",
+    "ts_cumsum",
+    "ts_ffill",
+    "ts_dense_rank",
+    "ts_pct_dense_rank",
+]
+
+_FACTORLAB_CONST_OPS: list[tuple[str, str]] = [
+    ("fillna", "fillna(x, 0.0)"),
+    ("round", "round(x, 2)"),
+    ("perc_long", "perc_long(x, 0.5)"),
+    ("cs_quantile", "cs_quantile(x, 0.25)"),
+    ("cs_group", "cs_group(x, 3)"),
+    ("winsor", "winsor(x, 0.05)"),
+    ("MAD", "MAD(x, 3.0)"),
+]
+
+_FACTORLAB_SERIES_OPS: list[str] = [
+    "cs_beta",
+    "cs_corr",
+    "cs_cov",
+    "barra5_zScore",
+    "ts_dw",
+]
+
+_FACTORLAB_WINDOW_OPS: list[str] = [
+    "ts_roll",
+    "ts_prod",
+    "ts_median",
+    "ts_nonan_num",
+    "ts_pct_rank",
+    "ts_group",
+]
+
+
+def test_factorlab_mcp_1d_operator_full_reconciliation():
+    """FactorLab MCP 1d 全量算子 Rust vs NumPy 参考实现逐一对账（误差 < 1e-9）。"""
+    T, N = 65, 12
+    for seed in [7, 42, 2026]:
+        rng = np.random.default_rng(seed)
+        # 平台 NaN 策略：面板装载边界统一将 ±Inf 归一为 NaN，参考实现必须基于同一输入口径
+        x = _sanitize(_make_noisy_matrix(rng, T, N, nan_prob=0.18))
+        y = _sanitize(_make_noisy_matrix(rng, T, N, nan_prob=0.16))
+        w = np.asfortranarray(np.abs(rng.normal(1.0e9, 2.0e8, size=(T, N))))
+        w[rng.random((T, N)) < 0.1] = np.nan
+        z = _sanitize(_make_noisy_matrix(rng, T, N, nan_prob=0.05))
+
+        fields = {"x": x, "y": y, "w": w, "z": z}
+        mask = np.ones((T, N), dtype=bool, order="F")
+        eng = factorlib_core.Engine(
+            fields,
+            mask,
+            {"y_5": np.zeros((T, N), dtype=np.float64, order="F")},
+            [f"d_{i}" for i in range(T)],
+            [f"S_{j}" for j in range(N)],
+            cache_mb=64,
+            n_threads=2,
+        )
+
+        # 1. 一元算子
+        for op_name in _FACTORLAB_UNARY_OPS:
+            rust_res = eng.eval(f"{op_name}(x)", use_cache=False)
+            ref_res = ops_ref.OPS_REF_REGISTRY[op_name](x)
+            _assert_close_with_nan(rust_res, ref_res, f"seed={seed} {op_name}(x)")
+
+        # 2. 常数参数算子
+        for op_name, expr in _FACTORLAB_CONST_OPS:
+            rust_res = eng.eval(expr, use_cache=False)
+            arg = float(expr.split(",")[1].rstrip(")"))
+            ref_res = ops_ref.OPS_REF_REGISTRY[op_name](x, arg)
+            _assert_close_with_nan(rust_res, ref_res, f"seed={seed} {expr}")
+
+        # 3. 双变量截面/时序算子
+        for op_name in _FACTORLAB_SERIES_OPS:
+            rhs = "w" if op_name == "barra5_zScore" else "y"
+            rust_res = eng.eval(f"{op_name}(x, {rhs})", use_cache=False)
+            ref_res = ops_ref.OPS_REF_REGISTRY[op_name](x, fields[rhs])
+            _assert_close_with_nan(rust_res, ref_res, f"seed={seed} {op_name}(x, {rhs})")
+
+        # 4. 时序窗口扩充算子
+        for dw in [3, 5, 20]:
+            for op_name in _FACTORLAB_WINDOW_OPS:
+                if op_name == "ts_group":
+                    expr = f"ts_group(x, {dw})"
+                else:
+                    expr = f"{op_name}(x, {dw})"
+                rust_res = eng.eval(expr, use_cache=False)
+                ref_res = ops_ref.OPS_REF_REGISTRY[op_name](x, dw)
+                _assert_close_with_nan(rust_res, ref_res, f"seed={seed} {expr}")
+
+        # 5. 时序分位三元算子
+        for dw in [5, 20]:
+            for q in [0.1, 0.5, 0.9]:
+                rust_res = eng.eval(f"ts_quantile(x, {q}, {dw})", use_cache=False)
+                ref_res = ops_ref.ts_quantile(x, q, dw)
+                _assert_close_with_nan(rust_res, ref_res, f"seed={seed} ts_quantile(x,{q},{dw})")
+
+        # 6. 变参多元（加权）回归算子
+        nary_cases: list[tuple[str, str, list[np.ndarray], np.ndarray | None, float]] = [
+            ("cs_multi_resi", "cs_multi_resi(x, y, 0)", [y], None, 0.0),
+            ("cs_multi_resi", "cs_multi_resi(x, y, 1)", [y], None, 1.0),
+            ("cs_multi_beta", "cs_multi_beta(x, y, 1)", [y], None, 1.0),
+            ("cs_multi_resi", "cs_multi_resi(x, y, z, 1)", [y, z], None, 1.0),
+            ("cs_multi_beta", "cs_multi_beta(x, y, z, 0)", [y, z], None, 0.0),
+            ("cs_multi_wls_resi", "cs_multi_wls_resi(x, w, y, 1)", [y], w, 1.0),
+            ("cs_multi_wls_beta", "cs_multi_wls_beta(x, w, y, 0)", [y], w, 0.0),
+            ("cs_multi_wls_resi", "cs_multi_wls_resi(x, w, y, z, 1)", [y, z], w, 1.0),
+            ("ts_multi_resi", "ts_multi_resi(x, y, 1)", [y], None, 1.0),
+            ("ts_multi_beta", "ts_multi_beta(x, y, 0)", [y], None, 0.0),
+            ("ts_multi_resi", "ts_multi_resi(x, y, z, 1)", [y, z], None, 1.0),
+            ("ts_multi_wls_resi", "ts_multi_wls_resi(x, w, y, 1)", [y], w, 1.0),
+            ("ts_multi_wls_beta", "ts_multi_wls_beta(x, w, y, 0)", [y], w, 0.0),
+        ]
+        for op_name, expr, exps, wmat, icpt in nary_cases:
+            rust_res = eng.eval(expr, use_cache=False)
+            fn = ops_ref.OPS_REF_REGISTRY[op_name]
+            if wmat is None:
+                ref_res = fn(x, *exps, icpt)
+            else:
+                ref_res = fn(x, wmat, *exps, icpt)
+            _assert_close_with_nan(rust_res, ref_res, f"seed={seed} {expr}")
+
+
+def test_factorlab_operator_alias_resolution():
+    """FactorLab MCP 别名必须解析到同一原生算子并产出完全相同的结果。"""
+    T, N = 40, 8
+    rng = np.random.default_rng(11)
+    x = _sanitize(_make_noisy_matrix(rng, T, N, nan_prob=0.1))
+    y = _sanitize(_make_noisy_matrix(rng, T, N, nan_prob=0.1))
+    ind = np.asfortranarray(rng.integers(1, 4, size=(T, N)).astype(np.float64))
+    mask = np.ones((T, N), dtype=bool, order="F")
+    eng = factorlib_core.Engine(
+        {"x": x, "y": y, "ind": ind},
+        mask,
+        {},
+        [f"d_{i}" for i in range(T)],
+        [f"S_{j}" for j in range(N)],
+        cache_mb=32,
+        n_threads=1,
+    )
+    alias_pairs = [
+        ("greater(x, y)", "max2(x, y)"),
+        ("less(x, y)", "min2(x, y)"),
+        ("where(gt(x, y), x, y)", "ifelse(gt(x, y), x, y)"),
+        ("scale(x)", "cs_scale(x)"),
+        ("zScore(x)", "cs_zscore(x)"),
+        ("rank(x)", "cs_pct_rank(x)"),
+        ("ts_shift(x, 3)", "delay(x, 3)"),
+        ("ts_delta(x, 3)", "delta(x, 3)"),
+        ("ts_pct_chg(x, 3)", "pct_change(x, 3)"),
+        ("decay(x, 5)", "ts_mean(x, 5)"),
+        ("emadecay(x, 5)", "ts_decay_linear(x, 5)"),
+        ("indNeut(x, ind)", "group_demean(x, ind)"),
+        ("riskNeut(x, y)", "cs_neutralize(x, y)"),
+        ("riskNeutMulti(x, y)", "cs_multi_resi(x, y)"),
+        ("power(x, 2)", "spow(x, 2)"),
+    ]
+    for lhs, rhs in alias_pairs:
+        a = eng.eval(lhs, use_cache=False)
+        b = eng.eval(rhs, use_cache=False)
+        _assert_close_with_nan(a, b, f"alias {lhs} != {rhs}")
+
+
+def test_factorlab_operator_registry_completeness():
+    """Rust 注册算子必须完整覆盖 FactorLab MCP 目录 106 个 1d 算子。"""
+    names = {op["name"] for op in factorlib_core.list_operators()}
+    required = set(ops_ref.OPS_REF_REGISTRY)
+    missing_in_rust = required - names
+    assert not missing_in_rust, f"Rust 内核缺失算子: {sorted(missing_in_rust)}"
+    assert len(names) >= 106, f"注册算子数 {len(names)} 少于 FactorLab 目录的 106 项"

@@ -13,7 +13,7 @@ use factorlib_core::expr::eval::{eval_batch_str, eval_expr_str};
 use factorlib_core::expr::parser::parse_expr;
 use factorlib_core::expr::typecheck::typecheck_factor_expr;
 use factorlib_core::nan::{clean_f64, STD_EPS, VAR_EPS};
-use factorlib_core::ops::{cs, elem, list_all_operators, postprocess, ts};
+use factorlib_core::ops::{cs, elem, list_all_operators, postprocess, ts, REGISTERED_OP_COUNT};
 use factorlib_core::panel::{alloc_nan_matrix, into_fortran_f64, Panel};
 use ndarray::{Array2, ShapeBuilder};
 use proptest::prelude::*;
@@ -375,9 +375,134 @@ proptest! {
 }
 
 #[test]
-fn test_all_68_operators_registered() {
+fn test_all_factorlab_operators_registered() {
+    // 严格对齐 `docs/factorlab_mcp_catalog.md` 第四章的 106 个 1d 表达式算子
     let ops = list_all_operators();
-    assert_eq!(ops.len(), 68);
+    assert_eq!(
+        ops.len(),
+        REGISTERED_OP_COUNT,
+        "注册算子总数必须与 REGISTERED_OP_COUNT 一致"
+    );
+    assert!(
+        ops.len() >= 106,
+        "注册算子数 ({}) 必须完整覆盖 FactorLab MCP 目录的 106 个算子",
+        ops.len()
+    );
+    let names: std::collections::HashSet<&str> = ops.iter().map(|o| o.name).collect();
+    assert_eq!(names.len(), ops.len(), "算子名称必须全局唯一");
+
+    // FactorLab MCP 目录第四章全量算子名（含别名解析目标名）必须全部可被 from_name 解析
+    const FACTORLAB_1D_OPS: &[&str] = &[
+        // 4.1 逐元素运算
+        "add",
+        "div",
+        "max2",
+        "min2",
+        "mul",
+        "spow",
+        "sub",
+        // 4.2 条件与比较
+        "where",
+        // 4.3 数学变换
+        "abs",
+        "ceil",
+        "clip",
+        "exp",
+        "slog",
+        "perc_long",
+        "round",
+        "cs_scale",
+        "sign",
+        "sign_power",
+        "ssqrt",
+        "unique_count",
+        // 4.4 缺失值与极值处理
+        "fillna",
+        "is_inf",
+        "is_nan",
+        "purify",
+        "zero_to_nan",
+        // 4.5 截面运算
+        "cs_argmax",
+        "cs_argmin",
+        "cs_beta",
+        "cs_corr",
+        "cs_cov",
+        "cs_dense_pct_rank",
+        "cs_dense_rank",
+        "cs_group",
+        "cs_kurt",
+        "cs_mad",
+        "cs_max",
+        "cs_mean",
+        "cs_median",
+        "cs_min",
+        "cs_multi_beta",
+        "cs_multi_resi",
+        "cs_multi_wls_beta",
+        "cs_multi_wls_resi",
+        "cs_nonan_num",
+        "cs_pct_rank",
+        "cs_quantile",
+        "cs_rank",
+        "cs_skew",
+        "cs_std",
+        "cs_sum",
+        "cs_var",
+        "cs_zscore",
+        // 4.6 时序位移与差分
+        "delta",
+        "pct_change",
+        "ts_roll",
+        "delay",
+        // 4.7 时序窗口滚动
+        "ts_mean",
+        "dense_rank_ts",
+        "ts_decay_linear",
+        "pct_dense_rank_ts",
+        "pct_rank_ts",
+        "rank_ts",
+        "ts_argmax",
+        "ts_argmin",
+        "ts_beta",
+        "ts_corr",
+        "ts_cov",
+        "ts_cumprod",
+        "ts_cumsum",
+        "ts_dense_rank",
+        "ts_dw",
+        "ts_ema",
+        "ts_ffill",
+        "ts_group",
+        "ts_kurt",
+        "ts_mad",
+        "ts_max",
+        "ts_median",
+        "ts_min",
+        "ts_multi_beta",
+        "ts_multi_resi",
+        "ts_multi_wls_beta",
+        "ts_multi_wls_resi",
+        "ts_nonan_num",
+        "ts_pct_dense_rank",
+        "ts_pct_rank",
+        "ts_prod",
+        "ts_quantile",
+        "ts_rank",
+        "ts_skew",
+        "ts_std",
+        "ts_sum",
+        "ts_var",
+        // 4.8 因子复合处理（表达式形态）
+        "barra5_zScore",
+        "MAD",
+        "winsor",
+        "cs_neutralize",
+        "group_demean",
+    ];
+    for name in FACTORLAB_1D_OPS {
+        assert!(names.contains(name), "缺少 FactorLab MCP 算子: {name}");
+    }
 }
 
 #[test]

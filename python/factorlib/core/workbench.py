@@ -166,7 +166,7 @@ AUTHORING_TEMPLATES: list[dict[str, Any]] = [
     },
 ]
 
-# A 股经典双模态模板（内置 FactorLab MCP 线上对账 5 大基准因子 + Python 因果沙箱）
+# A 股经典双模态模板（内置 FactorLab MCP 唯一黄金基准因子 Volume_Price_2_H5_2 + Python 因果沙箱）
 STOCKS_AUTHORING_TEMPLATES: list[dict[str, Any]] = [
     {
         "id": "tpl_stk_vp2_h5_2",
@@ -186,71 +186,6 @@ STOCKS_AUTHORING_TEMPLATES: list[dict[str, Any]] = [
             {"op": "rank"},
         ],
         "description": "FactorLab MCP 线上权威基准 (Run: bt_bb3a04da6b20456ab444dcb7e5450949)：20日量价相关背离与特质低波动复合，经申万行业中性化与5日衰减平滑。",
-    },
-    {
-        "id": "tpl_stk_tech_trend",
-        "name": "Tech_Trend_VP_1_Rev",
-        "title": "MCP 对账 #2: Tech_Trend_VP_1_Rev (均线乖离 + 日内位置 + 放量相关性反转)",
-        "factor_type": "expression",
-        "expression": "neg(add(add(cs_zscore(div(sub(close_hfq, ts_mean(close_hfq, 20)), ts_mean(close_hfq, 20))), cs_zscore(div(sub(close_hfq, low_adj), addc(sub(high_adj, low_adj), 0.001)))), cs_zscore(mul(ts_corr(close_hfq, amount, 20), div(amount, addc(ts_mean(amount, 5), 0.001))))))",
-        "code": "",
-        "postprocess": [
-            {"op": "baseUniMask"},
-            {"op": "trdMask"},
-            {"op": "dropNewStock", "window": 60},
-            {"op": "MAD", "param": 3.0},
-            {"op": "zScore"},
-            {"op": "emadecay", "window": 3},
-        ],
-        "description": "FactorLab MCP 线上对账因子 (Run: bt_346b56e4bd91496a88129b28ec95aa6b)：多维技术趋势与成交额加权反转，采用 3 日 EMA 衰减。",
-    },
-    {
-        "id": "tpl_stk_vp2_h5",
-        "name": "Volume_Price_2_H5",
-        "title": "MCP 对账 #3: Volume_Price_2_H5 (无行业中性化对照)",
-        "factor_type": "expression",
-        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
-        "code": "",
-        "postprocess": [
-            {"op": "baseUniMask"},
-            {"op": "trdMask"},
-            {"op": "dropNewStock", "window": 120},
-            {"op": "MAD", "param": 3.0},
-            {"op": "decay", "window": 5},
-            {"op": "rank"},
-        ],
-        "description": "FactorLab MCP 线上对账因子 (Run: bt_4c00df28632d46b8a2f231303ef21e4c)：考察去除申万行业中性化后的 IR 与超额表现。",
-    },
-    {
-        "id": "tpl_stk_vp2_r7",
-        "name": "Volume_Price_2_R7",
-        "title": "MCP 对账 #4: Volume_Price_2_R7 (10 日衰减先于 MAD)",
-        "factor_type": "expression",
-        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
-        "code": "",
-        "postprocess": [
-            {"op": "baseUniMask"},
-            {"op": "trdMask"},
-            {"op": "dropNewStock", "window": 120},
-            {"op": "decay", "window": 10},
-            {"op": "MAD", "param": 3.0},
-            {"op": "rank"},
-        ],
-        "description": "FactorLab MCP 线上对账因子 (Run: bt_40dbde1c01bc456e8127804e85448610)：考察 10 日时序衰减平滑与算子顺序影响。",
-    },
-    {
-        "id": "tpl_stk_gaussian",
-        "name": "Gaussian distribution",
-        "title": "MCP 对账 #5: Gaussian distribution (仅基础掩码无平滑基准)",
-        "factor_type": "expression",
-        "expression": "neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))",
-        "code": "",
-        "postprocess": [
-            {"op": "baseUniMask"},
-            {"op": "trdMask"},
-            {"op": "dropNewStock", "window": 120},
-        ],
-        "description": "FactorLab MCP 线上对账因子 (Run: bt_a31a4cd18ed14fc8861a7a2b97c29d43)：仅保留基础池/涨跌停/新股过滤，对照后处理增益。",
     },
     {
         "id": "tpl_stk_py_amihud",
@@ -312,72 +247,6 @@ MCP_STOCK_BENCHMARKS: dict[str, dict[str, Any]] = {
         "additive_max_drawdown": 0.2873,
         "vwap_additive_max_drawdown": 0.2106,
         "coverage": 0.9765,
-        "days": 2185,
-    },
-    "Volume_Price_2_H5": {
-        "name": "Volume_Price_2_H5",
-        "factor_id": "fac_238b9b9a250340d880b6a0dc9cd856c0",
-        "run_id": "bt_4c00df28632d46b8a2f231303ef21e4c",
-        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
-        "rank_ic_mean": 0.0442,
-        "rank_ic_ir": 0.3693,
-        "vwap_rank_ic_mean": 0.0428,
-        "vwap_rank_ic_ir": 0.3620,
-        "rank_ic_win_rate": 0.6590,
-        "ic_5d_mean": 0.0329,
-        "ls_daily_mean": 0.00250,
-        "annual_excess_return": 0.0233,
-        "excess_sharpe": 0.2600,
-        "additive_max_drawdown": 0.2710,
-        "days": 2185,
-    },
-    "Volume_Price_2_R7": {
-        "name": "Volume_Price_2_R7",
-        "factor_id": "fac_5f762e2036b745c594f1f5e5d7a9f5ea",
-        "run_id": "bt_40dbde1c01bc456e8127804e85448610",
-        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
-        "rank_ic_mean": 0.0369,
-        "rank_ic_ir": 0.3249,
-        "vwap_rank_ic_mean": 0.0358,
-        "vwap_rank_ic_ir": 0.3190,
-        "rank_ic_win_rate": 0.6380,
-        "ic_5d_mean": 0.0315,
-        "ls_daily_mean": 0.00200,
-        "annual_excess_return": 0.0216,
-        "excess_sharpe": 0.2400,
-        "additive_max_drawdown": 0.2650,
-        "days": 2185,
-    },
-    "Gaussian distribution": {
-        "name": "Gaussian distribution",
-        "factor_id": "fac_1fc76059531141d98deb3e2fb5f3e3e1",
-        "run_id": "bt_a31a4cd18ed14fc8861a7a2b97c29d43",
-        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
-        "rank_ic_mean": 0.0017,
-        "rank_ic_ir": 0.0358,
-        "rank_ic_win_rate": 0.5090,
-        "ic_5d_mean": 0.0309,
-        "ls_daily_mean": 0.00210,
-        "annual_excess_return": 0.0166,
-        "excess_sharpe": 0.1800,
-        "additive_max_drawdown": 0.2940,
-        "days": 2185,
-    },
-    "Tech_Trend_VP_1_Rev": {
-        "name": "Tech_Trend_VP_1_Rev",
-        "factor_id": "fac_2131e4e3d556409299bf34a837765967",
-        "run_id": "bt_346b56e4bd91496a88129b28ec95aa6b",
-        "period": "2016-01-04 ~ 2024-12-31 (2185d)",
-        "rank_ic_mean": 0.0395,
-        "rank_ic_ir": 0.3545,
-        "vwap_rank_ic_mean": 0.0384,
-        "vwap_rank_ic_ir": 0.3490,
-        "rank_ic_win_rate": 0.6420,
-        "ic_5d_mean": 0.0258,
-        "ls_daily_mean": 0.00230,
-        "annual_excess_return": 0.0020,
-        "excess_sharpe": 0.0200,
-        "additive_max_drawdown": 0.3120,
         "days": 2185,
     },
 }
@@ -1689,13 +1558,7 @@ class FactorWorkbenchService:
             if has_mcp_fields:
                 # 真实/完整 A 股面板：直接预置 FactorLab MCP 线上对账基准因子族
                 mcp_tpls = [
-                    t
-                    for t in STOCKS_AUTHORING_TEMPLATES
-                    if t.get("factor_type") == "expression"
-                    and (
-                        t["name"] != "Tech_Trend_VP_1_Rev"
-                        or {"high_adj", "low_adj", "amount"}.issubset(panel.fields.keys())
-                    )
+                    t for t in STOCKS_AUTHORING_TEMPLATES if t.get("factor_type") == "expression"
                 ]
                 ids = []
                 for tpl in mcp_tpls:

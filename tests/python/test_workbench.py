@@ -348,11 +348,11 @@ def test_workbench_probe_quantile_hist_and_mcp_stock_templates(
     assert "coverage" in p_data and 0.0 <= p_data["coverage"] <= 1.0
     assert "quantile_hist" in p_data and len(p_data["quantile_hist"]) == 20
 
-    # 2. A 股上下文包含 Volume_Price_2_H5_2 等 5 个 MCP 对账因子模板，且 workflow 返回 mcp_benchmark 与 portfolio_summary
+    # 2. A 股上下文仅包含 Volume_Price_2_H5_2 唯一 MCP 黄金基准因子模板，且 workflow 返回 mcp_benchmark
     stk_ctx = wb_client.get("/api/stocks/context").json()
     tpl_names = [t["name"] for t in stk_ctx["authoring_templates"]]
     assert "Volume_Price_2_H5_2" in tpl_names
-    assert "Tech_Trend_VP_1_Rev" in tpl_names
+    assert "Tech_Trend_VP_1_Rev" not in tpl_names
 
     wf_res = wb_client.post(
         "/api/stocks/workflow/run",

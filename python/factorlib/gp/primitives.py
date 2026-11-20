@@ -112,12 +112,52 @@ class OperatorPrimitive:
         return 1 + max(t.min_tree_depth for t in self.arg_types)
 
 
+# GP 搜索空间显式排除的算子：Rust 内核已全量注册（DSL/后处理可用），
+# 但其数学语义不适合作为遗传规划原语（缺失值指示、离散组号、位置索引、
+# 需正阈值参数的极值截断、易溢出/退化的累积与循环移位）。
+GP_EXCLUDED_OPERATORS: frozenset[str] = frozenset(
+    {
+        # 缺失值探测/清洗（输出 0/1 指示或纯缺失变换，无 Alpha 语义）
+        "is_inf",
+        "is_nan",
+        "purify",
+        "zero_to_nan",
+        "fillna",
+        "unique_count",
+        # 离散组号 / 位置索引 / 纯计数（不是收益预测信号）
+        "cs_argmax",
+        "cs_argmin",
+        "cs_group",
+        "ts_group",
+        "ts_nonan_num",
+        "cs_nonan_num",
+        # 极值截断：GP 随机常数池含负值，阈值语义不稳定（虽已鲁棒化但不宜搜索）
+        "MAD",
+        "winsor",
+        # 累积/循环移位/全历史 Durbin-Watson：易产生常数或极端尺度
+        "ts_cumprod",
+        "ts_cumsum",
+        "ts_roll",
+        "ts_ffill",
+        "ts_dw",
+    }
+)
+
+
 def load_core_operators(include_group_ops: bool = False) -> tuple[OperatorPrimitive, ...]:
-    """从 Rust 内核加载算子规格列表并转换为 `OperatorPrimitive`。"""
+    """从 Rust 内核加载算子规格列表并转换为 `OperatorPrimitive`。
+
+    过滤策略：
+    1. 默认剔除 `group_binary`（板块分组算子需额外分组矩阵终端，由后处理链注入）；
+    2. 剔除 `GP_EXCLUDED_OPERATORS` 中语义不适合作为 GP 原语的算子。
+    """
     raw_specs: list[dict[str, Any]] = factorlib_core.list_operators()
     ops: list[OperatorPrimitive] = []
     for sp in raw_specs:
         cat = str(sp["category"])
+        name = str(sp["name"])
+        if name in GP_EXCLUDED_OPERATORS:
+            continue
         if not include_group_ops and cat == "group_binary":
             continue
         arg_types = tuple(DataType(str(t)) for t in sp["arg_types"])

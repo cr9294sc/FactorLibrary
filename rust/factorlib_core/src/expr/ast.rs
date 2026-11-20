@@ -1,6 +1,6 @@
 //! DSL 抽象语法树（AST）节点定义与确定性指纹计算 (expr/ast.rs)。
 
-use crate::ops::{BinaryOp, TernaryOp, UnaryOp};
+use crate::ops::{BinaryOp, NaryOp, TernaryOp, UnaryOp};
 use ahash::RandomState;
 use std::fmt;
 
@@ -51,13 +51,15 @@ pub enum ASTNode {
         lhs: Box<ASTNode>,
         rhs: Box<ASTNode>,
     },
-    /// 三元算子调用 (`where` 或 `ts_corr`/`ts_cov`/`ts_beta`/`ts_resid`)
+    /// 三元算子调用 (`where` 或 `ts_corr`/`ts_cov`/`ts_beta`/`ts_resid`/`ts_quantile`)
     TernaryCall {
         op: TernaryOp,
         cond: Box<ASTNode>,
         then_branch: Box<ASTNode>,
         else_branch: Box<ASTNode>,
     },
+    /// 变参多元回归算子调用 (`cs_multi_*` / `ts_multi_*`)。
+    NaryCall { op: NaryOp, args: Vec<Box<ASTNode>> },
 }
 
 impl ASTNode {
@@ -73,6 +75,9 @@ impl ASTNode {
                 else_branch,
                 ..
             } => 1 + cond.node_count() + then_branch.node_count() + else_branch.node_count(),
+            ASTNode::NaryCall { args, .. } => {
+                1 + args.iter().map(|a| a.node_count()).sum::<usize>()
+            }
         }
     }
 
@@ -93,6 +98,7 @@ impl ASTNode {
                     .max(then_branch.depth())
                     .max(else_branch.depth())
             }
+            ASTNode::NaryCall { args, .. } => 1 + args.iter().map(|a| a.depth()).max().unwrap_or(0),
         }
     }
 
@@ -138,6 +144,17 @@ impl ASTNode {
                 then_branch.write_canon(out);
                 out.push_str(", ");
                 else_branch.write_canon(out);
+                out.push(')');
+            }
+            ASTNode::NaryCall { op, args } => {
+                out.push_str(op.name());
+                out.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    a.write_canon(out);
+                }
                 out.push(')');
             }
         }
@@ -246,6 +263,35 @@ impl ASTNode {
                     ops_0.push(op_name);
                 }
                 (max_child_lb + add_w, merged_vars, ops_0)
+            }
+            ASTNode::NaryCall { op, args } => {
+                // 多元回归算子为全历史（扩张窗口）算子，不引入额外预热期
+                let mut lb = 1usize;
+                let mut merged_vars: Vec<(String, usize)> = Vec::new();
+                let mut ops: Vec<String> = Vec::new();
+                for a in args {
+                    let (lb_a, vars_a, ops_a) = a.analyze_lookback();
+                    lb = lb.max(lb_a);
+                    for (k, v) in vars_a {
+                        if let Some(existing) = merged_vars.iter_mut().find(|p| p.0 == k) {
+                            if v > existing.1 {
+                                existing.1 = v;
+                            }
+                        } else {
+                            merged_vars.push((k, v));
+                        }
+                    }
+                    for f in ops_a {
+                        if !ops.contains(&f) {
+                            ops.push(f);
+                        }
+                    }
+                }
+                let op_name = op.name().to_string();
+                if !ops.contains(&op_name) {
+                    ops.push(op_name);
+                }
+                (lb, merged_vars, ops)
             }
         }
     }

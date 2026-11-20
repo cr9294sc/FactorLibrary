@@ -576,7 +576,7 @@ fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Opti
                         );
                     }
                 }
-                TernaryOp::TsCov => {}
+                TernaryOp::TsCov | TernaryOp::TsQuantile => {}
             }
 
             (
@@ -587,6 +587,25 @@ fn canonicalize_rec(node: &ASTNode, compress_outer_rank: bool) -> (ASTNode, Opti
                     else_branch: Box::new(c2),
                 },
                 None,
+            )
+        }
+
+        ASTNode::NaryCall { op, args } => {
+            let mut c_args: Vec<Box<ASTNode>> = Vec::with_capacity(args.len());
+            let mut degen: Option<String> = None;
+            for a in args {
+                let (c_a, d_a) = canonicalize_rec(a, false);
+                if degen.is_none() {
+                    degen = d_a;
+                }
+                c_args.push(Box::new(c_a));
+            }
+            (
+                ASTNode::NaryCall {
+                    op: *op,
+                    args: c_args,
+                },
+                degen,
             )
         }
     }

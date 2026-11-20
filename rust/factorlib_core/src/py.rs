@@ -1319,7 +1319,7 @@ pub fn check_expr<'py>(
     Ok(d)
 }
 
-/// 列出内核注册的全部算子规格列表（共 68 个算子）。
+/// 列出内核注册的全部算子规格列表（`UnaryOp` + `BinaryOp` + `TernaryOp` + `NaryOp`）。
 #[pyfunction]
 pub fn list_operators<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
     let specs = list_all_operators();
@@ -1332,6 +1332,7 @@ pub fn list_operators<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         d.set_item("arg_types", args)?;
         d.set_item("return_type", sp.return_type.as_str())?;
         d.set_item("commutative", sp.commutative)?;
+        d.set_item("variadic", sp.variadic)?;
         out.append(d)?;
     }
     Ok(out)

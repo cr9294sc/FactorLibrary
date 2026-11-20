@@ -2059,3 +2059,1081 @@ def spanning_test_ref(
         "cum_ic": np.cumsum(arr),
         "row_indices": valid_rows,
     }
+
+
+# ==============================================================================
+# FactorLab MCP 1d 算子全量对齐：Rust 内核 (factorlib_core) 的 NumPy 黄金参考实现
+# ==============================================================================
+#
+# 本段严格镜像 `rust/factorlib_core/src/ops/{elem,cs,ts,multi}.rs` 的数学定义与
+# 边界语义（NaN 掩码、并列值容差、窗口满窗条件、总体/样本矩口径、岭正则项），
+# 作为 `tests/python/test_rust_core.py` 中 `max |y_rust - y_ref| < 1e-9` 对账基准。
+
+_RANK_TOL_BASE = 1e-12
+
+
+def _tol_for(v: float) -> float:
+    """与 Rust `STD_EPS * max(1, |v|)` 完全一致的并列判定容差。"""
+    return _RANK_TOL_BASE * max(1.0, abs(float(v)))
+
+
+def _clean_scalar(v: float) -> float:
+    return float(v) if np.isfinite(v) else float("nan")
+
+
+def _broadcast_row_agg(x: np.ndarray, agg: np.ndarray) -> np.ndarray:
+    """把逐行聚合值广播回 (T, N)，仅在实际取值有限的位置输出。"""
+    finite = np.isfinite(x)
+    return np.where(finite, agg[:, None], np.nan).astype(np.float64)
+
+
+def _merge_sorted_tolerant(sorted_vals: list[float]) -> list[float]:
+    """按 Rust `uniq` 逻辑对升序列表做容差合并（与最后保留值比较）。"""
+    uniq: list[float] = []
+    for v in sorted_vals:
+        if not uniq:
+            uniq.append(v)
+        else:
+            last = uniq[-1]
+            if abs(v - last) > _tol_for(last):
+                uniq.append(v)
+    return uniq
+
+
+def _bsearch_tolerant(uniq: list[float], v: float) -> int:
+    """复刻 Rust `binary_search_by` 的容差二分查找，未命中返回插入点。"""
+    size = len(uniq)
+    if size == 0:
+        return 0
+
+    def cmp(u: float) -> int:
+        if abs(u - v) <= _tol_for(v):
+            return 0
+        return -1 if u < v else 1
+
+    base = 0
+    while size > 1:
+        half = size // 2
+        mid = base + half
+        c = cmp(uniq[mid])
+        if c == 0:
+            return mid
+        if c > 0:
+            # u > v（Greater）→ base 保持不变
+            pass
+        else:
+            base = mid
+        size -= half
+    c = cmp(uniq[base])
+    if c == 0:
+        return base
+    return base + (1 if c < 0 else 0)
+
+
+def _linear_quantile_sorted(sorted_vals: np.ndarray, p: float) -> float:
+    """与 Rust `linear_quantile_sorted` 完全一致的线性内插分位数。"""
+    k = len(sorted_vals)
+    if k == 0:
+        return float("nan")
+    if k == 1:
+        return float(sorted_vals[0])
+    q = min(max(float(p), 0.0), 1.0)
+    pos = q * (k - 1)
+    lo = int(np.floor(pos))
+    hi = int(np.ceil(pos))
+    frac = pos - lo
+    return float(sorted_vals[lo] + frac * (sorted_vals[hi] - sorted_vals[lo]))
+
+
+# ------------------------------------------------------------------------------
+# 数学变换扩充与缺失值处理
+# ------------------------------------------------------------------------------
+
+
+def exp_(x: np.ndarray) -> np.ndarray:
+    """`exp(x)`：逐元素自然指数（上溢 `+Inf` 归一为 NaN）。"""
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    finite = np.isfinite(x)
+    with np.errstate(over="ignore", invalid="ignore"):
+        vals = np.exp(x[finite])
+    out[finite] = np.where(np.isfinite(vals), vals, np.nan)
+    return out
+
+
+def ceil(x: np.ndarray) -> np.ndarray:
+    """`ceil(x)`：逐元素向上取整。"""
+    return np.where(np.isfinite(x), np.ceil(x), np.nan).astype(np.float64)
+
+
+def sign_power(x: np.ndarray) -> np.ndarray:
+    """`sign_power(x)`：带符号平方 sign(x) * x^2。"""
+    return np.where(np.isfinite(x), np.sign(x) * x * x, np.nan).astype(np.float64)
+
+
+def unique_count(x: np.ndarray) -> np.ndarray:
+    """`unique_count(x)`：逐截面不同非 NaN 数值个数（容差合并）。"""
+    T, N = x.shape
+    agg = np.full(T, np.nan, dtype=np.float64)
+    for t in range(T):
+        vals = np.sort(x[t, np.isfinite(x[t, :])])
+        if vals.size == 0:
+            continue
+        count = 1
+        for i in range(1, len(vals)):
+            tol = _tol_for(vals[i])
+            if abs(vals[i] - vals[i - 1]) > tol:
+                count += 1
+        agg[t] = float(count)
+    return _broadcast_row_agg(x, agg)
+
+
+def is_inf(x: np.ndarray) -> np.ndarray:
+    """`is_inf(x)`：正负无穷 → 1.0，有限值 → 0.0，NaN 保持 NaN。"""
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    nan_mask = np.isnan(x)
+    out[~nan_mask] = np.where(np.isinf(x[~nan_mask]), 1.0, 0.0)
+    return out
+
+
+def is_nan(x: np.ndarray) -> np.ndarray:
+    """`is_nan(x)`：NaN → 1.0，其余 → 0.0。"""
+    return np.where(np.isnan(x), 1.0, 0.0).astype(np.float64)
+
+
+def purify(x: np.ndarray) -> np.ndarray:
+    """`purify(x)`：将正负无穷转换为 NaN。"""
+    return np.where(np.isfinite(x), x, np.nan).astype(np.float64)
+
+
+def zero_to_nan(x: np.ndarray) -> np.ndarray:
+    """`zero_to_nan(x)`：将精确零值转换为 NaN（非有限值同样归一为 NaN）。"""
+    finite = np.isfinite(x)
+    return np.where(finite & (x != 0.0), x, np.nan).astype(np.float64)
+
+
+def fillna(x: np.ndarray, fill_value: float) -> np.ndarray:
+    """`fillna(x, c)`：仅把 NaN 替换为 fill_value。"""
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if not np.isfinite(fill_value):
+        return out
+    finite = np.isfinite(x)
+    out[finite] = x[finite]
+    out[np.isnan(x)] = float(fill_value)
+    return out
+
+
+def round_decimals(x: np.ndarray, decimals: float) -> np.ndarray:
+    """`round(x, decimals)`：按 decimals 位舍入（向偶数舍入）。"""
+    if not np.isfinite(decimals):
+        return np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    d = int(np.clip(int(np.round(decimals)), -15, 15))
+    scale = 10.0**d
+    finite = np.isfinite(x)
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    out[finite] = np.round(x[finite] * scale) / scale
+    return out
+
+
+def perc_long(x: np.ndarray, percentile: float) -> np.ndarray:
+    """`perc_long(x, p)`：减截面分位点后正负配对的多空数值。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if not np.isfinite(percentile):
+        return out
+    q = min(max(float(percentile), 0.0), 1.0)
+    for t in range(T):
+        row = x[t, :]
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            continue
+        vals = np.sort(row[finite])
+        quant = _linear_quantile_sorted(vals, q)
+        d = row - quant
+        pos_sum = float(np.sum(d[finite & (d > 0.0)]))
+        neg_cnt = int(np.sum(finite & (d < 0.0)))
+        neg_fill = -(pos_sum / neg_cnt) if neg_cnt > 0 else 0.0
+        res = np.full(N, np.nan, dtype=np.float64)
+        res[finite & (d > 0.0)] = d[finite & (d > 0.0)]
+        res[finite & (d < 0.0)] = neg_fill
+        res[finite & (d == 0.0)] = 0.0
+        out[t, :] = res
+    return out
+
+
+# ------------------------------------------------------------------------------
+# 横截面统计扩充
+# ------------------------------------------------------------------------------
+
+
+def cs_sum(x: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(x)
+    cnt = finite.sum(axis=1)
+    sums = np.where(finite, x, 0.0).sum(axis=1)
+    agg = np.where(cnt >= 1, sums, np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_mean(x: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(x)
+    cnt = finite.sum(axis=1)
+    sums = np.where(finite, x, 0.0).sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        agg = np.where(cnt >= 1, sums / np.maximum(cnt, 1), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def _cs_mean_m2(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    finite = np.isfinite(x)
+    cnt = finite.sum(axis=1).astype(np.float64)
+    safe = np.where(finite, x, 0.0)
+    sums = safe.sum(axis=1)
+    means = np.where(cnt >= 1, sums / np.maximum(cnt, 1.0), np.nan)
+    mask = finite.astype(np.float64)
+    with np.errstate(invalid="ignore"):
+        d = np.where(finite, x - means[:, None], 0.0)
+    m2 = (d * d * mask).sum(axis=1)
+    return cnt, means, m2
+
+
+def cs_var(x: np.ndarray) -> np.ndarray:
+    cnt, means, m2 = _cs_mean_m2(x)
+    agg = np.where((cnt >= 1) & np.isfinite(means), m2 / np.maximum(cnt, 1.0), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_std(x: np.ndarray) -> np.ndarray:
+    cnt, means, m2 = _cs_mean_m2(x)
+    with np.errstate(invalid="ignore"):
+        agg = np.where((cnt >= 1) & np.isfinite(means), np.sqrt(m2 / np.maximum(cnt, 1.0)), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_max(x: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(x)
+    with np.errstate(invalid="ignore"):
+        agg = np.where(finite.any(axis=1), np.nanmax(np.where(finite, x, -np.inf), axis=1), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_min(x: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(x)
+    with np.errstate(invalid="ignore"):
+        agg = np.where(finite.any(axis=1), np.nanmin(np.where(finite, x, np.inf), axis=1), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_nonan_num(x: np.ndarray) -> np.ndarray:
+    agg = np.isfinite(x).sum(axis=1).astype(np.float64)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_argmax(x: np.ndarray) -> np.ndarray:
+    T, N = x.shape
+    agg = np.full(T, np.nan, dtype=np.float64)
+    for t in range(T):
+        row = x[t, :]
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            continue
+        idx = np.flatnonzero(finite)
+        vals = row[idx]
+        best = 0
+        for k in range(1, len(idx)):
+            if vals[k] > vals[best]:
+                best = k
+        agg[t] = float(idx[best])
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_argmin(x: np.ndarray) -> np.ndarray:
+    T, N = x.shape
+    agg = np.full(T, np.nan, dtype=np.float64)
+    for t in range(T):
+        row = x[t, :]
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            continue
+        idx = np.flatnonzero(finite)
+        vals = row[idx]
+        best = 0
+        for k in range(1, len(idx)):
+            if vals[k] < vals[best]:
+                best = k
+        agg[t] = float(idx[best])
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_median(x: np.ndarray) -> np.ndarray:
+    T, _N = x.shape
+    agg = np.full(T, np.nan, dtype=np.float64)
+    for t in range(T):
+        vals = np.sort(x[t, np.isfinite(x[t, :])])
+        if vals.size == 0:
+            continue
+        agg[t] = float(vals[(len(vals) - 1) // 2])
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_quantile(x: np.ndarray, q: float) -> np.ndarray:
+    T, _N = x.shape
+    agg = np.full(T, np.nan, dtype=np.float64)
+    if not np.isfinite(q):
+        return _broadcast_row_agg(x, agg)
+    for t in range(T):
+        vals = np.sort(x[t, np.isfinite(x[t, :])])
+        if vals.size == 0:
+            continue
+        agg[t] = _linear_quantile_sorted(vals, q)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_mad(x: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(x)
+    cnt = finite.sum(axis=1).astype(np.float64)
+    safe = np.where(finite, x, 0.0)
+    means = np.where(cnt >= 1, safe.sum(axis=1) / np.maximum(cnt, 1.0), np.nan)
+    with np.errstate(invalid="ignore"):
+        dev = np.where(finite, np.abs(x - means[:, None]), 0.0)
+    agg = np.where((cnt >= 1) & np.isfinite(means), dev.sum(axis=1) / np.maximum(cnt, 1.0), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def _cs_moments(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    finite = np.isfinite(x)
+    cnt = finite.sum(axis=1).astype(np.float64)
+    safe = np.where(finite, x, 0.0)
+    means = np.where(cnt >= 1, safe.sum(axis=1) / np.maximum(cnt, 1.0), np.nan)
+    with np.errstate(invalid="ignore"):
+        d = np.where(finite, x - means[:, None], 0.0)
+    d2 = d * d
+    m2 = d2.sum(axis=1) / np.maximum(cnt, 1.0)
+    m3 = (d2 * d).sum(axis=1) / np.maximum(cnt, 1.0)
+    m4 = (d2 * d2).sum(axis=1) / np.maximum(cnt, 1.0)
+    return cnt, m2, m3, m4
+
+
+def cs_skew(x: np.ndarray) -> np.ndarray:
+    cnt, m2, m3, _m4 = _cs_moments(x)
+    finite = np.isfinite(x)
+    safe = np.where(finite, x, 0.0)
+    mu = safe.sum(axis=1) / np.maximum(cnt, 1.0)
+    scale = np.maximum(1.0, np.abs(mu))
+    with np.errstate(invalid="ignore"):
+        ok = (cnt >= 3) & np.isfinite(mu) & (m2 > 1e-24 * scale * scale)
+        agg = np.where(ok, m3 / np.power(m2, 1.5), np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_kurt(x: np.ndarray) -> np.ndarray:
+    cnt, m2, _m3, m4 = _cs_moments(x)
+    finite = np.isfinite(x)
+    safe = np.where(finite, x, 0.0)
+    mu = safe.sum(axis=1) / np.maximum(cnt, 1.0)
+    scale = np.maximum(1.0, np.abs(mu))
+    with np.errstate(invalid="ignore"):
+        ok = (cnt >= 4) & np.isfinite(mu) & (m2 > 1e-24 * scale * scale)
+        agg = np.where(ok, m4 / (m2 * m2) - 3.0, np.nan)
+    return _broadcast_row_agg(x, agg)
+
+
+def cs_pct_rank(x: np.ndarray) -> np.ndarray:
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    for t in range(T):
+        finite = np.isfinite(x[t, :])
+        idx = np.flatnonzero(finite)
+        if idx.size == 0:
+            continue
+        vals = x[t, idx]
+        order = np.lexsort((idx, vals))
+        k = float(idx.size)
+        for rank, pos in enumerate(order):
+            out[t, idx[pos]] = (rank + 1) / k
+    return out
+
+
+def _cs_dense(x: np.ndarray, pct: bool) -> np.ndarray:
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    for t in range(T):
+        finite = np.isfinite(x[t, :])
+        idx = np.flatnonzero(finite)
+        if idx.size == 0:
+            continue
+        vals = x[t, idx]
+        order = np.lexsort((idx, vals))
+        sorted_idx = idx[order]
+        sorted_vals = vals[order]
+        rank = 0
+        i = 0
+        while i < len(sorted_vals):
+            base_v = sorted_vals[i]
+            tol = _tol_for(base_v)
+            j = i + 1
+            while j < len(sorted_vals) and abs(sorted_vals[j] - base_v) <= tol:
+                j += 1
+            rank += 1
+            for k in range(i, j):
+                out[t, sorted_idx[k]] = float(rank)
+            i = j
+        if pct and rank > 0:
+            row_mask = np.isfinite(out[t, :])
+            out[t, row_mask] = out[t, row_mask] / float(rank)
+    return out
+
+
+def cs_dense_rank(x: np.ndarray) -> np.ndarray:
+    return _cs_dense(x, False)
+
+
+def cs_dense_pct_rank(x: np.ndarray) -> np.ndarray:
+    return _cs_dense(x, True)
+
+
+def cs_group(x: np.ndarray, groups: float) -> np.ndarray:
+    if not np.isfinite(groups) or groups < 1.0:
+        return np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    g = max(1.0, float(np.floor(groups)))
+    pct = cs_pct_rank(x)
+    grp = np.floor(pct * g)
+    grp = np.clip(grp, 0.0, g - 1.0)
+    return np.where(np.isfinite(pct), grp, np.nan).astype(np.float64)
+
+
+def _cs_pair_moments(
+    y: np.ndarray, x: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    both = np.isfinite(y) & np.isfinite(x)
+    cnt = both.sum(axis=1).astype(np.float64)
+    ys = np.where(both, y, 0.0)
+    xs = np.where(both, x, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        my = np.where(cnt >= 1, ys.sum(axis=1) / np.maximum(cnt, 1.0), np.nan)
+        mx = np.where(cnt >= 1, xs.sum(axis=1) / np.maximum(cnt, 1.0), np.nan)
+    with np.errstate(invalid="ignore"):
+        dy = np.where(both, y - my[:, None], 0.0)
+        dx = np.where(both, x - mx[:, None], 0.0)
+    cxy = (dy * dx).sum(axis=1)
+    m2x = (dx * dx).sum(axis=1)
+    m2y = (dy * dy).sum(axis=1)
+    return cnt, my, mx, cxy, m2x, m2y
+
+
+def cs_cov(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    cnt, _my, _mx, cxy, _m2x, _m2y = _cs_pair_moments(y, x)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        agg = np.where(cnt >= 2, cxy / np.maximum(cnt - 1.0, 1.0), np.nan)
+    return _broadcast_row_agg(y, agg)
+
+
+def cs_beta(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    cnt, _my, mx, cxy, m2x, _m2y = _cs_pair_moments(y, x)
+    scale = np.maximum(1.0, np.abs(mx))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ok = (cnt >= 2) & (m2x > 1e-24 * cnt * scale * scale)
+        agg = np.where(ok, cxy / np.where(ok, m2x, 1.0), np.nan)
+    return _broadcast_row_agg(y, agg)
+
+
+def cs_corr(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    cnt, my, mx, cxy, m2x, m2y = _cs_pair_moments(y, x)
+    sy = np.maximum(1.0, np.abs(my))
+    sx = np.maximum(1.0, np.abs(mx))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ok = (cnt >= 2) & (m2x > 1e-24 * cnt * sx * sx) & (m2y > 1e-24 * cnt * sy * sy)
+        denom = np.sqrt(np.where(ok, m2x * m2y, np.nan))
+        vals = np.where(ok & (denom > 0.0), np.clip(cxy / denom, -1.0, 1.0), np.nan)
+    return _broadcast_row_agg(y, vals)
+
+
+def barra5_zScore(x: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    """市值加权均值 + 等权总体标准差标准化（Barra 5 口径）。"""
+    valid = np.isfinite(x) & np.isfinite(weight) & (weight >= 0.0)
+    cnt = valid.sum(axis=1).astype(np.float64)
+    w = np.where(valid, weight, 0.0)
+    xv = np.where(valid, x, 0.0)
+    wsum = w.sum(axis=1)
+    wxsum = (w * xv).sum(axis=1)
+    esum = xv.sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ew_mean = np.where(cnt >= 1, esum / np.maximum(cnt, 1.0), np.nan)
+        wmean = np.where((cnt >= 1) & (wsum > 0.0), wxsum / np.where(wsum > 0.0, wsum, 1.0), np.nan)
+    with np.errstate(invalid="ignore"):
+        d = np.where(valid, x - wmean[:, None], 0.0)
+    m2 = (d * d).sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        s = np.sqrt(m2 / np.maximum(cnt, 1.0))
+        scale = np.maximum(1.0, np.abs(ew_mean))
+        ok = (cnt >= 1) & np.isfinite(wmean) & np.isfinite(s) & (s > 1e-12 * scale)
+        out = np.where(
+            valid & ok[:, None], (x - wmean[:, None]) / np.where(ok, s, 1.0)[:, None], np.nan
+        )
+    return out.astype(np.float64, order="F")
+
+
+# ------------------------------------------------------------------------------
+# 时序窗口扩充算子
+# ------------------------------------------------------------------------------
+
+
+def ts_median(x: np.ndarray, d: int) -> np.ndarray:
+    """`ts_median(x, d)`：满窗内有限观测的下中位数。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if d == 0 or d > T:
+        return out
+    for col in range(N):
+        for row in range(d - 1, T):
+            vals = x[row + 1 - d : row + 1, col]
+            vals = vals[np.isfinite(vals)]
+            if vals.size == 0:
+                continue
+            vals = np.sort(vals)
+            out[row, col] = float(vals[(len(vals) - 1) // 2])
+    return out
+
+
+def ts_quantile(x: np.ndarray, q: float, d: int) -> np.ndarray:
+    """`ts_quantile(x, q, d)`：满窗内有限观测的线性内插 q 分位数。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if d == 0 or d > T or not np.isfinite(q):
+        return out
+    for col in range(N):
+        for row in range(d - 1, T):
+            vals = x[row + 1 - d : row + 1, col]
+            vals = vals[np.isfinite(vals)]
+            if vals.size == 0:
+                continue
+            vals = np.sort(vals)
+            out[row, col] = _linear_quantile_sorted(vals, q)
+    return out
+
+
+def ts_roll(x: np.ndarray, d: int) -> np.ndarray:
+    """`ts_roll(x, d)`：沿时间轴循环移位，首尾环绕。"""
+    T, _N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if T == 0:
+        return out
+    shift = d % T
+    for row in range(T):
+        src = (row + T - shift) % T
+        out[row, :] = np.where(np.isfinite(x[src, :]), x[src, :], np.nan)
+    return out
+
+
+def ts_prod(x: np.ndarray, d: int) -> np.ndarray:
+    """`ts_prod(x, d)`：满窗内有限观测连乘积。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if d == 0 or d > T:
+        return out
+    for col in range(N):
+        for row in range(d - 1, T):
+            vals = x[row + 1 - d : row + 1, col]
+            vals = vals[np.isfinite(vals)]
+            if vals.size == 0:
+                continue
+            with np.errstate(over="ignore", invalid="ignore"):
+                prod = float(np.prod(vals))
+            out[row, col] = prod if np.isfinite(prod) else np.nan
+    return out
+
+
+def ts_nonan_num(x: np.ndarray, d: int) -> np.ndarray:
+    """`ts_nonan_num(x, d)`：满窗内非 NaN 计数。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if d == 0 or d > T:
+        return out
+    for col in range(N):
+        for row in range(d - 1, T):
+            out[row, col] = float(np.isfinite(x[row + 1 - d : row + 1, col]).sum())
+    return out
+
+
+def ts_pct_rank(x: np.ndarray, d: int) -> np.ndarray:
+    """`ts_pct_rank(x, d)`：当前值在满窗内的百分位排名（1 基平均名次 / 有效样本数）。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if d == 0 or d > T:
+        return out
+    for col in range(N):
+        for row in range(d - 1, T):
+            cur = x[row, col]
+            if not np.isfinite(cur):
+                continue
+            vals = x[row + 1 - d : row + 1, col]
+            vals = vals[np.isfinite(vals)]
+            k = vals.size
+            if k == 0:
+                continue
+            tol = _tol_for(cur)
+            c_less = float(np.sum(vals < cur - tol))
+            c_eq = float(np.sum(np.abs(vals - cur) <= tol))
+            out[row, col] = (c_less + 0.5 * (c_eq + 1.0)) / float(k)
+    return out
+
+
+def ts_group(x: np.ndarray, groups: int) -> np.ndarray:
+    """`ts_group(x, groups)`：按一周期收益率的因果历史百分位浮点整除分组。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    if T == 0 or groups == 0:
+        return out
+    g = float(groups)
+    ret = pct_change(x, 1)
+    for col in range(N):
+        hist: list[float] = []
+        for row in range(T):
+            r = ret[row, col]
+            if not np.isfinite(r):
+                continue
+            hist.append(float(r))
+            arr = np.asarray(hist, dtype=np.float64)
+            k = arr.size
+            tol = _tol_for(r)
+            c_less = float(np.sum(arr < r - tol))
+            c_eq = float(np.sum(np.abs(arr - r) <= tol))
+            pct = (c_less + 0.5 * (c_eq + 1.0)) / float(k)
+            out[row, col] = min(max(float(np.floor(pct * g)), 0.0), g - 1.0)
+    return out
+
+
+def ts_dw(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+    """`ts_dw(x1, x2)`：扩张窗口残差 Durbin-Watson 统计量。"""
+    T, N = x1.shape
+    out = np.full(x1.shape, np.nan, dtype=np.float64, order="F")
+    for col in range(N):
+        cnt = 0
+        mean_x = 0.0
+        mean_y = 0.0
+        m2_x = 0.0
+        c_xy = 0.0
+        prev_resid = np.nan
+        dw_num = 0.0
+        dw_den = 0.0
+        n_resid = 0
+        for row in range(T):
+            vx = x2[row, col]
+            vy = x1[row, col]
+            if not (np.isfinite(vx) and np.isfinite(vy)):
+                continue
+            cnt += 1
+            kf = float(cnt)
+            dx = vx - mean_x
+            dy = vy - mean_y
+            mean_x += dx / kf
+            mean_y += dy / kf
+            dx2 = vx - mean_x
+            dy2 = vy - mean_y
+            m2_x += dx * dx2
+            c_xy += dx * dy2
+            scale_x = max(1.0, abs(mean_x))
+            if cnt >= 2 and m2_x > 1e-24 * kf * scale_x * scale_x:
+                slope = c_xy / m2_x
+                intercept = mean_y - slope * mean_x
+            else:
+                slope = 0.0
+                intercept = mean_y
+            resid = vy - (intercept + slope * vx)
+            dw_den += resid * resid
+            if np.isfinite(prev_resid):
+                dw_num += (resid - prev_resid) ** 2
+            prev_resid = resid
+            n_resid += 1
+            if n_resid >= 3 and dw_den > 0.0:
+                out[row, col] = dw_num / dw_den
+    return out
+
+
+def _expanding_rank_core(x: np.ndarray, pct: bool, dense: bool) -> np.ndarray:
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    for col in range(N):
+        pairs: list[tuple[int, float]] = [
+            (row, float(x[row, col])) for row in range(T) if np.isfinite(x[row, col])
+        ]
+        if not pairs:
+            continue
+        uniq = _merge_sorted_tolerant(sorted(v for _, v in pairs))
+        m = len(uniq)
+        cnts = [0] * m
+        seen = [False] * m
+        for row, v in pairs:
+            b = _bsearch_tolerant(uniq, v)
+            b = min(max(b, 0), m - 1) if m > 0 else 0
+            cnts[b] += 1
+            seen[b] = True
+            total = float(sum(cnts))
+            n_distinct = float(sum(1 for s in seen if s))
+            if dense:
+                num = float(sum(1 for k in range(b + 1) if seen[k]))
+                den = n_distinct
+            else:
+                num = float(sum(cnts[: b + 1]))
+                den = total
+            if pct:
+                out[row, col] = num / den if den > 0.0 else np.nan
+            else:
+                out[row, col] = num
+    return out
+
+
+def rank_ts(x: np.ndarray) -> np.ndarray:
+    """`rank_ts(x)`：扩张窗口 1 基原始名次（严格因果）。"""
+    return _expanding_rank_core(x, False, False)
+
+
+def pct_rank_ts(x: np.ndarray) -> np.ndarray:
+    """`pct_rank_ts(x)`：扩张窗口名次百分比。"""
+    return _expanding_rank_core(x, True, False)
+
+
+def dense_rank_ts(x: np.ndarray) -> np.ndarray:
+    """`dense_rank_ts(x)`：扩张窗口稠密名次。"""
+    return _expanding_rank_core(x, False, True)
+
+
+def pct_dense_rank_ts(x: np.ndarray) -> np.ndarray:
+    """`pct_dense_rank_ts(x)`：扩张窗口稠密名次百分比。"""
+    return _expanding_rank_core(x, True, True)
+
+
+def ts_dense_rank(x: np.ndarray) -> np.ndarray:
+    """`ts_dense_rank(x)`：等价于 `dense_rank_ts`。"""
+    return _expanding_rank_core(x, False, True)
+
+
+def ts_pct_dense_rank(x: np.ndarray) -> np.ndarray:
+    """`ts_pct_dense_rank(x)`：等价于 `pct_dense_rank_ts`。"""
+    return _expanding_rank_core(x, True, True)
+
+
+def ts_cumsum(x: np.ndarray) -> np.ndarray:
+    """`ts_cumsum(x)`：沿时间轴对有限观测累加。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    for col in range(N):
+        acc = 0.0
+        for row in range(T):
+            v = x[row, col]
+            if np.isfinite(v):
+                acc += v
+                out[row, col] = acc if np.isfinite(acc) else np.nan
+    return out
+
+
+def ts_cumprod(x: np.ndarray) -> np.ndarray:
+    """`ts_cumprod(x)`：沿时间轴对有限观测累乘。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    for col in range(N):
+        acc = 1.0
+        for row in range(T):
+            v = x[row, col]
+            if np.isfinite(v):
+                acc *= v
+                out[row, col] = acc if np.isfinite(acc) else np.nan
+    return out
+
+
+def ts_ffill(x: np.ndarray) -> np.ndarray:
+    """`ts_ffill(x)`：沿时间轴前向填充 NaN。"""
+    T, N = x.shape
+    out = np.full(x.shape, np.nan, dtype=np.float64, order="F")
+    for col in range(N):
+        last = np.nan
+        for row in range(T):
+            v = x[row, col]
+            if np.isfinite(v):
+                last = v
+                out[row, col] = v
+            elif np.isfinite(last):
+                out[row, col] = last
+    return out
+
+
+# ------------------------------------------------------------------------------
+# 变参多元（加权）最小二乘回归算子
+# ------------------------------------------------------------------------------
+
+MULTI_RIDGE_EPS = 1.0e-10
+
+
+def _solve_normal(a_mat: np.ndarray, b_vec: np.ndarray) -> np.ndarray | None:
+    """求解正规方程（等价于 Rust 列主元高斯-约旦消元，奇异时返回 None）。"""
+    try:
+        return np.linalg.solve(a_mat, b_vec)
+    except np.linalg.LinAlgError:
+        return None
+
+
+def _obs_mask(
+    y_row: np.ndarray, exps: list[np.ndarray], weights: np.ndarray | None, row: int
+) -> np.ndarray:
+    """与 Rust `obs_valid` 完全一致的逐点有效性判定。"""
+    mask = np.isfinite(y_row)
+    for e in exps:
+        mask &= np.isfinite(e[row, :])
+    if weights is not None:
+        w_row = weights[row, :]
+        mask &= np.isfinite(w_row) & (w_row >= 0.0)
+    return mask
+
+
+def _cs_multi_core(
+    y: np.ndarray,
+    exps: list[np.ndarray],
+    weights: np.ndarray | None,
+    intercept: bool,
+    want_beta: bool,
+) -> np.ndarray:
+    T, _N = y.shape
+    out = np.full(y.shape, np.nan, dtype=np.float64, order="F")
+    k = len(exps)
+    if k == 0:
+        return out
+    dim = k + (1 if intercept else 0)
+    for row in range(T):
+        mask = _obs_mask(y[row, :], exps, weights, row)
+        cnt = int(mask.sum())
+        if cnt == 0 or cnt < dim:
+            continue
+        w_scale = 0.0
+        w_vec = np.ones(cnt, dtype=np.float64)
+        if weights is not None:
+            w_vec = weights[row, mask].astype(np.float64)
+            w_scale = float(w_vec.max())
+            if not w_scale > 0.0:
+                continue
+            w_vec = w_vec / w_scale
+        cols = [e[row, mask] for e in exps]
+        if intercept:
+            cols.append(np.ones(cnt, dtype=np.float64))
+        x_mat = np.column_stack(cols)
+        y_vec = y[row, mask]
+        # 增广加权设计矩阵 [sqrt(w) X; sqrt(ridge) I] 上做 QR/SVD 最小二乘（与 Rust 同构）
+        sw = np.sqrt(w_vec)
+        xa = x_mat * sw[:, None]
+        ba = y_vec * sw
+        sqrt_ridge = float(np.sqrt(MULTI_RIDGE_EPS))
+        aug = np.vstack([xa, sqrt_ridge * np.eye(dim)])
+        aug_b = np.concatenate([ba, np.zeros(dim, dtype=np.float64)])
+        try:
+            beta = np.linalg.lstsq(aug, aug_b, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            continue
+        if not np.all(np.isfinite(beta)):
+            continue
+        if want_beta:
+            out[row, mask] = beta[0]
+        else:
+            pred = np.zeros(cnt, dtype=np.float64)
+            for i in range(k):
+                pred += beta[i] * x_mat[:, i]
+            if intercept:
+                pred += beta[k]
+            out[row, mask] = y_vec - pred
+    return out
+
+
+def _ts_multi_core(
+    y: np.ndarray,
+    exps: list[np.ndarray],
+    weights: np.ndarray | None,
+    intercept: bool,
+    want_beta: bool,
+) -> np.ndarray:
+    T, N = y.shape
+    out = np.full(y.shape, np.nan, dtype=np.float64, order="F")
+    k = len(exps)
+    if k == 0:
+        return out
+    dim = k + (1 if intercept else 0)
+    for col in range(N):
+        a_mat = np.zeros((dim, dim), dtype=np.float64)
+        b_vec = np.zeros(dim, dtype=np.float64)
+        cnt = 0
+        w_scale = 0.0
+        for row in range(T):
+            yv = y[row, col]
+            if not np.isfinite(yv):
+                continue
+            ok = True
+            for e in exps:
+                if not np.isfinite(e[row, col]):
+                    ok = False
+                    break
+            raw_w = 1.0
+            if ok and weights is not None:
+                raw_w = float(weights[row, col])
+                if not np.isfinite(raw_w) or raw_w < 0.0:
+                    ok = False
+            if not ok:
+                continue
+            if weights is not None:
+                w_scale = max(w_scale, raw_w)
+                if not w_scale > 0.0:
+                    continue
+                wv = raw_w / w_scale
+            else:
+                wv = 1.0
+            xs = np.array([e[row, col] for e in exps] + ([1.0] if intercept else []))
+            a_mat += wv * np.outer(xs, xs)
+            b_vec += wv * xs * yv
+            cnt += 1
+            if cnt < dim + 1:
+                continue
+            sol = _solve_normal(a_mat + MULTI_RIDGE_EPS * np.eye(dim), b_vec)
+            if sol is None or not np.all(np.isfinite(sol)):
+                continue
+            if want_beta:
+                out[row, col] = sol[0]
+            else:
+                pred = sum(sol[i] * exps[i][row, col] for i in range(k))
+                if intercept:
+                    pred += sol[k]
+                out[row, col] = yv - pred
+    return out
+
+
+def cs_multi_beta(y: np.ndarray, *args) -> np.ndarray:
+    """`cs_multi_beta(y, exp_1..exp_K [, intercept])`：首个暴露的截面偏回归系数。"""
+    exps, _w, intercept = _split_multi_args(args)
+    return _cs_multi_core(y, exps, None, intercept, True)
+
+
+def cs_multi_resi(y: np.ndarray, *args) -> np.ndarray:
+    """`cs_multi_resi(y, exp_1..exp_K [, intercept])`：横截面多元 OLS 残差。"""
+    exps, _w, intercept = _split_multi_args(args)
+    return _cs_multi_core(y, exps, None, intercept, False)
+
+
+def cs_multi_wls_beta(y: np.ndarray, *args) -> np.ndarray:
+    """`cs_multi_wls_beta(y, w, exp_1..exp_K [, intercept])`：加权截面偏回归系数。"""
+    exps, w, intercept = _split_multi_args(args, weighted=True)
+    return _cs_multi_core(y, exps, w, intercept, True)
+
+
+def cs_multi_wls_resi(y: np.ndarray, *args) -> np.ndarray:
+    """`cs_multi_wls_resi(y, w, exp_1..exp_K [, intercept])`：加权截面多元 WLS 残差。"""
+    exps, w, intercept = _split_multi_args(args, weighted=True)
+    return _cs_multi_core(y, exps, w, intercept, False)
+
+
+def ts_multi_beta(y: np.ndarray, *args) -> np.ndarray:
+    """`ts_multi_beta(y, exp_1..exp_K [, intercept])`：首个暴露的扩张窗口时序偏回归系数。"""
+    exps, _w, intercept = _split_multi_args(args)
+    return _ts_multi_core(y, exps, None, intercept, True)
+
+
+def ts_multi_resi(y: np.ndarray, *args) -> np.ndarray:
+    """`ts_multi_resi(y, exp_1..exp_K [, intercept])`：扩张窗口时序多元 OLS 残差。"""
+    exps, _w, intercept = _split_multi_args(args)
+    return _ts_multi_core(y, exps, None, intercept, False)
+
+
+def ts_multi_wls_beta(y: np.ndarray, *args) -> np.ndarray:
+    """`ts_multi_wls_beta(y, w, exp_1..exp_K [, intercept])`：加权时序偏回归系数。"""
+    exps, w, intercept = _split_multi_args(args, weighted=True)
+    return _ts_multi_core(y, exps, w, intercept, True)
+
+
+def ts_multi_wls_resi(y: np.ndarray, *args) -> np.ndarray:
+    """`ts_multi_wls_resi(y, w, exp_1..exp_K [, intercept])`：加权时序 WLS 残差。"""
+    exps, w, intercept = _split_multi_args(args, weighted=True)
+    return _ts_multi_core(y, exps, w, intercept, False)
+
+
+def _split_multi_args(
+    args: tuple, *, weighted: bool = False
+) -> tuple[list[np.ndarray], np.ndarray | None, bool]:
+    """拆分 `(y, [w], exps..., [intercept])` 参数（Python 参考实现侧）。"""
+    items = list(args)
+    intercept = False
+    if items and np.isscalar(items[-1]):
+        intercept = bool(float(items[-1]) != 0.0)
+        items = items[:-1]
+    w: np.ndarray | None = None
+    if weighted:
+        w = items[0]
+        items = items[1:]
+    exps = [np.asarray(e, dtype=np.float64) for e in items]
+    return exps, w, intercept
+
+
+# FactorLab MCP 1d 全量算子参考实现注册表扩充（与 Rust `ops/mod.rs` 一一对应）
+OPS_REF_REGISTRY.update(
+    {
+        # 数学变换与缺失值处理 (8)
+        "exp": exp_,
+        "ceil": ceil,
+        "sign_power": sign_power,
+        "unique_count": unique_count,
+        "is_inf": is_inf,
+        "is_nan": is_nan,
+        "purify": purify,
+        "zero_to_nan": zero_to_nan,
+        # 横截面统计扩充 (16)
+        "cs_sum": cs_sum,
+        "cs_mean": cs_mean,
+        "cs_std": cs_std,
+        "cs_var": cs_var,
+        "cs_max": cs_max,
+        "cs_min": cs_min,
+        "cs_median": cs_median,
+        "cs_nonan_num": cs_nonan_num,
+        "cs_argmax": cs_argmax,
+        "cs_argmin": cs_argmin,
+        "cs_pct_rank": cs_pct_rank,
+        "cs_dense_rank": cs_dense_rank,
+        "cs_dense_pct_rank": cs_dense_pct_rank,
+        "cs_skew": cs_skew,
+        "cs_kurt": cs_kurt,
+        "cs_mad": cs_mad,
+        # 横截面双变量统计与市值加权标准化 (5)
+        "cs_beta": cs_beta,
+        "cs_corr": cs_corr,
+        "cs_cov": cs_cov,
+        "barra5_zScore": barra5_zScore,
+        "ts_dw": ts_dw,
+        # 常数参数算子 (7)
+        "fillna": fillna,
+        "round": round_decimals,
+        "perc_long": perc_long,
+        "cs_quantile": cs_quantile,
+        "cs_group": cs_group,
+        "winsor": pp_winsor_ref,
+        "MAD": pp_mad_ref,
+        # 时序窗口扩充 (6)
+        "ts_roll": ts_roll,
+        "ts_prod": ts_prod,
+        "ts_median": ts_median,
+        "ts_nonan_num": ts_nonan_num,
+        "ts_pct_rank": ts_pct_rank,
+        "ts_group": ts_group,
+        # 时序三元分位 (1)
+        "ts_quantile": ts_quantile,
+        # 扩张窗口因果排名与累积 (9)
+        "rank_ts": rank_ts,
+        "pct_rank_ts": pct_rank_ts,
+        "dense_rank_ts": dense_rank_ts,
+        "pct_dense_rank_ts": pct_dense_rank_ts,
+        "ts_cumprod": ts_cumprod,
+        "ts_cumsum": ts_cumsum,
+        "ts_ffill": ts_ffill,
+        "ts_dense_rank": ts_dense_rank,
+        "ts_pct_dense_rank": ts_pct_dense_rank,
+        # 变参多元（加权）回归 (8)
+        "cs_multi_beta": cs_multi_beta,
+        "cs_multi_resi": cs_multi_resi,
+        "cs_multi_wls_beta": cs_multi_wls_beta,
+        "cs_multi_wls_resi": cs_multi_wls_resi,
+        "ts_multi_beta": ts_multi_beta,
+        "ts_multi_resi": ts_multi_resi,
+        "ts_multi_wls_beta": ts_multi_wls_beta,
+        "ts_multi_wls_resi": ts_multi_wls_resi,
+    }
+)

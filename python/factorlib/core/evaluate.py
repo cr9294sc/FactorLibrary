@@ -36,6 +36,7 @@ from factorlib.core.styles import (
     _spearman_corr_1d,
     compute_style_exposures,
 )
+from factorlib.core.variable_aliases import resolve_expression_aliases
 
 if TYPE_CHECKING:
     from factorlib.core.backtest import BacktestResult
@@ -129,6 +130,10 @@ def evaluate_factor(
 ) -> FactorEvaluationResult:
     """对单个 DSL 因子表达式或 FactorDefinition 执行全时段多预测期数综合评价。"""
     engine, dates, _ = _resolve_engine_and_panel(engine_or_panel)
+    # FactorLab MCP 变量别名归一（字符串表达式入口）
+    if isinstance(expr, str) and expr.strip():
+        alias_fields = set(engine.field_names)
+        expr, _alias_rep = resolve_expression_aliases(expr, alias_fields)
     panel_obj = engine_or_panel if isinstance(engine_or_panel, Panel) else None
 
     probe_rep: dict[str, Any] | None = None

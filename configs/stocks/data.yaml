@@ -22,6 +22,27 @@ datasets:
       horizons: [1, 2, 5, 10]
       include_idiosyncratic: false       # rq 域默认仅算总收益标签, 可选通过 RiskView 动态算
 
+  rq_v2:
+    source: "ricequant"
+    raw_dir: "./data/raw/stocks"
+    derived_dir: "./data/derived/stocks"
+    panel_version: "v2"                  # 物理路径 data/derived/stocks/v2
+    benchmark_id: "000985.XSHG"
+    price_basis: "hfq"
+    entry_window: "open"
+    exec_price_mode: "open_adj"
+    extended_fields: true                # 合入 daily_basic / num_trades / 三大指数权重 / intra 收益
+    timeline:
+      start_date: "2015-11-01"
+      end_date: "2026-11-06"             # 与 data/raw/stocks 已落盘最大交易日对齐
+    universe_filters:
+      exclude_suspended: true
+      exclude_st: true
+      min_listed_days: 120
+    labels:
+      horizons: [1, 2, 5, 10]
+      include_idiosyncratic: false
+
   lb_barra_v1:
     source: "local_backtest"
     raw_dir: "./local_backtest/runtime_assets"

@@ -125,7 +125,19 @@ def main() -> int:
             overrides["end_date"] = date.fromisoformat(args.end_date)
 
     if args.version:
-        overrides["panel_version"] = args.version
+        # `--version` 双语义：既可作为逻辑数据集名（如 rq_v2 / lb_barra_v1），
+        # 也可作为物理面板版本号（如 v1）。命中数据集名时保留其声明版本，避免双重改写。
+        known_datasets: set[str] = set()
+        if config_path.exists():
+            try:
+                from factorlib.core.config import load_stock_datasets_config
+
+                _, ds_map = load_stock_datasets_config(config_path, root=root_dir)
+                known_datasets = set(ds_map)
+            except Exception:
+                known_datasets = set()
+        if args.version not in known_datasets:
+            overrides["panel_version"] = args.version
 
     try:
         if args.market == "stocks":

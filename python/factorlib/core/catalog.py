@@ -14,6 +14,7 @@ from typing import Any
 import factorlib_core
 
 from factorlib.core.styles import STYLE_DEFINITIONS
+from factorlib.core.variable_aliases import alias_catalog_entries
 
 # 12 个声明式后处理算子规格字典 (与 rust/factorlib_core/src/ops/postprocess.rs 严格对齐)
 POSTPROCESS_SPECS: list[dict[str, Any]] = [
@@ -511,6 +512,16 @@ class FactorCatalog:
             if extra["name"] not in seen:
                 seen.add(extra["name"])
                 out.append(extra)
+
+        # FactorLab MCP 变量别名目录（仅在目标字段真实可用时登记，避免静默 NaN）
+        try:
+            available = {item["name"] for item in out}
+            for alias_entry in alias_catalog_entries(available):
+                if alias_entry["name"] not in seen:
+                    seen.add(alias_entry["name"])
+                    out.append(alias_entry)
+        except Exception:  # pragma: no cover - 别名目录为增强能力，缺失不得阻断主流程
+            pass
 
         return out
 

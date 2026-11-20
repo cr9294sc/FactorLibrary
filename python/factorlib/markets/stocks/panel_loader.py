@@ -284,12 +284,226 @@ class StockPanelLoader:
         if not self.raw_dir.exists():
             raise FileNotFoundError(f"A 股原始数据根目录不存在: {self.raw_dir.resolve()}")
 
+    def _build_extended_fields(
+        self,
+        *,
+        dates: list[date],
+        symbols: list[str],
+        date_map: dict[date, int],
+        sym_map: dict[str, int],
+        start_d: date,
+        end_d: date,
+        close_hfq: np.ndarray,
+        open_adj: np.ndarray,
+        amount_mat: np.ndarray,
+        num_trades_mat: np.ndarray,
+        prev_close_mat: np.ndarray,
+        close_mat: np.ndarray,
+        industry_code: np.ndarray,
+        T: int,
+        N: int,
+    ) -> dict[str, np.ndarray]:
+        """构造 FactorLab MCP 1d 全量变量对齐的扩充字段（`stocks/v2`）。
+
+        严格因果：所有字段均为 T 日收盘（15:00）已知的量价/估值/成分权重快照，
+        不含任何前视信息；`daily_derived_returns_intra` 使用同一复权基准的价格比值。
+        """
+        out: dict[str, np.ndarray] = {}
+
+        # a) daily_basic 估值与换手字段
+        db_dir = self.raw_dir / "daily_basic"
+        db_files = sorted(glob.glob(str(db_dir / "daily_basic_*.parquet")))
+        if db_files:
+            db_lf = pl.scan_parquet(db_files)
+            db_present = set(db_lf.collect_schema().names())
+            db_wanted = [
+                "trading_date",
+                "order_book_id",
+                "market_cap",
+                "a_share_market_val_in_circulation",
+                "pe_ratio_ttm",
+                "pb_ratio_lf",
+                "ps_ratio_ttm",
+                "turnover_rate",
+            ]
+            db_use = [c for c in db_wanted if c in db_present]
+            df_db = (
+                db_lf.filter(
+                    (pl.col("trading_date") >= start_d) & (pl.col("trading_date") <= end_d)
+                )
+                .select(db_use)
+                .collect()
+            )
+            db_cols = {
+                "mkt_cap": "market_cap",
+                "circ_mv": "a_share_market_val_in_circulation",
+                "pe_ratio_ttm": "pe_ratio_ttm",
+                "pb_ratio_lf": "pb_ratio_lf",
+                "ps_ratio_ttm": "ps_ratio_ttm",
+                "turnover_rate": "turnover_rate",
+            }
+            for local_name, src_col in db_cols.items():
+                out[local_name] = self._pivot_column(df_db, src_col, date_map, sym_map, T, N)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out["log_mkt_cap"] = np.log(np.where(out["mkt_cap"] > 0.0, out["mkt_cap"], np.nan))
+                out["log_circ_mv"] = np.log(np.where(out["circ_mv"] > 0.0, out["circ_mv"], np.nan))
+                out["log_mkt_cap"] = np.asfortranarray(out["log_mkt_cap"], dtype=np.float64)
+                out["log_circ_mv"] = np.asfortranarray(out["log_circ_mv"], dtype=np.float64)
+
+        # b) 成交笔数与平均单笔成交额
+        if np.isfinite(num_trades_mat).any():
+            out["num_trades"] = np.asfortranarray(num_trades_mat, dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                avg_size = amount_mat / np.where(num_trades_mat > 0.0, num_trades_mat, np.nan)
+                out["avg_trade_size"] = np.asfortranarray(avg_size, dtype=np.float64)
+                out["log_num_trades"] = np.asfortranarray(
+                    np.log(np.where(num_trades_mat > 0.0, num_trades_mat, np.nan)),
+                    dtype=np.float64,
+                )
+
+        # b2) 除权参考前收盘价与涨跌额（供 daily_kline_real_pre_close / daily_kline_change 别名）
+        if np.isfinite(prev_close_mat).any():
+            out["pre_close"] = np.asfortranarray(prev_close_mat, dtype=np.float64)
+            out["close_change"] = np.asfortranarray(close_mat - prev_close_mat, dtype=np.float64)
+
+        # c) 日内收益率（收盘 / 开盘 - 1，复权比值不变）
+        with np.errstate(divide="ignore", invalid="ignore"):
+            intra = close_hfq / np.where(open_adj > 0.0, open_adj, np.nan) - 1.0
+        out["daily_derived_returns_intra"] = np.asfortranarray(intra, dtype=np.float64)
+
+        # d) 三大指数成分权重与成分池掩码 (000300 / 000905 / 000852)
+        iw_dir = self.raw_dir / "benchmark"
+        iw_files = sorted(glob.glob(str(iw_dir / "index_weights_*.parquet")))
+        if iw_files:
+            iw_lf = pl.scan_parquet(iw_files)
+            iw_present = set(iw_lf.collect_schema().names())
+            iw_wanted = ["snapshot_date", "index_id", "order_book_id", "weight"]
+            df_iw = iw_lf.select([c for c in iw_wanted if c in iw_present]).collect()
+            index_map = {
+                "000300.XSHG": ("index_weight_000300_sh", "trade_universe_hs300"),
+                "000905.XSHG": ("index_weight_000905_sh", "trade_universe_zz500"),
+                "000852.XSHG": ("index_weight_000852_sh", "trade_universe_zz1000"),
+            }
+            for index_id, (w_name, mask_name) in index_map.items():
+                w_mat = self._index_weight_matrix(df_iw, index_id, dates, sym_map, T, N)
+                if w_mat is None:
+                    continue
+                out[w_name] = w_mat
+                out[mask_name] = np.asfortranarray(
+                    np.where(np.isfinite(w_mat), 1.0, np.nan), dtype=np.float64
+                )
+
+        # e) 行业编码别名（barra/sector 双名兼容）
+        if industry_code is not None:
+            out.setdefault("industry_code", industry_code)
+
+        return out
+
+    @staticmethod
+    def _pivot_column(
+        df: pl.DataFrame,
+        col: str,
+        date_map: dict[date, int],
+        sym_map: dict[str, int],
+        T: int,
+        N: int,
+    ) -> np.ndarray:
+        """把长表某一列透视到 `(T, N)` Fortran 网格（未覆盖位置为 NaN）。"""
+        mat = np.full((T, N), np.nan, dtype=np.float64, order="F")
+        if col not in df.columns or df.height == 0:
+            return mat
+        sub = df.select(["trading_date", "order_book_id", col]).drop_nulls(col)
+        if sub.height == 0:
+            return mat
+        # 方向安全映射：未在日期轴/标的轴上的记录（如指数成分外的标的）自动丢弃，
+        # 绝不使用 replace_strict 的无默认值严格模式（数据源可能含面板外标的）。
+        sub = (
+            sub.with_columns(
+                [
+                    pl.col("trading_date").replace_strict(date_map, default=None).alias("t_idx"),
+                    pl.col("order_book_id").replace_strict(sym_map, default=None).alias("s_idx"),
+                ]
+            )
+            .drop_nulls(["t_idx", "s_idx"])
+            .with_columns(
+                [
+                    pl.col("t_idx").cast(pl.Int64),
+                    pl.col("s_idx").cast(pl.Int64),
+                ]
+            )
+        )
+        if sub.height == 0:
+            return mat
+        t_arr = sub["t_idx"].to_numpy()
+        s_arr = sub["s_idx"].to_numpy()
+        mat[t_arr, s_arr] = sub[col].to_numpy()
+        return mat
+
+    @staticmethod
+    def _index_weight_matrix(
+        df_iw: pl.DataFrame,
+        index_id: str,
+        dates: list[date],
+        sym_map: dict[str, int],
+        T: int,
+        N: int,
+    ) -> np.ndarray | None:
+        """按快照日严格向前对齐（as-of backward）构造指数成分权重 `(T, N)` 矩阵。
+
+        `snapshot_date <= trading_date` 的最近一期权重生效，快照之间保持不变；
+        成分外标的权重为 NaN（与 FactorLab MCP `index_weight_*` 语义一致）。
+        """
+        sub = df_iw.filter(pl.col("index_id") == index_id).select(
+            ["snapshot_date", "order_book_id", "weight"]
+        )
+        if sub.height == 0:
+            return None
+        snap_dates = sorted({d for d in sub["snapshot_date"].to_list() if d is not None})
+        if not snap_dates:
+            return None
+        snap_idx = {d: i for i, d in enumerate(snap_dates)}
+        snap_mat = np.full((len(snap_dates), N), np.nan, dtype=np.float64)
+        s_series = sub["order_book_id"].to_list()
+        d_series = sub["snapshot_date"].to_list()
+        w_series = sub["weight"].to_numpy()
+        r_idx: list[int] = []
+        c_idx: list[int] = []
+        v_idx: list[int] = []
+        for k in range(sub.height):
+            si = snap_idx.get(d_series[k])
+            nj = sym_map.get(s_series[k])
+            if si is None or nj is None:
+                continue
+            r_idx.append(si)
+            c_idx.append(nj)
+            v_idx.append(k)
+        if not r_idx:
+            return None
+        snap_mat[np.array(r_idx), np.array(c_idx)] = w_series[np.array(v_idx)]
+        # 分快照段整块广播到交易日轴（每段内权重保持不变）
+        out = np.full((T, N), np.nan, dtype=np.float64, order="F")
+        import bisect
+
+        pos = -1
+        seg_start = 0
+        for t_i, cur_d in enumerate(dates):
+            new_pos = bisect.bisect_right(snap_dates, cur_d) - 1
+            if new_pos != pos:
+                if pos >= 0 and t_i > seg_start:
+                    out[seg_start:t_i, :] = snap_mat[pos, :]
+                pos = new_pos
+                seg_start = t_i
+        if pos >= 0 and T > seg_start:
+            out[seg_start:T, :] = snap_mat[pos, :]
+        return out
+
     def load(
         self,
         start_date: date | str = date(2015, 11, 1),
         end_date: date | str = date(2024, 12, 31),
         benchmark_id: str = "000985.XSHG",
         exec_price_mode: str = "open_adj",
+        extended_fields: bool = False,
     ) -> StockPanelData:
         """加载 A 股指定日期区间的日频全量截面面板并构建标准化掩码。
 
@@ -320,24 +534,27 @@ class StockPanelLoader:
         if not bar_files:
             raise FileNotFoundError(f"在 {bar_dir} 未找到任何 bar_1d_*.parquet 数据文件")
 
+        # 按实际落盘列自适应选取（合成测试夹具可能缺少 num_trades / prev_close 等可选列）
+        bar_lf = pl.scan_parquet(bar_files)
+        present_cols = set(bar_lf.collect_schema().names())
+        wanted_cols = [
+            "trading_date",
+            "order_book_id",
+            "open",
+            "high",
+            "low",
+            "close",
+            "prev_close",
+            "limit_up",
+            "limit_down",
+            "volume",
+            "total_turnover",
+            "num_trades",
+        ]
+        use_cols = [c for c in wanted_cols if c in present_cols]
         df_bar = (
-            pl.scan_parquet(bar_files)
-            .filter((pl.col("trading_date") >= start_d) & (pl.col("trading_date") <= end_d))
-            .select(
-                [
-                    "trading_date",
-                    "order_book_id",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "prev_close",
-                    "limit_up",
-                    "limit_down",
-                    "volume",
-                    "total_turnover",
-                ]
-            )
+            bar_lf.filter((pl.col("trading_date") >= start_d) & (pl.col("trading_date") <= end_d))
+            .select(use_cols)
             .collect()
             .sort(["order_book_id", "trading_date"])
         )
@@ -470,6 +687,8 @@ class StockPanelLoader:
         ex_mat = np.full((T, N), 1.0, dtype=np.float64, order="F")
         limit_up_mat = np.full((T, N), np.nan, dtype=np.float64, order="F")
         limit_down_mat = np.full((T, N), np.nan, dtype=np.float64, order="F")
+        num_trades_mat = np.full((T, N), np.nan, dtype=np.float64, order="F")
+        prev_close_mat = np.full((T, N), np.nan, dtype=np.float64, order="F")
 
         is_susp_mat = np.full((T, N), True, dtype=bool, order="F")
         is_st_mat = np.full((T, N), False, dtype=bool, order="F")
@@ -485,6 +704,10 @@ class StockPanelLoader:
         ex_mat[t_arr, s_arr] = df_bar["ex_cum_factor"].to_numpy()
         limit_up_mat[t_arr, s_arr] = df_bar["limit_up"].to_numpy()
         limit_down_mat[t_arr, s_arr] = df_bar["limit_down"].to_numpy()
+        if "num_trades" in df_bar.columns:
+            num_trades_mat[t_arr, s_arr] = df_bar["num_trades"].to_numpy()
+        if "prev_close" in df_bar.columns:
+            prev_close_mat[t_arr, s_arr] = df_bar["prev_close"].to_numpy()
 
         is_susp_mat[t_arr, s_arr] = df_bar["is_suspended"].to_numpy()
         is_st_mat[t_arr, s_arr] = df_bar["is_st"].to_numpy()
@@ -579,6 +802,27 @@ class StockPanelLoader:
             dtype=bool,
         )
 
+        # 11.5 FactorLab MCP 1d 变量全量对齐扩充字段 (stocks/v2)
+        extended: dict[str, np.ndarray] = {}
+        if extended_fields:
+            extended = self._build_extended_fields(
+                dates=dates,
+                symbols=symbols,
+                date_map=date_map,
+                sym_map=sym_map,
+                start_d=start_d,
+                end_d=end_d,
+                close_hfq=close_hfq,
+                open_adj=open_adj,
+                amount_mat=amount_mat,
+                num_trades_mat=num_trades_mat,
+                prev_close_mat=prev_close_mat,
+                close_mat=close_mat,
+                industry_code=ind_mat,
+                T=T,
+                N=N,
+            )
+
         # 12. 读取基准指数收益率 (000985.XSHG)
         bench_file = self.raw_dir / "benchmark" / "index_bar_1d.parquet"
         bench_fwd_open_1 = np.full(T, np.nan, dtype=np.float64)
@@ -629,6 +873,8 @@ class StockPanelLoader:
             "limit_up": limit_up_mat,
             "limit_down": limit_down_mat,
         }
+        if extended:
+            fields.update(extended)
 
         cost_time = time.time() - t0
         meta = {
@@ -676,6 +922,7 @@ def build_stock_panel(
         end_date=cfg.end_date,
         benchmark_id=cfg.benchmark_id,
         exec_price_mode=cfg.exec_price_mode,
+        extended_fields=bool(getattr(cfg, "extended_fields", False)),
     )
 
     # 基础股票池掩码 (BaseUnivMask) 保持与 StockPanelLoader.load 一致（剔除停牌、ST 与存续期外）；
@@ -765,6 +1012,10 @@ def build_stock_panel(
             "has_barra_exposures": False,
             "has_barra_risk_store": False,
             "has_vwap_open_30m": False,
+            "has_fundamentals": bool(getattr(cfg, "extended_fields", False)),
+            "has_index_weights": bool(getattr(cfg, "extended_fields", False)),
+            "has_num_trades": bool(getattr(cfg, "extended_fields", False)),
+            "extended_fields": bool(getattr(cfg, "extended_fields", False)),
         },
         "config": cfg.to_dict(),
     }

@@ -710,6 +710,9 @@ class StockDataConfig:
     benchmark_csv: Path | None = None
     include_idiosyncratic_labels: bool = False
     dataset_id: str | None = None
+    # FactorLab MCP 1d 变量全量对齐扩充字段（daily_basic 估值换手 / num_trades /
+    # 三大指数成分权重 / 日内收益率），默认关闭以保证 stocks/v1 面板零变更兼容
+    extended_fields: bool = False
 
     def __post_init__(self) -> None:
         if self.start_date > self.end_date:
@@ -870,6 +873,7 @@ def _parse_single_stock_dataset(
         "benchmark_csv": _resolve(bench_csv, root) if bench_csv else None,
         "include_idiosyncratic_labels": bool(lab.get("include_idiosyncratic", False)),
         "dataset_id": dataset_id or raw.get("dataset_id"),
+        "extended_fields": bool(raw.get("extended_fields", False)),
     }
     if "start_date" in tl:
         kwargs["start_date"] = _parse_date(tl["start_date"], "timeline.start_date")

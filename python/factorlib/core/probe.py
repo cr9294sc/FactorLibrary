@@ -26,6 +26,10 @@ from factorlib.core._hooks import resolve_panel_market, resolve_profile
 from factorlib.core.catalog import POSTPROCESS_SPECS, RECOMMENDED_POSTPROCESS_PRESETS
 from factorlib.core.panel import Panel, compute_limit_mask
 from factorlib.core.styles import STYLE_DEFINITIONS, STYLE_NAMES
+from factorlib.core.variable_aliases import (
+    UNMAPPED_MCP_VARIABLES,
+    resolve_expression_aliases,
+)
 
 VALID_POSTPROCESS_OPS: dict[str, dict[str, Any]] = {
     spec["name"]: spec for spec in POSTPROCESS_SPECS
@@ -385,6 +389,23 @@ def probe_factor(
     n_nodes = 1
     depth = 1
 
+    # 0. FactorLab MCP 变量别名归一（在静态检查与规范化之前完成，
+    #    确保 canon_expr 全程使用真实字段名，下游 ML/DL/回测无需二次解析）
+    alias_report: dict[str, Any] | None = None
+    if defn.factor_type == "expression" and defn.expression.strip():
+        alias_fields = set(panel.fields.keys()) if panel is not None else known_fields
+        resolved_expr, alias_rep = resolve_expression_aliases(defn.expression, alias_fields)
+        alias_report = alias_rep.to_dict()
+        if resolved_expr != defn.expression:
+            defn.expression = resolved_expr
+            stage_warnings.append(
+                "变量别名归一: " + ", ".join(f"{k}->{v}" for k, v in alias_rep.applied.items())
+            )
+        for token in alias_rep.unmapped_used:
+            stage_warnings.append(
+                f"变量 {token!r} 无本地面板等价字段: {UNMAPPED_MCP_VARIABLES.get(token, '')}"
+            )
+
     # 1. 解析主因子表达式或 Python 代码
     if defn.factor_type == "expression":
         if not defn.expression.strip():
@@ -553,6 +574,7 @@ def probe_factor(
         "factor_type": defn.factor_type,
         "canon_expr": full_canon_expr,
         "canon_hash": full_canon_hash,
+        "variable_alias_report": alias_report,
         "n_nodes": n_nodes,
         "depth": depth,
         "dependencies": {

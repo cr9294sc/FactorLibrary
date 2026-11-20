@@ -22,7 +22,7 @@ flowchart TD
         Mem["Fortran 列优先内存矩阵 (T x N f64)"]
         AST["DSL 解析器 / 静态类型检查 / 代数化简"]
         LRU["全局子表达式 LRU 缓存 (ahash)"]
-        Ops["68 项向量化与时序增量算子"]
+        Ops["128 项算子 (106 个 FactorLab 1d 全量对齐)"]
         Metrics["RankIC / 分位收益 / 换手率 / 相关性"]
         StateEngine["期货实盘撮合 / 换月展期 / 逐日盯市状态机"]
     end
@@ -201,26 +201,31 @@ flowchart TD
 
 ---
 
-### 3.2 68 项向量化与时序算子清单
+### 3.2 算子清单（128 项注册 / 106 个 FactorLab 1d 全量对齐）
 
-| 类别 | 算子名称 | 数学含义与算法复杂度 |
-|---|---|---|
-| **逐元素一元算子** (11 项) | `abs`, `neg`, `sign`, `sqrt`, `square`, `cube`, `log`, `exp`, `inv`, `sin`, `cos` | 逐点向量化计算，$O(1)$ 吞吐，自动规避除零与负数开方。 |
-| **逐元素二元算子** (7 项) | `add`, `sub`, `mul`, `div`, `max2`, `min2`, `clip` | 矩阵广播计算，NaN 传播安全。 |
-| **时序滚动算子** (23 项) | `ts_delay(x, d)`, `ts_delta(x, d)`, `pct_change(x, d)` | 时序移位与一阶差分，$O(1)$ 环形缓冲区。 |
-| | `ts_mean(x, d)`, `ts_sum(x, d)`, `ts_var(x, d)`, `ts_std(x, d)` | $O(1)$ 双栈增量 Welford 均值与方差算法，无精度漂移。 |
-| | `ts_skew(x, d)`, `ts_kurt(x, d)` | 三阶偏度与四阶峰度增量累加器。 |
-| | `ts_max(x, d)`, `ts_min(x, d)`, `ts_argmax(x, d)`, `ts_argmin(x, d)` | 基于**单调队列（Monotonic Queue）**的 $O(1)$ 极值搜索。 |
-| | `ts_rank(x, d)`, `ts_zscore(x, d)`, `ts_mad(x, d)` | 时序百分比排名、时序 Z-Score 与中位数绝对偏差。 |
-| | `ts_decay_linear(x, d)`, `ts_ema(x, d)` | 线性衰减加权与指数移动平均。 |
-| | `ts_corr(x, y, d)`, `ts_cov(x, y, d)`, `ts_beta(x, y, d)` | $O(1)$ 增量时序相关系数、协方差与资产 Beta。 |
-| | `ts_wmean(x, w, d)`, `ts_sharpe(x, d)` | 成交量加权滚动均值与时序夏普比率。 |
-| **横截面算子** (6 项) | `cs_rank(x)`, `cs_scale(x)`, `cs_zscore(x)` | 截面百分比排名、绝对值和归一化与截面 Z-Score。 |
-| | `cs_demean(x)`, `cs_quantile(x, q)`, `cs_mad(x)` | 截面去均值、截面分位数切分与截面 MAD 去极值。 |
-| **行业/板块分组算子** (3 项) | `group_rank(x, g)`, `group_demean(x, g)`, `group_zscore(x, g)` | 预留 A 股申万行业/期货板块截面中性化算子。 |
+完整逐算子语义、边界与偏差登记见
+[`docs/factorlab_1d_operator_alignment.md`](factorlab_1d_operator_alignment.md)。此处仅列类别概览：
+
+| 类别 | 数量 | 代表性算子 | 算法与复杂度 |
+|---|---:|---|---|
+| 逐元素一元 | 20 | `abs, neg, sign, inv, slog, ssqrt, square, cube, sigmoid, tanh, relu, atan, exp, ceil, sign_power, unique_count, is_inf, is_nan, purify, zero_to_nan` | 向量化逐点，NaN 传播安全 |
+| 逐元素二元 | 8 | `add, sub, mul, div, max2, min2, hypot, copysign` | 广播计算 |
+| 常数参数 | 13 | `addc, subc, mulc, divc, spow, clip, fillna, round, perc_long, cs_quantile, cs_group, winsor, MAD` | 标量夹带与截面分位 |
+| 比较/逻辑 | 4 + 2 + 2 + 1 | `gt, lt, ge, le`, `gt_const, lt_const`, `and_cond, or_cond`, `not_cond` | BoolCond 掩码运算 |
+| 条件分支 | 1 | `where`（别名 `ifelse`） | 三元选择 |
+| 横截面 | 21 | `cs_rank, cs_zscore, cs_demean, cs_scale, cs_winsorize, cs_sum, cs_mean, cs_std, cs_var, cs_max, cs_min, cs_median, cs_nonan_num, cs_argmax, cs_argmin, cs_pct_rank, cs_dense_rank, cs_dense_pct_rank, cs_skew, cs_kurt, cs_mad` | 分块转置 + Stride-1 行统计 |
+| 横截面双变量 | 6 | `cs_neutralize, cs_beta, cs_corr, cs_cov, barra5_zScore, ts_dw` | OLS/相关/协方差/市值加权标准化 |
+| 板块分组 | 3 | `group_demean, group_rank, group_zscore` | `ahash` 分组聚合 |
+| 时序滚动（窗口） | 25 | `delay, delta, pct_change, log_return, ts_sum/mean/std/var/min/max, ts_argmin/argmax, ts_rank, ts_zscore, ts_skew, ts_kurt, ts_ema, ts_decay_linear, ts_mad, ts_roll, ts_prod, ts_median, ts_nonan_num, ts_pct_rank, ts_group` | 双栈 Welford / 单调队列 / 有序窗口二分，均摊 `O(1)`~`O(log d)` |
+| 时序二元滚动 | 5 | `ts_cov, ts_corr, ts_beta, ts_resid, ts_quantile` | 双栈二元协矩增量 |
+| 全历史（扩张窗口） | 9 | `rank_ts, pct_rank_ts, dense_rank_ts, pct_dense_rank_ts, ts_dense_rank, ts_pct_dense_rank, ts_cumsum, ts_cumprod, ts_ffill` | Fenwick 树 `O(T log D)`；严格因果 |
+| 变参多元回归 | 8 | `cs_multi_{beta,resi,wls_beta,wls_resi}`, `ts_multi_{beta,resi,wls_beta,wls_resi}` | 增广加权设计矩阵 Householder QR（截面）/ 增量正规方程（时序） |
+
+> **算子对账门禁**：`python/factorlib/core/ops_ref.py` 提供 128 个算子的纯 NumPy 黄金参考实现，
+> `tests/python/test_rust_core.py::test_factorlab_mcp_1d_operator_full_reconciliation`
+> 强制 `max |y_rust − y_ref| < 1e-9`（含 20% 缺失率、并列值、跨数量级与 `±Inf` 场景）。
 
 ---
-
 ### 3.3 指标计算库 (`metrics`)
 
 - `calc_rank_ic(pred, target, mask)`：截面 Spearman Rank IC 与时序均值、标准差、ICIR、t 统计量。

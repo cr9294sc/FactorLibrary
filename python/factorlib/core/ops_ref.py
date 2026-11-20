@@ -1,7 +1,7 @@
-"""68 个向量化算子的纯 NumPy 参考实现 (core/ops_ref.py)。
+"""128 个向量化算子的纯 NumPy 参考实现 (core/ops_ref.py)。
 
 按照白皮书 16.2 节与 P2 验收标准设计：
-- 本模块提供所有 68 个逐元素、时序滚动、横截面及板块分组算子的纯 Python/NumPy 黄金参考实现；
+- 本模块提供全部 128 个逐元素、时序滚动、横截面、板块分组与变参多元回归算子的纯 Python/NumPy 黄金参考实现；\n- 严格对齐 `docs/factorlab_mcp_catalog.md` 第四章 106 个 FactorLab 1d 算子（见 `docs/factorlab_1d_operator_alignment.md`）；
 - 用于与 `factorlib_core` Rust 原生计算内核进行基于性质的随机矩阵对账测试（Property-based Testing）；
 - 严格遵循相同的缺失值约定：所有非有限浮点数（`NaN`、`+Inf`、`-Inf`）统一视作 `NaN` 缺失值处理。
 """
@@ -1078,7 +1078,7 @@ def group_zscore(x: np.ndarray, group: np.ndarray, mask: np.ndarray | None = Non
     return _clean(out)
 
 
-# 算子名称到参考实现函数的映射字典（共 68 个算子）
+# 算子名称到参考实现函数的映射字典（基础 68 项，其余经 `OPS_REF_REGISTRY.update` 补齐至 128 项）
 OPS_REF_REGISTRY: dict[str, Callable[..., np.ndarray]] = {
     # 一元逐元素 (12)
     "neg": neg,

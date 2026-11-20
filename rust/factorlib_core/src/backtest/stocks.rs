@@ -11,7 +11,7 @@
 //!      卖出加征印花税，完全复刻 A 股真实非对称税费；
 //!    - `flat_fee_rate > 0`（`flat` 对账模式）：买卖双边统一按成交额单边费率计费
 //!      （例如 `fee_rate = 0.003`），不计最低佣金与印花税，等价于 `factorsim` 作业回测口径；
-//!    滑点在两种模式下均支持 tick 与成交额 bps 比例；
+//!      滑点在两种模式下均支持 tick 与成交额 bps 比例；
 //! 7. 做空控制：默认关闭；`allow_short=true` 暂未实现，显式报错拒绝。
 
 use crate::backtest::common::compute_common_metrics;

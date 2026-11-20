@@ -1372,7 +1372,7 @@ class StockMarketAdapter(MarketAdapter):
 为支持标准化的「因子目录检索 $\to$ 双模态编写 $\to$ 静态探针校验 $\to$ 声明式后处理与物化 $\to$ 双层回测归因」闭环，平台在 Rust 计算内核与 Python 核心层扩展了以下模块：
 
 1. **Stage 0 & Stage 1 — 统一因子研究目录 (`core/catalog.py` & `scripts/catalog.py`)**：
-   - 统一纳管 `variables`（面板字段与隐式掩码）、`functions`（68 个原生算子与 `log`/`sqrt`/`ts_delay`/`ts_delta`/`decay`/`emadecay` 兼容别名）、`postprocess`（12 个声明式后处理算子）以及 `styles`（6 大期货标准风格因子）。
+   - 统一纳管 `variables`（面板字段与隐式掩码）、`functions`（128 个原生算子，完整覆盖 FactorLab MCP 106 个 1d 算子，并内置 `log`/`sqrt`/`ts_delay`/`ts_delta`/`decay`/`emadecay`/`greater`/`less`/`ifelse`/`rank`/`zScore`/`MAD`/`winsor`/`indNeut`/`riskNeut`/`riskNeutMulti` 等兼容别名）、`postprocess`（12 个声明式后处理算子）以及 `styles`（6 大期货标准风格因子）。
 2. **Stage 2 — 双模态因子定义与 12 算子声明式后处理链 (`core/probe.py` & `rust/factorlib_core/src/ops/postprocess.rs`)**：
    - 支持 `expression`（Rust 极速 DSL）与 `code`（Python `def compute(context):` 因果沙箱）双模态编写；
    - 在 Rust 内核中精确实现 12 个 C++ 级语义的后处理算子：`baseUniMask`、`trdMask`、`dropNewStock`、`MAD`（下中位数索引 `(k-1)//2` 与 `1.4826` 缩放）、`winsor`、`indNeut`、`riskNeut`、`riskNeutMulti`（多元无截距 OLS 高斯消元）、`zScore`（`ddof=0`）、`rank`（6 位银行家舍入）、`decay`、`emadecay`；均通过泛型 `ArrayBase<S, Ix2>` 与 PyO3 只读 `ArrayView2` 零拷贝借用执行，并在 Python 管线 `apply_postprocess_pipeline` 执行 `decay`/`emadecay` 后自动重施 Stage 1 累积有效掩码，杜绝退市或池外标的残值渗出。
@@ -1520,5 +1520,5 @@ class StockMarketAdapter(MarketAdapter):
    - `build_stock_panel()` 保持 `base_univ_mask` 与 `StockPanelLoader.load()` 一致（剔除停牌、ST 与存续期外标的），将次新股阈值 (`120d`/`60d`) 交由后处理 `dropNewStock` 在时序滚动算子预热后执行；全周期 `data/derived/stocks/v1` 覆盖 `2015-11-01 ~ 2024-12-31`（`2231` 交易日 $\times$ `5323` 只 A 股，`2015-11~12` 为 42 日预热缓冲区，正式统计区间 `2016-01-04 ~ 2024-12-31` 共 `2185` 交易日）。
 2. **原型 UI 细节补齐与 FactorLab MCP 线上基准同屏对账 (`core/workbench.py`, `frontend/pages/{lab,compare}.js`)**：
    - P2 单因子实验室探针 (`POST /api/{market}/probe`) 新增尾部窗口快速求值，输出求值耗时 (`elapsed_ms`)、有效覆盖率 (`coverage`)、`NaN` 率及 20 分箱截面分位数分布直方图 SVG；
-   - A 股工作台预置 `Volume_Price_2_H5_2` (`bt_bb3a04da6b20456ab444dcb7e5450949`)、`Tech_Trend_VP_1_Rev`、`Volume_Price_2_H5`、`Volume_Price_2_R7`、`Gaussian distribution` 5 大 FactorLab MCP 线上对账因子模板与种子库，默认启用 10 分组 (`G1..G10`) 评价，并在 P3 回测结果页展示「本地 `open_adj` 无前视主口径 vs 本地 `vwap_adj` 对照口径 vs FactorLab MCP 线上 `vwap30` 基准」同屏对账表与多空/多头组合汇总表；
+   - A 股工作台仅预置 **`Volume_Price_2_H5_2`** (`bt_bb3a04da6b20456ab444dcb7e5450949`) 作为跨数据源与 MCP 算子/数据对齐的**唯一黄金基准因子模板**（Phase 3 P0 已清理其余 4 个云端草稿因子），默认启用 10 分组 (`G1..G10`) 评价，并在 P3 回测结果页展示「本地 `open_adj` 无前视主口径 vs 本地 `vwap_adj` 对照口径 vs FactorLab MCP 线上 `vwap30` 基准」同屏对账表与多空/多头组合汇总表；
    - 清理过渡期空壳 `markets/stocks/adapter.py` 与 `workbench.py` 中已废弃同步入口 `run_e2e_pipeline`，统一收敛至 `StocksProfile` 与异步子进程派发架构。

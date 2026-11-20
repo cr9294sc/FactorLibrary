@@ -1,7 +1,35 @@
 # AGENTS.md - FactorLibrary 协同开发智能体操作指南
 
-本项目是一个由 Rust 极速计算内核与 Python 科学计算生态融合构建的**期货量化因子挖掘与回测平台（FactorLibrary）**。
-所有在此代码库工作的智能体（Agents）必须严格遵守以下工程规范与行为准则。
+本项目是一个由 Rust 极速计算内核与 Python 科学计算生态融合构建的**多市场（期货 & A 股双数据源）量化因子挖掘、组合优化与实盘级回测平台（FactorLibrary）**。
+所有在此代码库工作的智能体（Agents）必须严格遵守以下**量化研究闭环范式（Quantitative Research Closed-Loop Model）**、工程规范与行为准则。
+
+---
+
+## 顶层量化研究闭环架构规范（Quantitative Research Closed-Loop Paradigm）
+
+本平台的一切功能演进、模块划分、配置设计与实验调优，必须严格遵循「**投资研究（Investment Research） → 交易执行（Execution） → 绩效监控与反馈调优（Monitor & Adjustment）**」六阶闭环范式：
+
+```text
+                       ┌──────────────────── Adjustment (参数/风控/模型反馈调优) ───────────────────┐
+                       ▼                                       ▼                                  │
+┌──────────────────────────────────────────────────────────────────────────────┐  ┌────────────┐  ┌┴───────────┐
+│                         Investment Research (投资研究)                        │  │ Execution  │  │  Monitor   │
+│  ┌──────────┐      ┌───────────┐      ┌───────────────┐      ┌────────────┐  │  │ ┌────────┐ │  │ ┌────────┐ │
+│  │ 1. Data  │ ───► │ 2.Factors │ ───► │ 3.Predictions │ ───► │ 4.Positions│ ─┼─►│ │5.Orders│ ┼─►│ │6.Return│ │
+│  └──────────┘      └───────────┘      └───────────────┘      └────────────┘  │  │ └────────┘ │  │ └────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘  └────────────┘  └────────────┘
+```
+
+### 六阶闭环模块映射与开发契约
+
+| 闭环阶段 | 所属域 | 核心职责与数学/工程边界 | 对应代码模块与配置资产 |
+| :--- | :--- | :--- | :--- |
+| **1. Data**<br>（双源底座与视图桥接） | Investment Research | • **物理分库、各守时钟、运行期单向投影**：A 股托管 `stocks/rq`（米筐 2010–2026 全量 OHLCV、`daily_basic` 估值换手、`num_trades`、指数成分权重，执行时钟 `open_adj`）与 `stocks/lb_barra`（Barra CNE5 10 风格、31 行业、`VwapBegin30`、特质收益 `CNE5SpecRet`、日频协方差 `COV`，执行时钟 `vwap_open_30m`）两套独立数据集，零物理合表；<br>• **变量别名兼容**：统一支持 FactorLab MCP 标准变量别名（如 `daily_derived_returns_c2c_1d`、`daily_derived_returns_intra`、`barra_cne5_*`）；<br>• **跨源投影**：通过 `RiskView` 只读借用风险暴露，通过 `SignalBridge`（支持 `T_close`/`T_exec` 显式对齐）跨源投递信号。 | • `rust/factorlib_core/src/panel.rs`<br>• `python/factorlib/core/panel.py`<br>• `python/factorlib/markets/stocks/{panel_loader,ares_bridge,bridge,barra}.py`<br>• `configs/{futures,stocks}/data.yaml` |
+| **2. Factors**<br>（算子库与因子生产线） | Investment Research | • **Rust 极速算子库**：维护逐元素、时序滚动（$O(1)$ Welford/单调队列）、横截面、多元加权回归残差（`cs_multi_wls_resi`）、Barra 市值加权标准化（`barra5_zScore`）等核心 1d 算子及 FactorLab 同名别名；<br>• **双模态定义与 12 步声明式后处理**：支持 DSL AST 表达式与因果 Python 代码，链式执行 `baseUniMask → trdMask → dropNewStock → MAD/winsor → indNeut → riskNeutMulti → decay/emadecay → zScore/rank`；<br>• **黄金对账基准**：锁定 `Volume_Price_2_H5_2` 为跨数据源与线上 MCP 算子/后处理数值对齐的唯一黄金基准因子。 | • `rust/factorlib_core/src/ops/`<br>• `rust/factorlib_core/src/expr/`<br>• `python/factorlib/core/{ops_ref,probe,dsl}.py`<br>• `python/factorlib/gp/` |
+| **3. Predictions**<br>（横截面收益预测与合成） | Investment Research | • **双轨预测目标**：同时支持总收益标签（`y_1/2/5/10`）与剥离市场/行业/风格后的**纯特质收益标签**（`y_idio_1/2/5/10`）；<br>• **多因子合成与外部信号接入**：支持 Purged Walk-Forward ML（LightGBM/Ridge）、PyTorch DL Alpha 合成，以及通过 `SignalBridge` 导入外部预合成信号（如 `shifted_signal.parquet`）。 | • `python/factorlib/ml/`<br>• `python/factorlib/dl/`<br>• `python/factorlib/markets/stocks/bridge.py`<br>• `configs/{futures,stocks}/ml_default.yaml` |
+| **4. Positions**<br>（模块化组合优化器） | Investment Research | • **三层模块化融合架构（`optimizer.py`）**：<br>  1. **信号塑形层（SignalShaper）**：截面排序归一化、软行业中性化（`ind_neutral_weight`）、低波因子倾斜（`-vol_weight * RESVOL`）、非线性头部幂次放大（`power`）与 EMA 慢速记忆（`memory`）；<br>  2. **动态风控守卫（DynamicRiskGuard）**：监测 Barra `FactorRet['SIZE']` 等风格短期异动，在微盘流动性危机期自适应收紧风格敞口与低波惩罚；<br>  3. **凸优化求解层（ConvexOptimizer）**：支持「双期跨期规划 Horizon LP」与「Barra 42 因子低秩协方差 QP/SOCP」组合，内嵌非对称买卖换手惩罚（`asymmetric_trade_penalty`）与防追高跳升门槛（`buy_hurdle`），支持 `MOSEK`/`CLARABEL` 双轨求解；<br>• **持仓漂移闭环**：逐日根据真实价格涨跌、停牌/涨跌停阻断与 `reserve_cash` 动态递推昨日真实漂移持仓 `last_hold`。 | • `python/factorlib/markets/stocks/{optimizer,portfolio}.py`<br>• `python/factorlib/core/portfolio.py`<br>• `configs/stocks/{barra,backtest}.yaml` |
+| **5. Orders**<br>（实盘语义订单与撮合） | Execution | • **严格因果执行时钟**：`rq` 域默认 $T+1$ `open_adj`，`lb_barra` 域默认 $T+1$ `vwap_open_30m_adj`（严禁静默回退全天 VWAP）；<br>• **市场微观约束与双费率模式**：A 股 T+1 锁仓、100 股整手、停牌与涨跌停阻断（`blocked_orders`）、期货换月平旧开新；同时支持「A 股真实非对称佣金/印花税/过户费/滑点」与「统一单边费率（如 `fee_rate: 0.003` 对账模式）」。 | • `rust/factorlib_core/src/backtest/{stocks,futures}.rs`<br>• `python/factorlib/markets/stocks/backtest.py`<br>• `configs/{futures,stocks}/fees.yaml` |
+| **6. Returns & Adjustment**<br>（绩效归因与反馈调优） | Monitor & Feedback | • **多维绩效监控与 Barra 归因**：输出分年度/全周期净值、Sharpe、最大回撤、特质 RankIC，以及 Barra 42 因子（国家 + 10 风格 + 31 行业 + 特质 Alpha + 交易成本）收益与风险归因；<br>• **Adjustment 反馈调优闭环**：针对特定极端行情段（如 2024 年初微盘股回撤段）定位风险暴露源，通过声明式 YAML 参数网格/灵敏度调参器自动反馈调节 **Predictions**（标签/中性化）、**Positions**（`power`/`ind_neutral_weight`/`vol_weight`/`adaptive_stress_guard`/`asymmetric_trade_penalty`）与 **Orders**（`reserve_cash`/换手阈值），并支持一键导出外部兼容策略文件。 | • `rust/factorlib_core/src/metrics/`<br>• `python/factorlib/core/{evaluate,report,registry}.py`<br>• `scripts/run_backtest.py` |
 
 ---
 
@@ -24,22 +52,22 @@
 ## 核心架构与目录分工
 
 1. **`python/factorlib/`**：主 Python 算法包
-   - `core/`：面板数据抽象、DSL 语法糖、评价体系、组合构建、因子库 ORM、运行追踪
+   - `core/`：面板数据抽象、DSL 语法糖、静态探针与 12 步后处理（`probe.py`）、评价体系与 Barra 归因（`evaluate.py`）、组合构建、因子库 ORM、运行追踪
    - `gp/`：强类型遗传规划（STGP）自动化因子挖掘系统（原语、变异交叉、多岛模型、准入管线）
-   - `ml/`：Purged Walk-Forward 机器学习多因子合成管线（特征工程、LightGBM、岭回归）
+   - `ml/` & `dl/`：Purged Walk-Forward 机器学习与 PyTorch 深度学习多因子合成管线（支持总收益 `y_h` 与纯特质收益 `y_idio_h` 双轨训练）
    - `markets/futures/`：期货市场适配层（ETL、主力映射、微结构特征提取、合约规格、费率模型）
-   - `markets/stocks/`：A 股市场适配层（预留二期实现）
+   - `markets/stocks/`：A 股双数据源市场适配层（米筐 `panel_loader.py`、`.ares` 转换 `ares_bridge.py`、跨源桥接 `bridge.py`、动态特质收益与风险库 `barra.py`、模块化融合凸优化器 `optimizer.py`、回测执行 `backtest.py`）
 2. **`rust/factorlib_core/`**：Rust 原生计算内核（通过 PyO3 导出为 `factorlib_core`）
    - `panel.rs`：列优先 Fortran 矩阵与对齐掩码
-   - `ops/`：50+ 向量化逐元素、时序滚动（$O(1)$ Welford / 单调队列）、横截面算子
+   - `ops/`：向量化逐元素、时序滚动（$O(1)$ Welford / 单调队列）、横截面、多元回归残差与后处理算子（与 FactorLab MCP 1d 核心算子库及同名别名对齐）
    - `expr/`：AST 语法树、词法语法分析器、静态类型检查、规范化化简、LRU 缓存
-   - `metrics/`：RankIC、分位收益、换手率、相关性矩阵计算
-   - `backtest/`：期货实盘语义向量化回测状态机（手数离散化、涨跌停阻断、换月双边费、逐日盯市）
-3. **`configs/futures/`**：YAML 配置文件（数据、品种池、费率、GP 超参、ML 超参、回测配置）
+   - `metrics/`：RankIC、特质 RankIC、分位收益、换手率、相关性矩阵计算
+   - `backtest/`：期货（`futures.rs`）与 A 股（`stocks.rs`）实盘语义向量化回测状态机（手数/整手离散化、T+1 锁仓、涨跌停/停牌阻断、换月双边费/A 股双费率模式、逐日盯市）
+3. **`configs/futures/` & `configs/stocks/`**：声明式 YAML 配置文件（双源数据声明 `data.yaml`、Barra 风险模型 `barra.yaml`、品种/股票池、费率、GP/ML 超参、模块化组合优化与回测配置 `backtest.yaml`）
 4. **`legacy/`**：原 pyrust-bt 股票回测原型存档（供对照参考，不直接修改）
-5. **`exports/`**（已 gitignore）：只读的米筐原始 Parquet 数据资产（约 12.7GB）
-6. **`data/`**（已 gitignore）：派生研究面板长表与本地 SQLite 因子库
-7. **`runs/`**（已 gitignore）：实验产出目录（指标、日志、HTML 诊断报告）
+5. **`exports/` & `local_backtest/`**（已 gitignore）：只读的米筐原始 Parquet 数据资产（约 12.7GB）与本地 Barra 离线回测对照资产（约 2.7GB）
+6. **`data/`**（已 gitignore）：派生研究面板长表（`futures/v1`、`stocks/v1`、`stocks/lb_barra_v1` + `risk_store/`）与本地 SQLite 因子库
+7. **`runs/`**（已 gitignore）：实验产出目录（指标、归因报告、调参日志、HTML 诊断报告）
 
 ---
 

@@ -640,13 +640,96 @@ execution:
 - [x] 升级 [`markets/stocks/styles.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/markets/stocks/styles.py) 支持 10 维 Barra 风格自适应，并打通 `ml/` 与 `dl/` 的 `y_idio_h` 目标标签支持
 - [x] 补齐 `tests/python/test_stocks_barra.py` 与 `tests/python/test_perturbation.py` 因果摄动用例
 
-### Phase 3：原生 Barra 组合优化器与双源回测服务
-- [ ] 新增 `configs/stocks/barra.yaml`，升级 `configs/stocks/backtest.yaml` 与 [`core/config.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/config.py) 配置校验
-- [ ] 实现 `python/factorlib/markets/stocks/optimizer.py`（低秩 SOCP/QP、三种基准权重模式、MOSEK/CLARABEL 双轨与三级不可行容错）
-- [ ] 接入 `StocksProfile.build_weights()` 与 [`scripts/run_backtest.py`](file:///home/cr9294/repos/FactorLibrary/scripts/run_backtest.py)
-- [ ] 跑通两条端到端基线验证：① 外部 `shifted_signal.parquet`（`T_exec` 对齐）在 `lb_barra_v1` 上回测对账；② `rq_v1` 经典量价因子通过 `SignalBridge` 桥接至 `lb_barra_v1` 执行 Barra QP 回测
+### Phase 3 (P0–P1)：算子/变量全量对齐、模块化融合组合优化器与漂移闭环回测
+- [ ] **P0-1 全量 1d 变量面板升级（`stocks/v2` 至 2026-11）**：将 `data/raw/stocks/` 已落盘至 `2026-11-06` 的 `daily_basic`（市值/流通市值/PE/PB/PS/换手率）、`num_trades`、`000300/000905/000852` 指数成分权重及日内收益率 `daily_derived_returns_intra` 合入派生面板，并与 `docs/factorlab_mcp_catalog.md` 变量别名（含 `RiskView` Barra 10 风格别名）打通
+- [ ] **P0-2 Rust 核心 1d 算子库扩充与黄金基准对账**：在 `rust/factorlib_core/src/ops/` 与 `python/factorlib/core/ops_ref.py` 补齐 FactorLab 1d 高频算子（`cs_multi_wls_resi`、`barra5_zScore`、`ts_median`、`ts_quantile`、`fillna`、`purify`、`zero_to_nan`、`exp`、`sign_power`、`cs_mean/std/var/sum/max/min/median/quantile` 等）及同名别名；清理测试冗余因子，仅保留 `Volume_Price_2_H5_2` 作为数据与算子对齐的唯一黄金基准因子
+- [ ] **P1-1 模块化融合凸优化器（`markets/stocks/optimizer.py`）**：统一融合 `local_backtest/strategy.py` 作业调参管线与 Barra 协方差 QP：
+  1. `SignalShaper`（居中排序分、软行业中性化 `ind_neutral_weight`、低波倾斜 `-vol_weight * rank(RESVOL)`、非线性幂次放大 `power`、5 日指数记忆 `memory`）
+  2. `DynamicRiskGuard`（`adaptive_stress_guard` 监测 Barra `FactorRet['SIZE']` 10 日异动，在微盘股危机期自适应收紧风格与低波惩罚）
+  3. `ConvexOptimizer`（支持双期跨期规划 `Horizon LP` 与 Barra 42 因子低秩协方差 `QP/SOCP` 可选组合、非对称买卖换手惩罚 `asymmetric_trade_penalty: {buy, sell}`、防追高跳升门槛 `buy_hurdle`、`MOSEK/CLARABEL` 双轨求解）
+- [ ] **P1-2 持仓漂移闭环与双费率模式（`Orders` 层）**：在滚动求解 $w_t$ 时根据真实价格涨跌、停牌/涨跌停阻断与 `reserve_cash`（如 `0.9`）动态递推昨日真实漂移持仓 `last_hold`；在 `stocks.rs` / `backtest.py` 同时支持「A 股真实非对称税费」与「统一单边费率（`fee_rate: 0.003` 对账模式）」，并支持一键导出兼容 `factorsim` 的 `strategy.py`
 
-### Phase 4：全栈工作台、多维归因与米筐 2025–2026 增量续传
-- [ ] 扩展 [`core/evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py) 与 [`core/report.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/report.py) 上线特质 RankIC 与 Barra 多维收益归因报告
-- [ ] 扩展 [`workbench_server.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/workbench_server.py) 与前端 P1–P5 页面（双数据集切换、能力徽章提示、跨源桥接回测开关与 Barra 归因图表）
-- [ ] 续跑 [`scripts/download_rq_stocks.py`](file:///home/cr9294/repos/FactorLibrary/scripts/download_rq_stocks.py) 补齐 2025–2026 米筐日线及 `000905.XSHG` 成分权重，独立构建 `stocks/v2`，并同步更新技术白皮书 [`docs/futures_platform_plan.md`](file:///home/cr9294/repos/FactorLibrary/docs/futures_platform_plan.md)
+### Phase 4 (P2–P3)：Barra 42 因子绩效归因、YAML 自动调参反馈闭环与工作台接入
+- [ ] **P2-1 Barra 42 因子与极端行情分段归因（`Monitor: Returns`）**：扩展 [`core/evaluate.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/evaluate.py) 与 [`core/report.py`](file:///home/cr9294/repos/FactorLibrary/python/factorlib/core/report.py)，上线特质 RankIC 及分年度/极端回撤段（如 2024 年 1–2 月微盘股流动性危机）的 Barra 42 因子（国家 + 10 风格 + 31 行业 + 特质 Alpha + 交易成本）归因诊断
+- [ ] **P2-2 声明式 YAML 参数扫描与反馈调优器（`Adjustment` 闭环）**：在 [`scripts/run_backtest.py`](file:///home/cr9294/repos/FactorLibrary/scripts/run_backtest.py) 支持基于归因诊断的 YAML 参数网格/灵敏度扫描，打通 `Returns → Adjustment → Predictions / Positions / Orders` 闭环，并将最优配置反哺同步至 `local_backtest/{strategy.py,config.yaml}`
+- [ ] **P3 全栈 Web 工作台（`workbench_server.py` P1–P5）接入**：上线双数据集切换、能力徽章提示、`SignalBridge` 跨源回测开关与 Barra 归因可视化图表，并同步更新技术白皮书 [`docs/futures_platform_plan.md`](file:///home/cr9294/repos/FactorLibrary/docs/futures_platform_plan.md)
+
+---
+
+## 8. v3 架构定稿：基于量化研究闭环（Quantitative Research Closed-Loop）的开发与调优全景规约
+
+### 8.1 量化研究六阶闭环总览
+
+我们将「`local_backtest` 作业回测与 YAML 调参」、「`stocks_barra_backtest_integration.md` 双数据源融合」以及「`factorlab_mcp_catalog.md` 算子库/变量库补全」三大任务统一收纳至标准量化研究闭环：
+
+```mermaid
+flowchart LR
+    subgraph IR["Investment Research (投资研究)"]
+        D["1. Data\nrq_v2 (2010-2026 全量OHLCV+daily_basic+指数权重)\n+ lb_barra_v1 (Barra CNE5+VwapBegin30+COV)\n+ RiskView / SignalBridge"]
+        F["2. Factors\nRust 1d 核心算子库扩充 + FactorLab 变量别名\n+ 12步后处理 + Volume_Price_2_H5_2 黄金基准对账"]
+        P["3. Predictions\n单因子/ML/DL (y_h & y_idio_h 双轨标签)\n或外部 shifted_signal (T_exec 对齐)"]
+        Pos["4. Positions (模块化融合 optimizer.py)\n① SignalShaper (软行业中性/低波倾斜/幂次放大/EMA记忆)\n② DynamicRiskGuard (FactorRet SIZE 10d 异动风控)\n③ ConvexOptimizer (双期 Horizon LP + Barra 低秩 QP\n   + 非对称买卖换手 + Buy Hurdle)"]
+        D --> F --> P --> Pos
+    end
+
+    subgraph EX["Execution (交易执行)"]
+        O["5. Orders\n持仓漂移闭环 last_hold (含 reserve_cash=0.9)\n+ VwapBegin30 / open_adj 因果撮合\n+ 双费率模式 (A股非对称税费 vs 0.003 对账费率)"]
+    end
+
+    subgraph MON["Monitor (绩效监控)"]
+        R["6. Returns\n分年度/全周期 PnL & Sharpe & 回撤\n+ 特质 RankIC\n+ Barra 42因子与极端行情段(2024微盘危机)归因"]
+    end
+
+    Pos --> O --> R
+    R -- "Adjustment (YAML 自动调参器 & 归因反馈)" --> P
+    R -- "Adjustment (反哺 power/ind_w/vol_w/guard/penalty)" --> Pos
+    R -- "Adjustment (反哺 reserve_cash/换手与执行约束)" --> O
+```
+
+---
+
+### 8.2 三大待办任务排查诊断与统一处置清单
+
+| 任务来源 | 排查发现的真实缺口与根因 | 定稿处置方案 | 优先级 |
+| :--- | :--- | :--- | :---: |
+| **1. `factorlab_mcp_catalog.md`**<br>（算子库 + 变量库 + 因子对账） | • **原始数据已就绪但未入派生面板**：`data/raw/stocks/` 已完整落盘至 `2026-11-06`（含 `daily_basic` 估值换手、`num_trades`、`000300/000905/000852` 指数成分权重），但 `derived/stocks/v1` 仅到 `2024-12` 且仅提取了 11 个基础量价字段；<br>• **算子库差集**：Rust `factorlib_core` 现有 68 算子，缺少 FactorLab 常用 1d 截面/时序/多元 WLS 残差算子与同名别名；<br>• **测试因子冗余**：8 个云端草稿因子仅用于早期探路。 | • **变量库扩容**：升级构建 `stocks/v2`（至 `2026-11`），合入 `daily_basic`、`num_trades`、三大指数权重、`daily_derived_returns_intra`，并提供 FactorLab 全套变量别名映射；<br>• **算子库扩容**：在 Rust 内核 + `ops_ref.py` 补齐 `cs_multi_wls_resi`、`barra5_zScore`、`ts_median/quantile`、`fillna/purify/zero_to_nan`、`exp/sign_power`、`cs_mean/std/var/sum/max/min/median/quantile` 等核心 1d 算子与别名；<br>• **精简对账基准**：仅保留 **`Volume_Price_2_H5_2`** 作为跨源与 MCP 算子/数据对齐的唯一黄金基准因子。 | **P0** |
+| **2. `local_backtest/` & Homework**<br>（组合策略与 YAML 调参接入） | • **配置与代码断层 Bug**：`local_backtest/config.yaml` 新增了平抑 2024 年 54.7% 回撤的关键参数 `adaptive_stress_guard: true`（基于 Barra `FactorRet['SIZE']` 10 日异动）与 `asymmetric_trade_penalty: {buy: 1.00, sell: 0.45}`，但 `local_backtest/strategy.py` 尚未读取和实现这两项逻辑；<br>• **策略高价值组件待沉淀**：作业策略中的软行业中性（`0.42`）、低波倾斜（`0.12`）、幂次放大（`1.8`）、双期跨期规划（`horizon`）、追高门槛（`buy_hurdle`）与 `reserve_cash=0.9` 归一化极具实战价值。 | • 将上述全部组件原生融合进平台 `markets/stocks/optimizer.py` 的「**信号塑形层 + 动态风控守卫 + 凸优化求解层**」三层架构；<br>• 补齐 `adaptive_stress_guard` 与 `asymmetric_trade_penalty` 的严谨数学实现；<br>• 支持同一份 YAML 配置既能驱动平台原生 Rust 回测，又能同步导出/更新 `local_backtest/strategy.py`。 | **P1** |
+| **3. `stocks_barra_backtest_integration.md`**<br>（Phase 3–4 原生优化、执行闭环与归因） | • **已完成**：Phase 0–2（`.gitignore` 隔离、`lb_barra_v1` 独立面板、`barra.py` 动态特质收益与风险库、`bridge.py` 的 `SignalBridge` 与 `RiskView`）；<br>• **待完成**：Phase 3–4 的 `optimizer.py`、持仓漂移闭环 `last_hold`、双费率回测对账、Barra 42 因子事后归因与 YAML 自动调参闭环。 | • 在 `optimizer.py` 实现逐日真实价格涨跌 + 停牌/涨跌停掩码 + `reserve_cash` 的**持仓漂移闭环递推**；<br>• 在 `Orders` 层支持「A 股真实非对称税费」与「统一单边费率（`0.003`）」双模式；<br>• 在 `Returns → Adjustment` 层实现分年度/极端行情段 Barra 42 因子归因与 YAML 自动调参扫描器。 | **P1 → P2** |
+
+---
+
+### 8.3 模块化融合组合优化器（`Positions` 层）数学与配置契约
+
+在 `python/factorlib/markets/stocks/optimizer.py` 中，单日截面目标权重求解按以下三层流水线依次执行：
+
+#### 第一层：信号塑形层（`SignalShaper`）
+1. **居中秩映射（Centered Rank Score）**：将当日原始预测信号 $s_t \in \mathbb{R}^N$ 映射至 $[-1, 1]$，缺失值置 $0$：
+   $$r_{i,t} = \frac{2 \cdot \text{rank}(s_{i,t}) - (N_{\text{valid}} + 1)}{N_{\text{valid}} - 1}$$
+2. **软行业中性化（Partial Industry Neutralization）**：设行业均值为 $\bar{r}_{g(i), t}$，软中性化权重 $\eta_{\text{ind}} \in [0, 1]$（如 `0.42`，兼顾行业分散与主线行业景气度 Alpha）：
+   $$\tilde{r}_{i,t} = r_{i,t} - \eta_{\text{ind}} \cdot \bar{r}_{g(i), t}$$
+3. **低波/风格倾斜（Style Tilt）**：结合 Barra `RESVOL` 施加低波保护（权重 $\eta_{\text{vol}}$，可由第二层动态风控放大）：
+   $$a_{i,t} = \text{rank\_score}(\tilde{r}_{i,t}) - \eta_{\text{vol}}(t) \cdot \text{rank\_score}(\text{RESVOL}_{i,t})$$
+4. **非线性头部幂次放大（Power Transform）**：拉开 Top $1\% \sim 3\%$ 极优标的得分梯次（$p \ge 1.0$，如 `1.8`）：
+   $$\alpha_{i,t} = \text{sign}(a_{i,t}) \cdot |a_{i,t}|^p$$
+5. **慢速 EMA 状态记忆（Slow Memory State）**：维护跨期指数平滑状态 $\bar{\alpha}_t = \mu \bar{\alpha}_{t-1} + (1 - \mu) \alpha_t$（如 $\mu = 0.75$）。
+
+#### 第二层：动态风控守卫（`DynamicRiskGuard`）
+当 `adaptive_stress_guard: true` 时，利用截至 $T$ 日已知的 Barra 因子收益序列 `FactorRet['SIZE']`（或 `RESVOL`/`LIQUIDTY`）过去 $W_{\text{stress}}$ 日（默认 10 日）的累计收益或下行 Z-Score 检测微盘流动性危机（如 2024 年 1–2 月）：
+- 当 $\text{CumRet}_{10\text{d}}(\text{SIZE})$ 或标准化冲击触发阈值时，自动进入防守体制（Defensive Regime）：
+  - 动态上调低波惩罚系数 $\eta_{\text{vol}}(t) = \eta_{\text{vol, base}} \cdot \kappa_{\text{vol}}$；
+  - 动态注入大盘/市值正向保护倾斜（或收紧 Barra `SIZE` 主动敞口下界 $\delta_{\text{SIZE}}$）；
+  - 动态压降幂次激进度 $p(t)$ 或收紧单日买入换手。
+
+#### 第三层：凸优化求解层（`ConvexOptimizer`）与持仓漂移闭环
+设昨日实际持仓经 $t-1 \to t$ 价格涨跌漂移及 `reserve_cash` 归一化后的真实起始权重为 $w_{t-1}^{\text{drift}}$，引入当期买入金权重 $b_t = (w_t - w_{t-1}^{\text{drift}})_+ \ge 0$ 与卖出权重 $s_t = (w_{t-1}^{\text{drift}} - w_t)_+ \ge 0$（满足 $w_t - w_{t-1}^{\text{drift}} = b_t - s_t$）：
+
+$$\max_{w_t, \, w_{t+1}^{\text{fut}}, \, y_t} \quad \underbrace{\alpha_t^\top w_t}_{\text{当期 Alpha}} - \underbrace{\left(\tau_{\text{buy}} \mathbf{1}^\top b_t + \tau_{\text{sell}} \mathbf{1}^\top s_t\right)}_{\text{非对称买卖换手惩罚}} - \underbrace{\lambda_{\text{hurdle}} (\alpha_t - \bar{\alpha}_t)_+^\top b_t}_{\text{Buy Hurdle 防追高惩罚}} + \underbrace{\gamma_{\text{disc}} \left(\hat{\alpha}_{t+1}^\top w_{t+1}^{\text{fut}} - \bar{\tau} \|w_{t+1}^{\text{fut}} - w_t\|_1\right)}_{\text{可选：双期 Horizon 跨期规划}} - \underbrace{\frac{\lambda_{\text{risk}}}{2} \left(\|L_t^\top y_t\|_2^2 + \sum_{i=1}^N \hat{\sigma}_{u,i,t}^2 (w_{i,t} - w_{b,i,t})^2\right)}_{\text{可选：Barra 42 因子低秩协方差 + 特质风险惩罚}}$$
+
+- **核心约束集**：
+  - 仓位与上限：$0 \le w_{i,t} \le h_{\max}$，$\mathbf{1}^\top w_t = 1 - c_{\text{cash}}$；
+  - 双边换手硬上限：$\mathbf{1}^\top (b_t + s_t) \le \text{tvr}_{\max}$；
+  - 可选 Barra 10 风格 & 31 行业硬偏离约束：$-\delta \le X_t^\top (w_t - w_{b,t}) \le \delta$；
+  - $T$ 日已知停牌/退池锁定：停牌股 $w_{i,t} = w_{i,t-1}^{\text{drift}}$。
+- **灵活组合开关**：
+  - 当 $\lambda_{\text{risk}} = 0$ 且开启 `mode: "horizon"` 时，退化为**极速双期线性规划（Horizon LP）**（100% 兼容并增强 `local_backtest/strategy.py`）；
+  - 当 $\lambda_{\text{risk}} > 0$ 时，升级为**融合跨期信号塑形的 Barra 低秩 SOCP/QP 指数增强优化器**！

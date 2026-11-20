@@ -773,6 +773,9 @@ class StockFeesConfig:
     transfer_fee_rate: float = 0.00001
     slip_ticks: float = 1.0
     slip_bps: float = 0.0
+    # 双费率模式：asymmetric = A 股真实非对称税费；flat = 双边统一单边费率（对账模式）
+    fee_mode: str = "asymmetric"
+    fee_rate: float = 0.0
 
     def __post_init__(self) -> None:
         if self.lot_size != 100:
@@ -781,6 +784,14 @@ class StockFeesConfig:
             raise ConfigError(f"stocks fees.tick_size 必须 > 0, 实际 {self.tick_size}")
         if self.min_commission < 0.0:
             raise ConfigError(f"stocks fees.min_commission 不得为负, 实际 {self.min_commission}")
+        if self.fee_mode not in ("asymmetric", "flat"):
+            raise ConfigError(
+                f"stocks fees.fee_mode 必须为 'asymmetric' 或 'flat', 实际 {self.fee_mode!r}"
+            )
+        if not (0.0 <= float(self.fee_rate) < 1.0):
+            raise ConfigError(f"stocks fees.fee_rate 必须位于 [0, 1), 实际 {self.fee_rate}")
+        if self.fee_mode == "flat" and float(self.fee_rate) <= 0.0:
+            raise ConfigError("stocks fees.fee_mode='flat' 时必须显式提供正的 fee_rate")
         for attr in (
             "commission_rate",
             "stamp_duty_rate",
@@ -792,6 +803,11 @@ class StockFeesConfig:
             if val < 0.0:
                 raise ConfigError(f"stocks fees.{attr} 不得为负, 实际 {val}")
 
+    @property
+    def effective_flat_fee_rate(self) -> float:
+        """传给 Rust 执行状态机的统一单边费率（`asymmetric` 模式返回 0.0）。"""
+        return float(self.fee_rate) if self.fee_mode == "flat" else 0.0
+
 
 @dataclass(frozen=True)
 class StockPortfolioConfig:
@@ -801,6 +817,11 @@ class StockPortfolioConfig:
     max_gross_leverage: float = 1.0
     rebalance_buffer: float = 0.005
     long_only: bool = True
+    # 组合构建模式：quantile = 分位等权基线；barra_qp = 模块化融合凸优化（Barra 低秩 QP）
+    mode: str = "quantile"
+    # `barra_qp` 模式的嵌套优化器配置（由 `markets/stocks/optimizer.py` 的
+    # `BarraOptimizerConfig.from_dict` 解析，此处仅做结构透传与顶层区间校验）
+    optimizer: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not (0.0 < self.top_quantile <= 1.0):
@@ -811,6 +832,16 @@ class StockPortfolioConfig:
             raise ConfigError("stocks portfolio.max_gross_leverage 必须 > 0")
         if not (0.0 <= self.rebalance_buffer < 1.0):
             raise ConfigError("stocks portfolio.rebalance_buffer 必须在 [0, 1) 内")
+        if self.mode not in ("quantile", "barra_qp"):
+            raise ConfigError(
+                f"stocks portfolio.mode 必须为 'quantile' 或 'barra_qp', 实际 {self.mode!r}"
+            )
+        if not isinstance(self.optimizer, dict):
+            raise ConfigError("stocks portfolio.optimizer 必须为映射（YAML dict）")
+        if self.mode == "barra_qp" and not self.optimizer:
+            raise ConfigError(
+                "stocks portfolio.mode='barra_qp' 时必须提供 portfolio.optimizer 配置块"
+            )
 
 
 @dataclass(frozen=True)
@@ -820,10 +851,16 @@ class StockExecutionConfig:
     allow_short: bool = False
     entry_window: str = "open"
     price_basis: str = "hfq"
+    # 现金预留比例（真实持仓漂移闭环归一化基准，如 factorsim 作业 0.9）
+    reserve_cash: float = 1.0
 
     def __post_init__(self) -> None:
         if self.lot_size != 100:
             raise ConfigError(f"stocks execution.lot_size 必须 == 100, 实际 {self.lot_size}")
+        if not (0.0 < float(self.reserve_cash) <= 1.0):
+            raise ConfigError(
+                f"stocks execution.reserve_cash 必须位于 (0, 1]，实际 {self.reserve_cash}"
+            )
         if self.entry_window not in ("open", "vwap_open_30m"):
             raise ConfigError(
                 f"stocks execution.entry_window 必须为 'open' 或 'vwap_open_30m', 实际 {self.entry_window!r}"
@@ -835,10 +872,65 @@ class StockExecutionConfig:
 
 
 @dataclass(frozen=True)
+class StockBarraConfig:
+    """`configs/stocks/barra.yaml`：Barra 风险库与动态特质方差契约。"""
+
+    risk_dataset: str = "lb_barra_v1"
+    risk_store_dir: Path | None = None
+    return_clock: str = "vwap_open_30m"
+    min_eigenvalue: float = 1.0e-10
+    style_factors: tuple[str, ...] = (
+        "BETA",
+        "BTOP",
+        "EARNYILD",
+        "GROWTH",
+        "LEVERAGE",
+        "LIQUIDTY",
+        "MOMENTUM",
+        "RESVOL",
+        "SIZE",
+        "SIZENL",
+    )
+    industry_field: str = "barra_industry"
+    mkt_cap_field: str = "mkt_cap"
+    idiosyncratic_mode: str = "auto"
+    specific_risk: dict[str, Any] = field(default_factory=dict)
+    factor_covariance: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.return_clock not in ("vwap_open_30m", "open_adj", "close_to_close"):
+            raise ConfigError(
+                f"barra.return_clock 必须为 'vwap_open_30m' / 'open_adj' / 'close_to_close', "
+                f"实际 {self.return_clock!r}"
+            )
+        if not (0.0 < float(self.min_eigenvalue) < 1.0):
+            raise ConfigError(
+                f"barra.factor_covariance.min_eigenvalue 必须位于 (0, 1), 实际 {self.min_eigenvalue}"
+            )
+        if self.idiosyncratic_mode not in ("auto", "precomputed", "dynamic_wls"):
+            raise ConfigError(
+                "barra.idiosyncratic_return.mode 必须为 'auto' / 'precomputed' / 'dynamic_wls', "
+                f"实际 {self.idiosyncratic_mode!r}"
+            )
+        if len(self.style_factors) != 10:
+            raise ConfigError(
+                f"barra.exposures.style_factors 必须为 10 个 CNE5 风格, 实际 {len(self.style_factors)}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["risk_store_dir"] = str(self.risk_store_dir) if self.risk_store_dir else None
+        out["style_factors"] = list(self.style_factors)
+        return out
+
+
+@dataclass(frozen=True)
 class StockBacktestConfig:
     capital: CapitalConfig = field(default_factory=CapitalConfig)
     portfolio: StockPortfolioConfig = field(default_factory=StockPortfolioConfig)
     execution: StockExecutionConfig = field(default_factory=StockExecutionConfig)
+    # `strategy` 段：信号塑形与风控守卫参数（同时驱动原生优化器与 factorsim 策略导出）
+    strategy: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -951,6 +1043,8 @@ def load_stock_fees_config(path: Path) -> StockFeesConfig:
         transfer_fee_rate=float(fees.get("transfer_fee_rate", 0.00001)),
         slip_ticks=float(fees.get("slip_ticks", 1.0)),
         slip_bps=float(fees.get("slip_bps", 0.0)),
+        fee_mode=str(fees.get("fee_mode", "asymmetric")),
+        fee_rate=float(fees.get("fee_rate", 0.0)),
     )
 
 
@@ -960,10 +1054,38 @@ def load_stock_backtest_config(path: Path) -> StockBacktestConfig:
     cap_sec = _section(raw, "capital")
     port_sec = _section(raw, "portfolio")
     exec_sec = _section(raw, "execution")
+    strategy_sec = raw.get("strategy") or {}
+    if not isinstance(strategy_sec, dict):
+        raise ConfigError("stocks backtest.yaml 的 'strategy' 必须为映射")
     return StockBacktestConfig(
         capital=CapitalConfig(**cap_sec),
         portfolio=StockPortfolioConfig(**port_sec),
         execution=StockExecutionConfig(**exec_sec),
+        strategy=dict(strategy_sec),
+    )
+
+
+def load_stock_barra_config(path: Path, root: Path | None = None) -> StockBarraConfig:
+    """加载并强校验 ``configs/stocks/barra.yaml``（Barra 风险库与特质风险契约）。"""
+    raw = _load_yaml(path)
+    base = Path(root) if root is not None else Path(".")
+    exposures = _section(raw, "exposures")
+    idio = _section(raw, "idiosyncratic_return")
+    specific = _section(raw, "specific_risk")
+    fcov = _section(raw, "factor_covariance")
+    store_dir = raw.get("risk_store_dir")
+    style = exposures.get("style_factors") or StockBarraConfig.style_factors
+    return StockBarraConfig(
+        risk_dataset=str(raw.get("risk_dataset", "lb_barra_v1")),
+        risk_store_dir=_resolve(store_dir, base) if store_dir else None,
+        return_clock=str(raw.get("return_clock", "vwap_open_30m")),
+        min_eigenvalue=float(fcov.get("min_eigenvalue", 1.0e-10)),
+        style_factors=tuple(str(s) for s in style),
+        industry_field=str(exposures.get("industry_field", "barra_industry")),
+        mkt_cap_field=str(exposures.get("mkt_cap_field", "mkt_cap")),
+        idiosyncratic_mode=str(idio.get("mode", "auto")),
+        specific_risk=dict(specific),
+        factor_covariance=dict(fcov),
     )
 
 

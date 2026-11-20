@@ -1,7 +1,19 @@
+# configs/stocks/backtest.yaml
+# 支持「单源直跑」与「SignalBridge 跨源回测」两种模式；组合构建支持分位等权与 Barra 凸优化双轨。
+dataset: "lb_barra_v1"               # 回测执行数据集: "rq_v1" | "rq_v2" | "lb_barra_v1"
+
+signal_bridge:
+  enabled: false                     # true 时接收来自 rq_v1/rq_v2 或外部文件的信号投影至 dataset
+  source_dataset: "rq_v2"            # "rq_v1" | "rq_v2" | "external_parquet"
+  external_signal_path: null         # 如 "./local_backtest/runtime_assets/combo/signal/signal_data/shifted_signal.parquet"
+  input_signal_alignment: "T_close"  # "T_close" (FactorLibrary 标准) | "T_exec" (shifted_signal 自动前移 1 日)
+  min_symbol_match_ratio: 0.90       # 映射覆盖率低于 90% 时显式告警/拦截
+
 capital:
   init_cash: 10000000.0
 
 portfolio:
+  mode: "quantile"                   # "quantile" (分位等权基线) | "barra_qp" (模块化融合凸优化)
   top_quantile: 0.10                 # 多头等权分位比例 (默认 Top 10%)
   industry_neutral: false            # 是否按申万一级行业内等选
   max_single_weight: 0.05            # 单只个股最大权重上限 5%
@@ -9,9 +21,68 @@ portfolio:
   rebalance_buffer: 0.005            # 0.5% 换手缓冲带
   long_only: true
 
+  # --- barra_qp 模式专属参数（需 lb_barra_v1 或挂载 RiskStore）---
+  optimizer:
+    barra_config: "./configs/stocks/barra.yaml"
+    benchmark_weight_mode: "mkt_cap_proxy"   # "constituent" | "mkt_cap_proxy" | "absolute_neutral"
+    benchmark_weights_path: null             # 补充米筐 index_weights 后切换 constituent 模式
+    proxy_rank_range: [301, 800]             # 市值段模拟中证 500 (null 表示全市场市值加权)
+
+    objective:
+      alpha_scale: 1.0
+      risk_aversion: 2.5                     # lambda_risk (日频方差量纲)
+      turnover_penalty: 0.0015               # lambda_tc (15 bps 单边换手惩罚)
+      include_specific_risk: true
+
+    constraints:
+      cash_buffer_max: 0.02
+      max_single_weight: 0.03
+      max_active_weight: 0.015
+      max_daily_turnover: 0.15
+      style_deviation_default: 0.25
+      style_deviation_overrides:
+        SIZE: 0.15
+        BETA: 0.20
+      industry_deviation: 0.02
+      respect_t_close_suspend: true
+
+    solver:
+      priority: ["MOSEK", "CLARABEL", "OSQP"]
+      mosek_license_file: "./local_backtest/service/config/mosek.lic"
+      mosek_num_threads: 1
+      allow_slack_fallback: true
+      slack_penalty: 1000.0
+
+# 信号塑形层 + 动态风控守卫参数（同时驱动原生优化器与 factorsim 策略一键导出）
+strategy:
+  h_max: 0.00625                     # 单票权重上限（指数增强顶格仓位）
+  tvr: 0.5                           # 单日双边换手硬上限
+  mode: horizon                      # single | horizon (双期跨期规划)
+  trade_penalty: 0.85                # 对称换手惩罚（horizon 未来期使用）
+  persistence: 0.35                  # 次期信号持续性
+  discount: 0.8                      # 次期折现因子
+  memory: 0.75                       # 慢速 EMA 记忆系数
+  vol_weight: 0.12                   # 低波 (RESVOL) 倾斜权重
+  ind_neutral_weight: 0.42           # 软行业中性化权重 (0=不中性, 1=完全中性)
+  power: 1.8                         # 头部幂次放大系数
+  adaptive_stress_guard: true        # Barra SIZE 10 日异动自适应风控
+  stress_lookback: 10
+  stress_z_window: 252
+  stress_cumret_threshold: -0.03
+  stress_z_threshold: 1.5
+  vol_multiplier: 1.8                # 防守体制下低波惩罚放大倍数
+  power_scale: 0.85                  # 防守体制下幂次收缩倍数
+  size_tilt: 0.15                    # 防守体制下大市值正向倾斜强度
+  asymmetric_trade_penalty:
+    buy: 1.00                        # 谨慎建仓（买方换手惩罚更重）
+    sell: 0.45                       # 快速止损
+  buy_hurdle: true                   # 防追高跳升门槛
+  hurdle_penalty: 0.45
+
 execution:
   lot_size: 100
   t_plus_one: true
   allow_short: false
-  entry_window: "open"
+  entry_window: "open"               # rq_v1/rq_v2 用 "open"; lb_barra_v1 用 "vwap_open_30m"
   price_basis: "hfq"
+  reserve_cash: 1.0                  # 现金预留比例（<1 时按该比例归一化真实漂移持仓，如 0.9）

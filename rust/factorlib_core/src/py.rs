@@ -2006,7 +2006,8 @@ pub fn compound_forward_labels<'py>(
     transfer_fee_rate=0.00001,
     slip_ticks=1.0,
     tick_size=0.01,
-    slip_bps=0.0
+    slip_bps=0.0,
+    flat_fee_rate=0.0
 ))]
 pub fn run_stock_backtest<'py>(
     py: Python<'py>,
@@ -2028,6 +2029,7 @@ pub fn run_stock_backtest<'py>(
     slip_ticks: f64,
     tick_size: f64,
     slip_bps: f64,
+    flat_fee_rate: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let w_mat = view_to_fortran_f64(target_weights.as_array());
     let ep_mat = view_to_fortran_f64(exec_price.as_array());
@@ -2049,6 +2051,7 @@ pub fn run_stock_backtest<'py>(
         slip_ticks,
         tick_size,
         slip_bps,
+        flat_fee_rate,
     };
 
     let res = py

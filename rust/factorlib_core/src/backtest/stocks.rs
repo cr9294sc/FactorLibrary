@@ -6,7 +6,12 @@
 //! 3. T+1 交收约束：当日买入的股票次日才可卖出；
 //! 4. 涨跌停阻断：`can_buy_mask` / `can_sell_mask` 阻断未成交订单并计入 `blocked_orders`；
 //! 5. 停牌处理：停牌期间不可交易，持仓按最后有效收盘价盯市；
-//! 6. 非对称成本：买入收佣金（含最低佣金）+ 过户费；卖出加征印花税；滑点支持 tick 与成交额 bps 比例；
+//! 6. 双费率模式：
+//!    - `flat_fee_rate == 0`（默认，`asymmetric`）：买入收佣金（含最低佣金）+ 过户费，
+//!      卖出加征印花税，完全复刻 A 股真实非对称税费；
+//!    - `flat_fee_rate > 0`（`flat` 对账模式）：买卖双边统一按成交额单边费率计费
+//!      （例如 `fee_rate = 0.003`），不计最低佣金与印花税，等价于 `factorsim` 作业回测口径；
+//!    滑点在两种模式下均支持 tick 与成交额 bps 比例；
 //! 7. 做空控制：默认关闭；`allow_short=true` 暂未实现，显式报错拒绝。
 
 use crate::backtest::common::compute_common_metrics;
@@ -30,6 +35,8 @@ pub struct StockBacktestConfig {
     pub slip_ticks: f64,
     pub tick_size: f64,
     pub slip_bps: f64,
+    /// 统一单边费率（`> 0` 时进入 `flat` 对账模式，忽略佣金/印花税/过户费的非对称结构）
+    pub flat_fee_rate: f64,
 }
 
 impl Default for StockBacktestConfig {
@@ -46,6 +53,7 @@ impl Default for StockBacktestConfig {
             slip_ticks: 1.0,
             tick_size: 0.01,
             slip_bps: 0.0,
+            flat_fee_rate: 0.0,
         }
     }
 }
@@ -93,6 +101,10 @@ pub struct StockBacktestResult {
     pub metrics: StockMetrics,
 }
 
+/// 计算单笔订单成本 `(fee, tax, slippage)`。
+///
+/// - `flat_fee_rate > 0`：双边统一单边费率模式，`fee = notional * flat_fee_rate`，`tax = 0`；
+/// - 否则：A 股真实非对称税费（买卖佣金含最低佣金 + 过户费，卖出加征印花税）。
 #[inline]
 fn calc_order_costs(delta: i64, p_exec: f64, cfg: &StockBacktestConfig) -> (f64, f64, f64) {
     if delta == 0 {
@@ -100,6 +112,10 @@ fn calc_order_costs(delta: i64, p_exec: f64, cfg: &StockBacktestConfig) -> (f64,
     }
     let qty = delta.abs() as f64;
     let notional = qty * p_exec;
+    let slip = qty * (cfg.slip_ticks * cfg.tick_size) + notional * (cfg.slip_bps / 10_000.0);
+    if cfg.flat_fee_rate > 0.0 {
+        return (notional * cfg.flat_fee_rate, 0.0, slip);
+    }
     let comm = if cfg.commission_rate > 0.0 || cfg.min_commission > 0.0 {
         (notional * cfg.commission_rate).max(cfg.min_commission)
     } else {
@@ -111,7 +127,6 @@ fn calc_order_costs(delta: i64, p_exec: f64, cfg: &StockBacktestConfig) -> (f64,
     } else {
         0.0
     };
-    let slip = qty * (cfg.slip_ticks * cfg.tick_size) + notional * (cfg.slip_bps / 10_000.0);
     (comm + transfer, tax, slip)
 }
 
@@ -133,6 +148,12 @@ pub fn run_stock_backtest(
     }
     if cfg.lot_size < 1 {
         return Err(format!("lot_size 必须 >= 1，实际 {}", cfg.lot_size));
+    }
+    if !cfg.flat_fee_rate.is_finite() || !(0.0..1.0).contains(&cfg.flat_fee_rate) {
+        return Err(format!(
+            "flat_fee_rate 必须位于 [0, 1) 区间，实际 {}",
+            cfg.flat_fee_rate
+        ));
     }
 
     let (t, n) = target_weights.dim();
@@ -611,6 +632,69 @@ mod tests {
         for d in 1..3 {
             assert!((res.equity[d] - (res.equity[d - 1] + res.net_pnl[d])).abs() < 1e-8);
         }
+    }
+
+    #[test]
+    fn test_flat_fee_mode_is_symmetric_and_ignores_tax() {
+        // 第一天买入 5000 股 @10 元，第二天清仓卖出 @12 元
+        let weights = array![[0.5, 0.0], [0.0, 0.0], [0.0, 0.0]];
+        let exec_p = array![[10.0, 10.0], [10.0, 10.0], [12.0, 10.0]];
+        let close_p = array![[10.0, 10.0], [11.0, 10.0], [12.0, 10.0]];
+        let can_buy = Array2::from_elem((3, 2), true);
+        let can_sell = Array2::from_elem((3, 2), true);
+        let is_susp = Array2::from_elem((3, 2), false);
+
+        let cfg = StockBacktestConfig {
+            init_cash: 100_000.0,
+            commission_rate: 0.0001,
+            min_commission: 5.0,
+            stamp_duty_rate: 0.0005,
+            transfer_fee_rate: 0.00001,
+            slip_ticks: 0.0,
+            slip_bps: 0.0,
+            flat_fee_rate: 0.003,
+            ..Default::default()
+        };
+        let res = run_stock_backtest(
+            &weights, &exec_p, &close_p, &can_buy, &can_sell, &is_susp, None, &cfg,
+        )
+        .unwrap();
+
+        // 买入日：5000 股 × 10 元 × 0.003 = 150 元
+        assert!((res.fee[1] - 150.0).abs() < 1e-9);
+        assert_eq!(res.tax[1], 0.0);
+        // 卖出日：5000 股 × 12 元 × 0.003 = 180 元，且印花税恒为 0
+        assert!((res.fee[2] - 180.0).abs() < 1e-9);
+        assert_eq!(res.tax[2], 0.0);
+        assert!((res.metrics.total_tax).abs() < 1e-12);
+        for d in 1..3 {
+            assert!((res.equity[d] - (res.equity[d - 1] + res.net_pnl[d])).abs() < 1e-8);
+        }
+
+        // 对账口径：统一单边费率必须严格对称（买入/卖出同费率）
+        let asym = StockBacktestConfig {
+            flat_fee_rate: 0.0,
+            ..cfg.clone()
+        };
+        let res2 = run_stock_backtest(
+            &weights, &exec_p, &close_p, &can_buy, &can_sell, &is_susp, None, &asym,
+        )
+        .unwrap();
+        assert!(res2.tax[2] > 0.0);
+        assert_ne!(res2.fee[1], res.fee[1]);
+    }
+
+    #[test]
+    fn test_flat_fee_rate_validation() {
+        let z = Array2::<f64>::zeros((2, 1));
+        let b = Array2::from_elem((2, 1), true);
+        let s = Array2::from_elem((2, 1), false);
+        let cfg = StockBacktestConfig {
+            flat_fee_rate: -0.01,
+            ..Default::default()
+        };
+        let err = run_stock_backtest(&z, &z, &z, &b, &b, &s, None, &cfg).unwrap_err();
+        assert!(err.contains("flat_fee_rate"));
     }
 
     #[test]

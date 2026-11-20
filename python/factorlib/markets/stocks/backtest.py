@@ -152,6 +152,7 @@ def run_stock_backtest_pipeline(
         slip_ticks=float(fee_cfg.slip_ticks),
         tick_size=float(fee_cfg.tick_size),
         slip_bps=float(fee_cfg.slip_bps),
+        flat_fee_rate=float(fee_cfg.effective_flat_fee_rate),
     )
 
     caps = panel.meta.get("capabilities")
@@ -168,6 +169,9 @@ def run_stock_backtest_pipeline(
         "limit_mask_mode": limit_mode,
         "entry_window": bt_cfg.execution.entry_window,
         "price_basis": bt_cfg.execution.price_basis,
+        "fee_mode": fee_cfg.fee_mode,
+        "fee_rate": float(fee_cfg.effective_flat_fee_rate),
+        "reserve_cash": float(getattr(bt_cfg.execution, "reserve_cash", 1.0)),
     }
     if bench_arr is not None:
         clean_b = np.where(np.isfinite(bench_arr), bench_arr, 0.0)

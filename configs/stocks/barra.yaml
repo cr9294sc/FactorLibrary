@@ -1,0 +1,49 @@
+# configs/stocks/barra.yaml
+# Barra CNE5 风险模型、因果 Constrained WLS 动态特质收益与动态特质方差契约。
+# 由 `StocksProfile.load_risk_model()` / `BarraRiskModelStore` / `BarraPortfolioOptimizer` 共同消费。
+risk_dataset: "lb_barra_v1"
+risk_store_dir: "./data/derived/stocks/lb_barra_v1/risk_store"
+return_clock: "vwap_open_30m"            # vwap_open_30m | open_adj | close_to_close
+
+exposures:
+  style_factors:
+    - "BETA"
+    - "BTOP"
+    - "EARNYILD"
+    - "GROWTH"
+    - "LEVERAGE"
+    - "LIQUIDTY"
+    - "MOMENTUM"
+    - "RESVOL"
+    - "SIZE"
+    - "SIZENL"
+  industry_field: "barra_industry"       # 1..31 申万一级行业
+  mkt_cap_field: "mkt_cap"               # 人民币元
+
+idiosyncratic_return:
+  mode: "auto"                           # precomputed | dynamic_wls | auto
+  # auto: 在 lb_barra_v1 且 return_clock==vwap_open_30m 时直取 CNE5SpecRet;
+  #       在 rq 域 (open_adj/c2c) 或 2026-11 之后自动运行因果 Constrained WLS
+  dynamic_wls:
+    weight_scheme: "sqrt_mkt_cap"        # sqrt_mkt_cap | equal
+    exposure_lag_days: 2                 # vwap_open_30m/open_adj=2; close_to_close=1
+    industry_zero_sum_constraint: true
+    return_winsor_abs: 0.35
+    ridge_eps: 1.0e-10
+
+specific_risk:
+  window_days: 252
+  half_life_days: 42
+  newey_west_lags: 2
+  min_obs: 30
+  shrinkage:
+    enabled: true
+    mkt_cap_deciles: 10
+    prior_strength: 20.0
+  vra:
+    enabled: true
+    half_life_days: 21
+
+factor_covariance:
+  variance_unit: "daily"                 # 严格日频方差（非年化）
+  min_eigenvalue: 1.0e-10

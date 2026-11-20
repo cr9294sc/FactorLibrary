@@ -39,6 +39,124 @@ from factorlib.markets.stocks.portfolio import build_stocks_portfolio_weights
 from factorlib.markets.stocks.styles import compute_stocks_styles
 
 
+def _normalize_date(value: Any) -> str:
+    """把 `date` / `datetime` / `YYYYMMDD` / `YYYY-MM-DD` 统一归一化为 ISO 日期字符串。"""
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    if isinstance(value, _datetime):
+        return value.date().isoformat()
+    if isinstance(value, _date):
+        return value.isoformat()
+    s = str(value).strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s[:10]
+
+
+# 设计文档 §4.4 的嵌套优化器 YAML 段 -> `BarraOptimizerConfig` 平铺字段映射
+_OBJECTIVE_FIELDS: tuple[str, ...] = (
+    "alpha_scale",
+    "risk_aversion",
+    "turnover_penalty",
+    "include_specific_risk",
+)
+_CONSTRAINT_FIELDS: tuple[str, ...] = (
+    "cash_buffer_max",
+    "max_single_weight",
+    "max_active_weight",
+    "max_daily_turnover",
+    "style_deviation_default",
+    "style_deviation_overrides",
+    "industry_deviation",
+    "respect_t_close_suspend",
+)
+_SOLVER_FIELD_MAP: dict[str, str] = {
+    "priority": "solver_priority",
+    "mosek_license_file": "mosek_license_file",
+    "mosek_num_threads": "mosek_num_threads",
+    "slack_penalty": "slack_penalty",
+    "allow_slack_fallback": "allow_slack_fallback",
+    "max_iterations": "max_iterations",
+}
+_SHAPER_FIELD_MAP: dict[str, str] = {
+    "center_rank": "center_rank",
+    "ind_neutral_weight": "ind_neutral_weight",
+    "vol_weight": "vol_weight",
+    "power": "power",
+    "memory": "memory",
+}
+_GUARD_FIELD_MAP: dict[str, str] = {
+    "adaptive_stress_guard": "enabled",
+    "stress_lookback": "lookback_days",
+    "stress_z_threshold": "stress_z_threshold",
+    "stress_cumret_threshold": "cumret_threshold",
+    "vol_multiplier": "vol_multiplier",
+    "power_scale": "power_scale",
+    "size_tilt": "size_tilt",
+    "stress_z_window": "zscore_window",
+}
+
+
+def normalize_optimizer_config(
+    raw: dict[str, Any] | None,
+    backtest_cfg: Any | None = None,
+) -> dict[str, Any]:
+    """把设计文档 §4.4 的嵌套 YAML（objective / constraints / solver）拍平为优化器字段。
+
+    同时把 `backtest.yaml` 顶层 `strategy` 段的信号塑形与风控守卫参数注入
+    `shaper` / `risk_guard` 子配置，实现「同一份 YAML 同时驱动原生优化器与策略导出」。
+    """
+    flat: dict[str, Any] = dict(raw or {})
+    objective = flat.pop("objective", None) or {}
+    constraints = flat.pop("constraints", None) or {}
+    solver = flat.pop("solver", None) or {}
+    if isinstance(objective, dict):
+        for key in _OBJECTIVE_FIELDS:
+            if key in objective:
+                flat[key] = objective[key]
+    if isinstance(constraints, dict):
+        for key in _CONSTRAINT_FIELDS:
+            if key in constraints:
+                flat[key] = constraints[key]
+    if isinstance(solver, dict):
+        for src, dst in _SOLVER_FIELD_MAP.items():
+            if src in solver:
+                flat[dst] = solver[src]
+
+    if isinstance(flat.get("proxy_rank_range"), list):
+        flat["proxy_rank_range"] = tuple(int(v) for v in flat["proxy_rank_range"])
+
+    strategy = getattr(backtest_cfg, "strategy", None) or {}
+    if strategy:
+        shaper = dict(flat.get("shaper") or {})
+        guard = dict(flat.get("risk_guard") or {})
+        for src, dst in _SHAPER_FIELD_MAP.items():
+            if src in strategy:
+                shaper.setdefault(dst, strategy[src])
+        for src, dst in _GUARD_FIELD_MAP.items():
+            if src in strategy:
+                guard.setdefault(dst, strategy[src])
+        for key in ("buy_hurdle", "hurdle_penalty", "persistence", "discount", "mode"):
+            if key not in strategy:
+                continue
+            if key == "mode":
+                flat.setdefault("horizon_mode", str(strategy[key]) == "horizon")
+            else:
+                flat.setdefault(key, strategy[key])
+        asym = strategy.get("asymmetric_trade_penalty")
+        if isinstance(asym, dict):
+            flat.setdefault(
+                "asymmetric_trade_penalty",
+                (float(asym.get("buy", 1.0)), float(asym.get("sell", 0.45))),
+            )
+        if shaper:
+            flat["shaper"] = shaper
+        if guard:
+            flat["risk_guard"] = guard
+    return flat
+
+
 def _default_rq_capabilities(version: str = "v1") -> dict[str, Any]:
     ds_id = version if str(version).startswith("rq_") else f"rq_{version}"
     return {
@@ -102,11 +220,15 @@ class StocksProfile:
         risk_store_dir: Path | None = None,
     ) -> BarraRiskModelStore:
         """加载指定数据集对应的旁路 ``BarraRiskModelStore``。"""
-        store_dir = (
-            Path(risk_store_dir)
-            if risk_store_dir is not None
-            else (self.paths(version).panel_dir / "risk_store")
-        )
+        if risk_store_dir is None:
+            barra_cfg = self.barra_config()
+            store_dir = (
+                Path(barra_cfg.risk_store_dir)
+                if barra_cfg.risk_store_dir is not None
+                else (self.paths(version).panel_dir / "risk_store")
+            )
+        else:
+            store_dir = Path(risk_store_dir)
         return BarraRiskModelStore.load(store_dir)
 
     def bridge_signal(
@@ -383,8 +505,26 @@ class StocksProfile:
         mask: np.ndarray,
         config: Any | None = None,
         panel: Panel | None = None,
+        *,
+        factor_returns: np.ndarray | None = None,
+        last_hold: np.ndarray | None = None,
+        reserve_cash: float | None = None,
+        force_numpy_optimizer: bool = False,
     ) -> np.ndarray:
+        """按 `portfolio.mode` 分发组合构建：分位等权基线或模块化融合 Barra 凸优化。"""
         cfg = config if isinstance(config, StockPortfolioConfig) else StockPortfolioConfig()
+        del returns  # 两种模式均不依赖全截面历史收益矩阵（避免 N=5000 病态协方差）
+        if cfg.mode == "barra_qp":
+            return self._build_barra_qp_weights(
+                scores=scores,
+                mask=mask,
+                cfg=cfg,
+                panel=panel,
+                factor_returns=factor_returns,
+                last_hold=last_hold,
+                reserve_cash=reserve_cash,
+                force_numpy=force_numpy_optimizer,
+            )
         sector = (
             panel.fields.get("sector", panel.fields.get("industry_code"))
             if panel is not None
@@ -392,8 +532,135 @@ class StocksProfile:
         )
         return build_stocks_portfolio_weights(
             scores=scores,
-            returns=returns,
+            returns=np.zeros_like(scores),
             mask=mask,
             cfg=cfg,
             sector=sector,
         )
+
+    def build_barra_optimizer(
+        self,
+        cfg: StockPortfolioConfig,
+        *,
+        panel: Panel | None = None,
+        force_numpy: bool = False,
+    ) -> Any:
+        """构造 `BarraPortfolioOptimizer`（含风险库、基准权重与求解器配置）。"""
+        from factorlib.markets.stocks.optimizer import (
+            BarraOptimizerConfig,
+            BarraPortfolioOptimizer,
+        )
+
+        barra_cfg = self.barra_config()
+        risk_store = None
+        try:
+            risk_dir = barra_cfg.risk_store_dir or (
+                self.paths("lb_barra_v1").panel_dir / "risk_store"
+            )
+            if Path(risk_dir).exists() and any(Path(risk_dir).glob("store.json")):
+                risk_store = self.load_risk_model("lb_barra_v1", risk_store_dir=Path(risk_dir))
+        except Exception:
+            risk_store = None
+
+        opt_cfg = BarraOptimizerConfig.from_dict(
+            normalize_optimizer_config(dict(cfg.optimizer), self.backtest_config())
+        )
+        benchmark_weights = None
+        if risk_store is not None and opt_cfg.benchmark_weight_mode == "constituent":
+            benchmark_weights = self._load_benchmark_weights(opt_cfg, panel)
+        return BarraPortfolioOptimizer(
+            opt_cfg,
+            risk_store=risk_store,
+            benchmark_weights=benchmark_weights,
+            force_numpy=force_numpy,
+        )
+
+    def backtest_config(self) -> Any:
+        """加载 `configs/stocks/backtest.yaml`（缺失时回退默认契约）。"""
+        from factorlib.core.config import load_stock_backtest_config
+
+        path = self.paths().config_dir / "backtest.yaml"
+        if path.exists():
+            try:
+                return load_stock_backtest_config(path)
+            except ConfigError:
+                return None
+        return None
+
+    @staticmethod
+    def _load_benchmark_weights(opt_cfg: Any, panel: Panel | None) -> Any:
+        """加载逐日成分权重（`constituent` 模式）；缺失时返回 `None` 触发代理降级。"""
+        path_str = getattr(opt_cfg, "benchmark_weights_path", None)
+        if not path_str or panel is None:
+            return None
+        p = Path(str(path_str))
+        if not p.exists():
+            return None
+        import polars as pl
+
+        df = pl.read_parquet(p)
+        needed = {"trading_date", "symbol", "weight"}
+        if not needed.issubset(set(df.columns)):
+            return None
+        T, N = panel.shape
+        dates = [_normalize_date(d) for d in panel.dates]
+        d_map = {d: i for i, d in enumerate(dates)}
+        s_map = {str(s): j for j, s in enumerate(panel.symbols)}
+        out = np.zeros((T, N), dtype=np.float64, order="F")
+        for d_val, s_val, w_val in df.select(["trading_date", "symbol", "weight"]).iter_rows():
+            ti = d_map.get(_normalize_date(d_val))
+            nj = s_map.get(str(s_val))
+            if ti is None or nj is None:
+                continue
+            out[ti, nj] = float(w_val)
+        return out
+
+    def _build_barra_qp_weights(
+        self,
+        *,
+        scores: np.ndarray,
+        mask: np.ndarray,
+        cfg: StockPortfolioConfig,
+        panel: Panel | None,
+        factor_returns: np.ndarray | None,
+        last_hold: np.ndarray | None,
+        reserve_cash: float | None,
+        force_numpy: bool,
+    ) -> np.ndarray:
+        """模块化融合凸优化（信号塑形 → 动态风控守卫 → Barra 低秩 QP + 漂移闭环）。"""
+        if panel is None:
+            raise ValueError(
+                "portfolio.mode='barra_qp' 必须提供 panel（需要 Barra 暴露与市值字段）"
+            )
+        optimizer = self.build_barra_optimizer(cfg, panel=panel, force_numpy=force_numpy)
+        effective_cash = float(reserve_cash) if reserve_cash is not None else 1.0
+        if reserve_cash is None:
+            bt_cfg = self.backtest_config()
+            if bt_cfg is not None:
+                effective_cash = float(getattr(bt_cfg.execution, "reserve_cash", 1.0))
+        fr = factor_returns
+        if fr is None:
+            store = getattr(optimizer, "risk_store", None)
+            if store is not None:
+                fr = store.align_factor_returns(panel.dates)
+        weights = optimizer.build_weights(
+            panel,
+            scores,
+            factor_returns=fr,
+            dates=list(panel.dates),
+            last_hold=last_hold,
+            reserve_cash=effective_cash,
+        )
+        return np.asfortranarray(np.asarray(weights, dtype=np.float64), dtype=np.float64)
+
+    def barra_config(self) -> Any:
+        """加载 `configs/stocks/barra.yaml`（缺失时回退默认 Barra 契约）。"""
+        from factorlib.core.config import StockBarraConfig, load_stock_barra_config
+
+        path = self.paths().config_dir / "barra.yaml"
+        if path.exists():
+            try:
+                return load_stock_barra_config(path, root=self.root)
+            except ConfigError:
+                return StockBarraConfig()
+        return StockBarraConfig()

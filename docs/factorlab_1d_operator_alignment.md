@@ -15,7 +15,7 @@
 |---|---|---|---|
 | 1d 表达式算子 | 106 | 106（128 个注册项含别名/扩展） | ✅ 全量 |
 | 后处理算子 | 12 | 12 (`ops/postprocess.rs`) | ✅ 全量 |
-| 变量短名 | 759（含 1m/5m/报表/分析师） | 别名层 + `stocks/v2` 50 字段 + `lb_barra_v1` Barra/风险库 | ✅ 1d 子集全量 |
+| 变量短名 | 759（含 1m/5m/报表/分析师） | 别名层 + `stocks/rq` 50+ 字段 + `stocks/barra` Barra/风险库 | ✅ 1d 子集全量 |
 | 数值对账 | — | `max abs err < 1e-9`（Rust vs NumPy） | ✅ 全绿 |
 
 **注册算子分类（128 项）**
@@ -181,28 +181,28 @@
 变量别名统一在 `python/factorlib/core/variable_aliases.py` 中登记，并在**表达式字符串层**
 （`probe_factor` / `evaluate_factor` 入口）归一化为真实字段名，实现零内存放大的别名兼容。
 
-### 3.1 米筐量价基本面域（`rq_v1` / `rq_v2`）
+### 3.1 米筐量价基本面域（`stocks/rq`）
 
-| FactorLab 变量短名 | 本地字段 | `rq_v1` | `rq_v2` |
-|---|---|:--:|:--:|
-| `daily_derived_returns_c2c_1d` | `c2c_ret` | ✅ | ✅ |
-| `daily_derived_returns_intra` | `daily_derived_returns_intra` | ❌ | ✅ |
-| `daily_kline_open_hfq` | `open_adj` | ✅ | ✅ |
-| `daily_kline_high_hfq` / `low_hfq` | `high_adj` / `low_adj` | ✅ | ✅ |
-| `daily_kline_adj_factor` | `ex_cum_factor` | ✅ | ✅ |
-| `daily_kline_pct_chg` | `c2c_ret` | ✅ | ✅ |
-| `daily_kline_real_pre_close` | `pre_close` | ❌ | ✅ |
-| `daily_kline_change` | `close_change` | ❌ | ✅ |
-| `daily_kline_vol_hfq` | `volume` | ✅ | ✅ |
-| `daily_fdm_mkt_cap` | `mkt_cap` | ❌ | ✅ |
-| `BaseUnivMask` | `in_universe_mask` | ✅ | ✅ |
-| `LimitMask` | `limit_mask` | ✅ | ✅ |
-| `StockListedDays` | `stock_listed_days` | ✅ | ✅ |
-| `stock_mask_nonewstockmask` | `listed_days` | ✅ | ✅ |
-| `index_weight_000300_sh/000905_sh/000852_sh` | 同名字段 | ❌ | ✅ |
-| `trade_universe_hs300/zz500/zz1000` | 同名字段（成分内 `1.0`，其余 `NaN`） | ❌ | ✅ |
+| FactorLab 变量短名 | 本地字段 | `stocks/rq` |
+|---|---|:--:|
+| `daily_derived_returns_c2c_1d` | `c2c_ret` | ✅ |
+| `daily_derived_returns_intra` | `daily_derived_returns_intra` | ✅ |
+| `daily_kline_open_hfq` | `open_adj` | ✅ |
+| `daily_kline_high_hfq` / `low_hfq` | `high_adj` / `low_adj` | ✅ |
+| `daily_kline_adj_factor` | `ex_cum_factor` | ✅ |
+| `daily_kline_pct_chg` | `c2c_ret` | ✅ |
+| `daily_kline_real_pre_close` | `pre_close` | ✅ |
+| `daily_kline_change` | `close_change` | ✅ |
+| `daily_kline_vol_hfq` | `volume` | ✅ |
+| `daily_fdm_mkt_cap` | `mkt_cap` | ✅ |
+| `BaseUnivMask` | `in_universe_mask` | ✅ |
+| `LimitMask` | `limit_mask` | ✅ |
+| `StockListedDays` | `stock_listed_days` | ✅ |
+| `stock_mask_nonewstockmask` | `listed_days` | ✅ |
+| `index_weight_000300_sh/000905_sh/000852_sh` | 同名字段 | ✅ |
+| `trade_universe_hs300/zz500/zz1000` | 同名字段（成分内 `1.0`，其余 `NaN`） | ✅ |
 
-### 3.2 Barra 风险域（`lb_barra_v1`）
+### 3.2 Barra 风险域（`stocks/barra`，并在加载 `rq` 时通过 `RiskView` 自动只读挂载）
 
 | FactorLab 变量短名 | 本地字段 |
 |---|---|

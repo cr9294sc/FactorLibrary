@@ -23,7 +23,7 @@ portfolio:
   industry_neutral: false            # 是否按行业内等选
   max_single_weight: 0.05            # 单只个股最大权重上限 5%
   max_gross_leverage: 1.0            # 纯多头现货最大总仓位 100%
-  rebalance_buffer: 0.005            # 0.5% 换手缓冲带
+  rebalance_buffer: 0.0002           # 0.02% 换手缓冲带（适配 A 股 ~500 只分位选股单票 ~0.2% 权重）
   long_only: true
 
   # --- barra_qp 模式专属参数（直连 barra 与 RiskStore）---

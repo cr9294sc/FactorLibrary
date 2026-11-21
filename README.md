@@ -43,7 +43,7 @@
   - [4. 期货实盘向量化回测 (`run_backtest.py`)](#4-期货实盘向量化回测-run_backtestpy)
   - [5. 现代化 6 阶段量化因子研发 Web 工作台 (`run_web.py`)](#5-现代化-6-阶段量化因子研发-web-工作台-run_webpy)
   - [6. 全资产代码质量认证门禁 (`verify.sh`)](#6-全资产代码质量认证门禁-verifysh)
-  - [7. A 股股票因子回测与跨平台对账脚本](#7-a-股股票因子回测与跨平台对账脚本)
+  - [7. A 股统一回测、MOSEK 组合优化与用户手册](#7-a-股统一回测mosek-组合优化与用户手册)
 - [Python SDK 核心编程范式](#python-sdk-核心编程范式)
   - [1. 面板容器操作 (`factorlib.core.panel`)](#1-面板容器操作-factorlibcorepanel)
   - [2. DSL 表达式构建与静态检查 (`factorlib.core.dsl`)](#2-dsl-表达式构建与静态检查-factorlibcoredsl)
@@ -51,11 +51,11 @@
   - [4. SQLite 因子全生命周期注册库 (`factorlib.core.registry`)](#4-sqlite-因子全生命周期注册库-factorlibcoreregistry)
   - [5. 因子综合评估体系 (`factorlib.core.evaluate`)](#5-因子综合评估体系-factorlibcoreevaluate)
   - [6. 组合优化与实盘回测状态机 (`factorlib.core.portfolio` / `backtest`)](#6-组合优化与实盘回测状态机-factorlibcoreportfolio--backtest)
-- [68 项高性能算子速查表](#68-项高性能算子速查表)
+- [高性能算子速查表（128 项注册 / 106 项 FactorLab 1d 对齐）](#高性能算子速查表128-项注册--106-项-factorlab-1d-对齐)
 - [严密防未来函数与交易语义规范](#严密防未来函数与交易语义规范)
 - [配置文件索引与规范](#配置文件索引与规范)
 - [代码库目录导航](#代码库目录导航)
-- [A 股股票市场适配与全市场回测对账 (Phase 2 已可用)](#a-股股票市场适配与全市场回测对账-phase-2-已可用)
+- [A 股双源架构与 Barra/MOSEK 回测闭环](#a-股双源架构与-barramosek-回测闭环)
 
 ---
 
@@ -126,7 +126,7 @@ flowchart TD
 
 1. **Rust 原生极速计算内核**：
    - 基于连续内存的 $(T, N)$ Fortran-order 列优先宽矩阵，极致发挥 CPU L1/L2 缓存与 SIMD 向量化性能；
-   - 68 项算子（包含时序增量 Welford $O(1)$ 均值/方差、单调队列极值、横截面百分比排名与板块中性化）；
+   - **128 项注册算子**（完整覆盖 FactorLab 106 个 1d 算子及多元 WLS 残差 `cs_multi_wls_resi`、Barra 标准化 `barra5_zScore`、增量 Welford $O(1)$ 与单调队列极值等）+ 12 项声明式后处理算子；
    - 多表达式通过 Rayon 释放全部多核并发，全局子表达式 LRU 缓存避免重复求值。
 2. **强类型遗传规划（STGP）批量因子挖掘**：
    - 强类型节点系统（`Series`, `Window`, `Constant`, `Bool`），从语法树生成期杜绝类型畸变与无效求值；
@@ -146,9 +146,11 @@ flowchart TD
    - 涨跌停锁死阻断、换月平旧开新双边手续费与滑点、动态保证金超限强平阻断；
    - 严格满足每日盯市记账恒等式：$\text{Cash}_d + \sum (\text{lots}_{i,d} \times \text{settle}_{i,d} \times \text{Multiplier}_i) == \text{Equity}_d$。
 7. **全资产交付与质量认证门禁体系**：
-   - 内置 `bash scripts/verify.sh --all`，涵盖暂存区数据安全审计、`uv lock --check`、YAML/TOML 配置校验、Rust `rust-analyzer` / 零警告 Clippy / `cargo test`（31 项）、Python Ruff / Pytest（139 项）、与因果摄动防未来函数审计（2 项）及 12 项 CLI 入口体检。
-8. **A 股股票市场适配与统一无渗漏后处理回测**：
-   - 已实现 [`StockMarketAdapter`](python/factorlib/markets/stocks/adapter.py) 与 [`StockPanelLoader`](python/factorlib/markets/stocks/panel_loader.py)，支持申万行业/流通市值中性化、[`apply_postprocess_pipeline`](python/factorlib/core/probe.py) 末步掩码强制重施，以及方向性涨跌停撮合模拟（`can_buy_mask` 拦截涨停买入、`can_sell_mask` 遇跌停/停牌自动顺延平仓）。
+   - 内置 `bash scripts/verify.sh --all`，涵盖暂存区数据安全审计、`uv lock --check`、YAML/TOML 配置校验、Rust `rust-analyzer` / 零警告 Clippy / `cargo test`（43 项）、Python Ruff / Pytest（216 项）、因果摄动防未来函数审计（4 项）及全量 CLI 入口体检。
+8. **A 股双源独立架构与 Barra/MOSEK 实盘级回测**：
+   - 物理分库、运行时协同：`stocks/rq`（50+ 量价/估值/指数权重字段，加载时自动通过 `RiskView` 只读挂载 `barra` 的 `vwap_open_30m` 标签与 CNE5 风格）+ `stocks/barra`（`VwapBegin30`、42 因子日频协方差 `risk_store`）；
+   - 通过 [`BarraPortfolioOptimizer`](python/factorlib/markets/stocks/optimizer.py) 调用本地 `MOSEK` / `CLARABEL` 求解 Barra 低秩 QP 与跨期 Horizon LP，统一由 [`scripts/run_stocks_backtest.py`](scripts/run_stocks_backtest.py) 驱动 Rust T+1 整手撮合。
+   - 完整操作指南见 **[《A 股量化全流程用户使用手册》](docs/stocks_user_guide.md)**。
 
 ---
 
@@ -187,16 +189,16 @@ maturin develop --release --manifest-path rust/factorlib_core/Cargo.toml
 # 快速静态校验 (格式、Lint 与配置检查)
 bash scripts/verify.sh --fast
 
-# 全量门禁认证 (含 uv lock、Rust 单元与 Proptest 测试、Python 155 项测试、因果摄动审计与 CLI 体检)
+# 全量门禁认证 (含 uv lock、Rust 单元与 Proptest 测试、Python 全量测试、因果摄动审计与 CLI 体检)
 bash scripts/verify.sh --all
 ```
 
 ### 3. 建立与启动双市场 Web 投研工作台服务 (Web Workbench Service)
 
-平台内置基于 **FastAPI + Uvicorn** 的单栈 HTTP 服务与零外部构建依赖的原生 ES 模块前端（`python/factorlib/frontend/`），提供**「期货 (`futures`) / A 股 (`stocks`) 顶层市场切换 + 域内 5 大工作区页面」**以及后台独立子进程异步挖矿闭环：
+平台内置基于 **FastAPI + Uvicorn** 的单栈 HTTP 服务与原生 ES 模块前端（`python/factorlib/frontend/`，已定位为**只读台账浏览 + 单因子实验室**）：
 
 ```bash
-# 方式 1：默认启动（自动加载本地 data/derived/futures/v1 与 data/derived/stocks/v1 真实面板，监听 127.0.0.1:8080）
+# 方式 1：默认启动（自动加载本地 data/derived/futures/v1 与 data/derived/stocks/rq 真实面板，监听 127.0.0.1:8080）
 python scripts/run_web.py
 
 # 方式 2：使用打包注册的 CLI 命令启动并指定默认市场与端口
@@ -261,8 +263,11 @@ python scripts/build_panel.py --market futures --quick
 # 全历史期货标准化面板构建 (覆盖 2018-01-01 至 2026-08-31 -> data/derived/futures/v1)
 python scripts/build_panel.py --market futures --start-date 2018-01-01 --end-date 2026-08-31 --version v1
 
-# 全历史 A 股标准化面板构建 (覆盖 2015-11-01 至 2024-12-31, 5323 只股票 -> data/derived/stocks/v1)
-python scripts/build_panel.py --market stocks --version v1
+# 全历史 A 股米筐特征面板构建 (2015-11-01 至 2026-11-06, 5478 只股票 -> data/derived/stocks/rq)
+python scripts/build_panel.py --market stocks --version rq
+
+# 全历史 A 股 Barra 风险与执行面板构建 (2016-01-06 至 2026-11-10, 5642 只股票 -> data/derived/stocks/barra)
+python scripts/build_stocks_lb_barra.py
 ```
 
 ### 4. 派生面板结构解析
@@ -377,10 +382,10 @@ python scripts/run_gp.py --recipe <recipe_id> --market futures
 
 ```bash
 # 期货 1d GRU 滚动训练
-python scripts/run_dl.py --market futures --model gru --seq-len 20 --hidden-dim 32 --epochs 12 --n-seeds 3 --n-folds 4
+python scripts/run_dl.py --market futures --arch gru --seq-len 20 --hidden-dim 32 --epochs 12 --n-seeds 3 --n-folds 4
 
-# A 股 1d 时空解耦 Attention 滚动训练或按 Web 冻结配方执行
-python scripts/run_dl.py --recipe <recipe_id> --market stocks
+# A 股 1d 时空解耦 Attention 滚动训练（输出 predictions.parquet 至 runs/）
+python scripts/run_dl.py --market stocks --arch st_attention --target-label y_idio_5
 ```
 
 ### 4. Purged Walk-Forward 机器学习独立合成 (`run_ml.py`)
@@ -434,21 +439,26 @@ bash scripts/verify.sh --python     # 仅运行 Python Ruff, Pytest 与因果摄
 bash scripts/verify.sh --git-only   # 仅检查 Git 暂存区数据安全防泄漏
 ```
 
-### 7. A 股股票因子回测与跨平台对账脚本
+### 7. A 股统一回测、MOSEK 组合优化与用户手册
 
-基于 `data/raw/stocks/`（全市场 5,323 只 A 股，`2015-11-02 ~ 2024-12-31`），平台提供统一走 `apply_postprocess_pipeline` 无渗漏后处理的股票评测与 FactorLab 对账脚本：
+A 股全链路已收口至 `data/derived/stocks/{rq, barra}` 与独立入口 [`scripts/run_stocks_backtest.py`](scripts/run_stocks_backtest.py)（完整步骤、Python 因子编写、本地 MOSEK 求解配置见 **[《A 股量化全流程用户使用手册》](docs/stocks_user_guide.md)**）：
 
 ```bash
-# 下载/同步米筐 A 股日线与元数据至 data/raw/stocks/
+# 1. 下载/同步米筐 A 股日线与元数据至 data/raw/stocks/rq/
 python scripts/download_rq_stocks.py --help
 
-# 单因子 Volume_Price_2_H5_2 全周期回测与 FactorLab 对账 (open_adj / vwap_adj 双口径)
-python scripts/backtest_volume_price_factor.py
+# 2. 单因子 DSL 探针校验 + 自动 SignalBridge(rq->barra) + 本地 MOSEK Barra QP 回测
+python scripts/run_stocks_backtest.py --factor "-ts_sum(c2c_ret, 5)" --postprocess standard --probe-only
+python scripts/run_stocks_backtest.py --factor "-ts_sum(c2c_ret, 5)" --postprocess standard --profile default
 
-# 开启方向性涨跌停撮合模拟 (T+1 涨停不可买、T+1+h 跌停/停牌自动顺延卖出)
+# 3. ML / DL 预测长表回测
+python scripts/run_stocks_backtest.py --pred runs/ml_xxx/predictions.parquet --profile default
+
+# 4. 外部信号宽表与 factorsim 对账预设 (shifted_signal.parquet + 0.003 flat 费率 + 0.9 仓位)
+python scripts/run_stocks_backtest.py --profile factorsim_match
+
+# 5. 经典因子 Volume_Price_2_H5_2 与 FactorLab MCP 对账脚本
 python scripts/backtest_volume_price_factor.py --execution-simulation
-
-# 5 大经典因子多维度本地回测对比 (支持 --tech-trend-high-low adj|raw 与 --execution-simulation)
 python scripts/backtest_multi_factors.py --execution-simulation
 ```
 
@@ -599,9 +609,9 @@ generate_html_report(result, output_path="runs/my_report.html", title="单因子
 
 ---
 
-## 68 项高性能算子速查表
+## 高性能算子速查表（128 项注册 / 106 项 FactorLab 1d 对齐）
 
-Rust 内核原生注册全部 68 项向量化与时序算子，全面覆盖技术分析、微观结构统计与横截面中性化需求：
+Rust 内核原生注册 **128 项**向量化与时序算子（完整覆盖 FactorLab 106 个 1d 表达式算子及别名，详见 [`docs/factorlab_1d_operator_alignment.md`](docs/factorlab_1d_operator_alignment.md)），核心分类速查：
 
 | 算子类别 | 数量 | 算子名称与语法签名 | 算法特性与说明 |
 |---|:---:|---|---|
@@ -679,25 +689,26 @@ FactorLibrary/
 │   ├── ml/                                # Purged Walk-Forward 机器学习多因子合成 (预处理、切分、LGBM、Ridge)
 │   ├── markets/                           # 双市场 Profile 适配层 (MarketProfile 协议与注册中心)
 │   │   ├── futures/                       # 期货 Profile、实盘回测、Ledoit-Wolf 组合、1m 扩展包与 ETL 清洗流
-│   │   └── stocks/                        # A 股 Profile、T+1 整手回测、分位行业中性组合与 StockPanelLoader
+│   │   └── stocks/                        # A 股双源适配层 (panel_loader, ares_bridge, bridge, barra, optimizer, backtest)
 │   └── workbench_server.py                # FastAPI + Uvicorn 单栈服务端入口 (/api/{market}/... 路由隔离)
 ├── rust/factorlib_core/                   # Rust 极速计算内核
-│   ├── src/ops/                           # 68 项向量化、逐元素、时序增量 Welford 与单调队列算子 + 12 项后处理算子
+│   ├── src/ops/                           # 128 项向量化、逐元素、Welford/单调队列、多元 WLS 残差算子 + 12 项后处理算子
 │   ├── src/expr/                          # AST 语法树、词法语法分析、静态类型检查、代数规范化、分片 LRU 缓存
 │   ├── src/metrics/                       # RankIC、分位数收益、换手率、相关性矩阵、MGS2 Spanning 正交残差检验
 │   ├── src/labels.rs                      # 双市场统一 T+1 远期收益标签与顺延平仓内核
 │   └── src/backtest/                      # 期货与 A 股实盘状态机 (futures.rs / stocks.rs / common.rs)
-├── configs/{futures,stocks}/              # 双市场生产级 YAML 配置文件 (数据、品种池、费率、GP、ML、回测)
-├── scripts/                               # 生产维护与执行脚本 (verify.sh, run_web, run_gp, run_dl, run_ml, build_panel, 股票对账)
-├── tests/python/                          # Python 自动化单元与集成测试套件 (155 项测试 + 因果摄动与跨语言对账测试)
+├── configs/{futures,stocks}/              # 双市场生产级 YAML 配置 (A 股含 data, barra, backtest, fees, mosek.lic)
+├── scripts/                               # 生产维护与执行脚本 (run_stocks_backtest, run_backtest, run_gp, run_dl, run_ml, verify.sh)
+├── tests/python/                          # Python 自动化单元与集成测试套件 (216 项测试 + 因果摄动与跨语言对账测试)
 ├── docs/                                  # 技术文档中心
-│   ├── futures_platform_plan.md           # 期货与 A 股量化平台技术白皮书
-│   ├── code_audit_and_refactor_plan.md    # 架构与代码级深度审查报告与闭环验收记录
+│   ├── stocks_user_guide.md               # A 股全流程用户使用手册 (Data → 写因子 → GP/ML/DL → MOSEK 优化 → 回测)
 │   ├── api_reference.md                   # 平台全模块 API 参考手册
-│   ├── superpowers/                       # 混合投研与 DL Alpha 架构设计规范及重构实施计划
-│   └── web_ui/                            # 双市场工作台信息架构线框图与高保真可交互原型 (prototype.html)
-├── exports/                               # 只读米筐原始 Parquet 数据资产 (已 gitignore)
-├── data/                                  # 派生研究面板 (futures/v1, stocks/v1) 与 SQLite WAL 因子库 (已 gitignore)
+│   ├── factorlab_1d_operator_alignment.md # FactorLab 106 算子与变量全量对齐规约
+│   ├── factorlab_mcp_catalog.md           # FactorLab MCP 算子与变量手册
+│   ├── futures_platform_plan.md           # 期货量化平台技术白皮书
+│   └── superpowers/                       # 精简版显式挖因子设计规范 (v2.1) 与演进路线图 (v2)
+├── exports/                               # 只读米筐原始期货 Parquet 数据资产 (已 gitignore)
+├── data/                                  # 原始股票数据 (raw/stocks/{rq,barra})、派生面板 (futures/v1, stocks/{rq,barra}) 与 SQLite 因子库
 ├── runs/                                  # 实验产出目录 (心跳进度、日志、模型权重、HTML 诊断报告，已 gitignore)
 ├── AGENTS.md                              # 智能体协同开发工程规范与质量门禁红线
 └── pyproject.toml                         # 项目工程与依赖配置
@@ -705,13 +716,14 @@ FactorLibrary/
 
 ---
 
-## A 股股票市场适配与 FactorLab MCP 全市场回测对账
+## A 股双源架构与 Barra/MOSEK 回测闭环
 
-针对 A 股股票市场研究与 FactorLab MCP 跨平台对账，系统通过 `StocksProfile` (`factorlib.markets.stocks.profile`)、Rust T+1 整手回测内核与零渗漏统一后处理链路实现完整闭环，并在 Web 工作台「② 单因子实验室」与「③ 回测结果与对比」内置 5 大 MCP 权威对账因子模板：
+针对 A 股股票市场研究、因子对账与机构级 Barra 组合优化，系统通过 **「双源物理分库 (`rq` + `barra`) + 运行期单向桥接 (`RiskView` / `SignalBridge`) + 本地 MOSEK 凸优化 + Rust 实盘状态机」** 实现零手动调参闭环（详细操作指南见 [`docs/stocks_user_guide.md`](docs/stocks_user_guide.md)）：
 
-1. **A 股 Profile 与 Rust 持仓回测 (`StocksProfile`, `rust/factorlib_core/src/backtest/stocks.rs`)**：1 手 = 100 股，乘数 1.0，无杠杆（保证金率 1.0），买入佣金（含 5 元最低消费）+ 过户费、卖出加征单向印花税，严格执行 `T+1` 持仓锁定期与 `can_buy_mask` / `can_sell_mask` 涨跌停及停牌阻断；
-2. **全市场面板 (`StockPanelLoader` & `data/derived/stocks/v1`)**：覆盖 5,323 只全市场 A 股（`2015-11-02 ~ 2024-12-31` 共 2,231 个交易日，其中 `2015-11~12` 为 42 日滚动预热缓冲区，正式评估区间 `2016-01-04 ~ 2024-12-31` 共 **2,185 个交易日**，与线上 MCP 完全对齐）；
-3. **Web 服务实测 vs FactorLab MCP (`bt_bb3a04da6b20456ab444dcb7e5450949`) 对账实例 (`Volume_Price_2_H5_2`)**：
+1. **A 股 Profile 与 Rust 持仓回测 (`StocksProfile`, `rust/factorlib_core/src/backtest/stocks.rs`)**：1 手 = 100 股，乘数 1.0，无杠杆，支持真实非对称税费（买入佣金含 5 元最低消费 + 过户费、卖出印花税）与 `flat` 单边费率双模式，严格执行 `T+1` 锁仓与涨跌停/停牌阻断；
+2. **双源协同底座 (`stocks/rq` & `stocks/barra`)**：`data/derived/stocks/rq/` 覆盖 `2015-11-01 ~ 2026-11-06`（5,478 只 A 股，50+ 量价/估值/指数权重字段），加载时自动通过 `RiskView` 只读挂载 `barra` 的 `vwap_open_30m` 标签（`y_h` / `y_idio_h`）与 10 维 CNE5 风格暴露；`data/derived/stocks/barra/` 覆盖 `2016-01-06 ~ 2026-11-10`（5,642 只 A 股，含 `VwapBegin30` 与 42 因子日频协方差 `risk_store/`），所有回测统一经 `SignalBridge` 落盘至 `barra` 以 `vwap_open_30m_adj` 撮合；
+3. **本地 MOSEK 求解器与策略预设 (`configs/stocks/backtest.yaml`)**：`BarraPortfolioOptimizer` 优先读取 `configs/stocks/mosek.lic` 调用 `MOSEK`（支持 `CLARABEL`/`OSQP` 容错降级），`scripts/run_stocks_backtest.py` 内置 `default`（Barra QP + 非对称税费）、`quantile`（分位等权基线）与 `factorsim_match`（`shifted_signal.parquet` + `0.003` 单边费率 + `0.9` 仓位）三大预设；
+4. **Web 基准与 FactorLab MCP (`bt_bb3a04da6b20456ab444dcb7e5450949`) 对账实例 (`Volume_Price_2_H5_2`)**：
    - 因子表达式：`neg(add(cs_zscore(ts_corr(close_hfq, log_amount, 20)), cs_zscore(ts_std(c2c_ret, 20))))`
    - 8 步后处理链：`baseUniMask -> trdMask -> dropNewStock:120 -> MAD:3 -> zScore -> indNeut:sector -> decay:5 -> rank`
 

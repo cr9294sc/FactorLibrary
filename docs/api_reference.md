@@ -246,9 +246,12 @@ flowchart TD
 | `scripts/run_gp.py` | **强类型遗传规划自动化挖掘**：多岛并行演化，五步准入漏斗筛选，自动沉淀候选因子。 |
 | `scripts/run_ml.py` | **Walk-Forward 机器学习多因子合成**：Purged 扩展窗口训练 LightGBM、Ridge 或等权模型，输出样本外预测评分。 |
 | `scripts/run_backtest.py` | **期货实盘口径向量化回测**：基于离散手标准撮合状态机回测，产出交互式 HTML 诊断报告与财务账单。 |
-| `scripts/run_pipeline.py` | **端到端全流程一键流水线 (P7 验收工具)**：串通面板检验、种子因子入库、GP 挖掘、ML 合成、风险平价优化与实盘回测。用法：`python scripts/run_pipeline.py` |
-| `scripts/run_web.py` | **Web 因子研发工作台启动器**：托管 6 阶段单页研发工作台（支持 `--synthetic` 演示模式）。 |
-| `scripts/download_rq_stocks.py` | **A 股米筐数据同步工具**：下载或更新 `data/raw/stocks/` 日线、财务、行业及基准指数资产。 |
+| `scripts/run_stocks_backtest.py` | **A 股统一信号桥接、MOSEK/Barra 组合优化与实盘回测入口**：支持 `--factor` / `--factor-file` / `--pred` / `--signal` 与 `--profile default\|quantile\|factorsim_match`。 |
+| `scripts/build_stocks_lb_barra.py` | **Barra 派生面板与风险库构建器**：将 `data/raw/stocks/barra/` 转换为 `data/derived/stocks/barra/` 与 `risk_store/`。 |
+| `scripts/export_factorsim_strategy.py` | **外部策略导出器**：将 `configs/stocks/backtest.yaml` 导出为兼容 `factorsim` 的 `strategy.py` 与 `config.yaml`。 |
+| `scripts/run_pipeline.py` | **期货端到端全流程一键流水线 (P7 验收工具)**：串通面板检验、种子因子入库、GP 挖掘、ML 合成、风险平价优化与实盘回测。用法：`python scripts/run_pipeline.py` |
+| `scripts/run_web.py` | **Web 因子研发工作台启动器**：托管只读浏览与单因子实验室单页工作台（支持 `--synthetic` 演示模式）。 |
+| `scripts/download_rq_stocks.py` | **A 股米筐数据同步工具**：下载或更新 `data/raw/stocks/rq/` 日线、财务、行业及基准指数资产。 |
 | `scripts/backtest_volume_price_factor.py` | **A 股单因子对账评测脚本**：对 `Volume_Price_2_H5_2` 执行统一无渗漏后处理与双口径（`open_adj` / `vwap_adj`）全周期对账（可选 `--execution-simulation`）。 |
 | `scripts/backtest_multi_factors.py` | **A 股多因子综合评测脚本**：对 5 大对齐因子统一接入 `apply_postprocess_pipeline` 执行对比验证（支持 `--execution-simulation`、`--tech-trend-high-low {adj,raw}`）。 |
 
@@ -268,10 +271,10 @@ flowchart TD
 ## 6. 双市场抽象 (`MarketProfile`) 与 A 股全市场适配体系
 
 系统通过 `MarketProfile` 协议 (`factorlib.markets.profile`) 与 `get_profile("futures" | "stocks")` (`factorlib.markets.registry`) 实现期货与 A 股双市场统一底座隔离：
-1. **A 股 Profile 与回测执行器 (`StocksProfile`, `StocksBacktester`)**：1 手 = 100 股，乘数恒为 1.0，无杠杆（保证金率 1.0），买入佣金（含最低 5 元）+ 过户费、卖出加征单向印花税，严格执行 `T+1` 交收约束与涨跌停/停牌成交阻断 (`rust/factorlib_core/src/backtest/stocks.rs`)；
-2. **A 股标准面板加载与构建 (`StockPanelLoader`, `build_stock_panel`)**：加载 `data/raw/stocks/`（5,323 只 A 股）或派生面板 `data/derived/stocks/v1/`，将未复权价格、涨跌停价、停牌/ST 掩码及基准前向收益物理隔离至 `Panel.aux_fields`；
-3. **分位等权与申万行业中性组合 (`build_stocks_portfolio_weights`)**：采用 $O(N \log N)$ 向量化行业内分位选股、单股权重上限与调仓缓冲带，不使用全截面协方差矩阵；
-4. **跨平台 MCP 基准对账 (`MCP_STOCK_BENCHMARKS`)**：Web 工作台内置 FactorLab MCP 线上 5 大基准因子模板与种子库，支持在 P3 看板一键复现并与线上 `vwap30` 基准同屏对账。
+1. **A 股 Profile 与回测执行器 (`StocksProfile`, `StocksBacktester`, `run_stock_backtest_pipeline`)**：1 手 = 100 股，乘数恒为 1.0，无杠杆（保证金率 1.0），支持 A 股真实非对称税费（买入佣金含最低 5 元 + 过户费、卖出加征印花税）与 `flat` 统一单边费率双模式，严格执行 `T+1` 交收约束与涨跌停/停牌成交阻断 (`rust/factorlib_core/src/backtest/stocks.rs`)；
+2. **A 股双源独立底座 (`StockPanelLoader`, `ares_bridge.py`, `SignalBridge`, `RiskView`)**：`data/derived/stocks/rq`（5,478 只 A 股，`2015-11-01 ~ 2026-11-06`，50+ 1d 字段）与 `data/derived/stocks/barra`（5,642 只 A 股，`2016-01-06 ~ 2026-11-10`，`VwapBegin30` + 10 风格 + 31 行业 + `risk_store/`）。加载 `rq` 时自动通过 `RiskView` 挂载 `barra` 的 `vwap_open_30m` 标签（`y_h` / `y_idio_h`）与风格暴露；所有回测统一经 `SignalBridge` 投影至 `barra` 执行；
+3. **双轨组合构建 (`BarraPortfolioOptimizer` & `build_stocks_portfolio_weights`)**：支持分位等权基线（`quantile`）与「信号塑形 `SignalShaper` + 动态风控 `DynamicRiskGuard` + 低秩 Barra 42 因子 QP / Horizon LP (`MOSEK`/`CLARABEL`/`OSQP`) + 持仓漂移闭环」的 `barra_qp` 优化器；
+4. **配置与作业预设 (`load_stock_backtest_config`, `apply_stock_backtest_profile`)**：统一解析 `configs/stocks/{data,barra,backtest,fees}.yaml` 与 `default` / `quantile` / `factorsim_match` 一键预设，详见 [`docs/stocks_user_guide.md`](file:///home/cr9294/repos/FactorLibrary/docs/stocks_user_guide.md)。
 
 ---
 

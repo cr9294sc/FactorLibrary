@@ -3,7 +3,7 @@ features_status: ["accepted", "active"]
 
 walk_forward:
   start_predict_year: 2023
-  end_predict_year: 2024
+  end_predict_year: 2026
   train_window: "expanding"
   min_train_years: 4
   purge_window: 5

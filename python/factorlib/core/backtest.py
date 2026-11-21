@@ -43,8 +43,13 @@ class BacktestResult:
 
     def to_dataframe(self) -> pl.DataFrame:
         """导出每日净值与财务流水平账 DataFrame。"""
+        dates_col: Any = (
+            [str(d) for d in self.dates]
+            if isinstance(self.dates, np.ndarray) and self.dates.dtype == object
+            else self.dates
+        )
         cols: dict[str, Any] = {
-            "trading_date": self.dates,
+            "trading_date": dates_col,
             "equity": self.equity,
             "returns": self.returns,
             "cash": self.cash,

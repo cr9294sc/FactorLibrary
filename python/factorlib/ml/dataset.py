@@ -211,7 +211,7 @@ class MLDatasetBuilder:
             if target_label not in panel.labels and str(target_label).startswith("y_idio_"):
                 raise KeyError(
                     f"面板中未找到纯特质标签 {target_label!r}；"
-                    "请使用 lb_barra_v1 数据集或先通过 RiskView.attach(..., compute_dynamic_idio=True) 挂载"
+                    "请使用 barra 数据集或先通过 RiskView.attach(..., compute_dynamic_idio=True) 挂载"
                 )
             self.y_matrix = np.asfortranarray(panel.get_label(target_label), dtype=np.float64)
 

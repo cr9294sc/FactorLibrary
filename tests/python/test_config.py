@@ -340,30 +340,51 @@ def test_stocks_configs_and_profile_validation(tmp_path: Path):
 
 def test_stocks_dual_dataset_data_yaml(tmp_path: Path):
     """验证双数据源版 configs/stocks/data.yaml 加载与数据集切换。"""
+    from factorlib.core.config import (
+        apply_stock_backtest_profile,
+        load_stock_backtest_config,
+        load_stock_fees_config,
+    )
+
     data_yaml = Path("configs/stocks/data.yaml")
     default_ds, ds_map = load_stock_datasets_config(data_yaml)
-    assert default_ds == "rq_v1"
-    assert set(ds_map.keys()) >= {"rq_v1", "lb_barra_v1"}
+    assert default_ds == "rq"
+    assert set(ds_map.keys()) == {"rq", "barra"}
 
-    rq_cfg = load_stock_data_config(data_yaml, dataset="rq_v1")
+    rq_cfg = load_stock_data_config(data_yaml, dataset="rq")
     assert rq_cfg.source == "ricequant"
-    assert rq_cfg.panel_version == "v1"
+    assert rq_cfg.panel_version == "rq"
     assert rq_cfg.entry_window == "open"
     assert rq_cfg.exec_price_mode == "open_adj"
+    assert rq_cfg.extended_fields is True
     assert rq_cfg.include_idiosyncratic_labels is False
 
-    # 按 panel_version='v1' 也能解析到 rq_v1
-    rq_alias = load_stock_data_config(data_yaml, dataset="v1")
-    assert rq_alias.panel_version == "v1"
+    barra_cfg = load_stock_data_config(data_yaml, dataset="barra")
+    assert barra_cfg.source == "barra"
+    assert barra_cfg.panel_version == "barra"
+    assert barra_cfg.entry_window == "vwap_open_30m"
+    assert barra_cfg.exec_price_mode == "vwap_open_30m_adj"
+    assert barra_cfg.include_idiosyncratic_labels is True
+    assert barra_cfg.universe_filters.use_source_base_univ_mask is True
+    assert barra_cfg.universe_filters.exclude_bjse is True
 
-    lb_cfg = load_stock_data_config(data_yaml, dataset="lb_barra_v1")
-    assert lb_cfg.source == "local_backtest"
-    assert lb_cfg.panel_version == "lb_barra_v1"
-    assert lb_cfg.entry_window == "vwap_open_30m"
-    assert lb_cfg.exec_price_mode == "vwap_open_30m_adj"
-    assert lb_cfg.include_idiosyncratic_labels is True
-    assert lb_cfg.universe_filters.use_source_base_univ_mask is True
-    assert lb_cfg.universe_filters.exclude_bjse is True
+    # 验证 fees.yaml 修复与 backtest.yaml factorsim_match 预设吸收
+    fees_cfg = load_stock_fees_config(Path("configs/stocks/fees.yaml"))
+    assert fees_cfg.fee_mode == "asymmetric"
+    assert fees_cfg.fee_rate == pytest.approx(0.003)
+
+    bt_cfg = load_stock_backtest_config(Path("configs/stocks/backtest.yaml"))
+    assert bt_cfg.dataset == "barra"
+    assert bt_cfg.execution.entry_window == "vwap_open_30m"
+    assert bt_cfg.signal_bridge.enabled is True
+    bt_fs, fees_fs = apply_stock_backtest_profile(bt_cfg, fees_cfg, "factorsim_match")
+    assert bt_fs.capital.init_cash == pytest.approx(20000000.0)
+    assert bt_fs.execution.reserve_cash == pytest.approx(0.9)
+    assert bt_fs.signal_bridge.input_signal_alignment == "T_exec"
+    assert str(bt_fs.start_date) == "2020-07-02"
+    assert str(bt_fs.end_date) == "2025-07-02"
+    assert fees_fs.fee_mode == "flat"
+    assert fees_fs.effective_flat_fee_rate == pytest.approx(0.003)
 
     bad_src = tmp_path / "bad_src.yaml"
     bad_src.write_text(

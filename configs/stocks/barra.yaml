@@ -1,8 +1,8 @@
 # configs/stocks/barra.yaml
 # Barra CNE5 风险模型、因果 Constrained WLS 动态特质收益与动态特质方差契约。
 # 由 `StocksProfile.load_risk_model()` / `BarraRiskModelStore` / `BarraPortfolioOptimizer` 共同消费。
-risk_dataset: "lb_barra_v1"
-risk_store_dir: "./data/derived/stocks/lb_barra_v1/risk_store"
+risk_dataset: "barra"
+risk_store_dir: "./data/derived/stocks/barra/risk_store"
 return_clock: "vwap_open_30m"            # vwap_open_30m | open_adj | close_to_close
 
 exposures:
@@ -22,7 +22,7 @@ exposures:
 
 idiosyncratic_return:
   mode: "auto"                           # precomputed | dynamic_wls | auto
-  # auto: 在 lb_barra_v1 且 return_clock==vwap_open_30m 时直取 CNE5SpecRet;
+  # auto: 在 barra 且 return_clock==vwap_open_30m 时直取 CNE5SpecRet;
   #       在 rq 域 (open_adj/c2c) 或 2026-11 之后自动运行因果 Constrained WLS
   dynamic_wls:
     weight_scheme: "sqrt_mkt_cap"        # sqrt_mkt_cap | equal

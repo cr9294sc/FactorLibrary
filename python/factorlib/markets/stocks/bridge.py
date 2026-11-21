@@ -2,10 +2,10 @@
 
 按照架构设计 §2.3 实现：
 - 彻底不合并底层静态表、不写回米筐派生目录，仅在内存按 ``(trading_date, sym6)`` 做轻量投影；
-- ``SignalBridge``：将 ``rq_v1``（或外部 ``shifted_signal.parquet``）因子/预测信号投影至
-  ``lb_barra_v1`` 网格，支持 ``T_close``（默认）与 ``T_exec``（自动前移 1 个交易日）时间对齐，
+- ``SignalBridge``：将 ``rq``（或外部 ``shifted_signal.parquet``）因子/预测信号投影至
+  ``barra`` 网格，支持 ``T_close``（默认）与 ``T_exec``（自动前移 1 个交易日）时间对齐，
   并输出结构化 ``BridgeAuditReport`` 覆盖率审计报告；
-- ``RiskView``：将 ``lb_barra_v1`` 的 10 维 Barra 风格、行业、市值或 ``y_idio_h`` 标签以**只读视图**
+- ``RiskView``：将 ``barra`` 的 10 维 Barra 风格、行业、市值或 ``y_idio_h`` 标签以**只读视图**
   （``flags.writeable == False``）按需附加至 ``rq`` 面板，并支持基于 ``RiskView`` 的动态 WLS 特质标签构造。
 """
 
@@ -137,7 +137,7 @@ class BridgeAuditReport:
 
 
 class SignalBridge:
-    """单向信号桥接器：将任意源信号矩阵投影到目标面板（如 ``lb_barra_v1``）网格。"""
+    """单向信号桥接器：将任意源信号矩阵投影到目标面板（如 ``barra``）网格。"""
 
     @staticmethod
     def project(
@@ -147,7 +147,7 @@ class SignalBridge:
         target_panel: Panel,
         *,
         input_signal_alignment: str = "T_close",
-        source_dataset: str = "rq_v1",
+        source_dataset: str = "rq",
         min_symbol_match_ratio: float = 0.90,
         start_date: Any | None = None,
         end_date: Any | None = None,
@@ -303,7 +303,7 @@ _DEFAULT_RISK_FIELDS: tuple[str, ...] = (
 
 
 class RiskView:
-    """只读风险视图：将 ``lb_barra_v1`` 的 Barra 暴露与/或特质标签投影至 ``rq`` 面板。
+    """只读风险视图：将 ``barra`` 的 Barra 暴露与/或特质标签投影至 ``rq`` 面板。
 
     所有投影矩阵强制设置 ``flags.writeable = False``，绝不修改磁盘原始 Parquet。
     """

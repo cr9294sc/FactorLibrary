@@ -697,29 +697,29 @@ class StockUniverseFilterConfig:
 class StockDataConfig:
     raw_dir: Path
     derived_dir: Path
-    panel_version: str = "v1"
+    panel_version: str = "rq"
     benchmark_id: str = "000985.XSHG"
     price_basis: str = "hfq"  # hfq | raw
     entry_window: str = "open"  # open | vwap_open_30m
     exec_price_mode: str = "open_adj"  # open_adj | vwap_adj | vwap_open_30m_adj
     start_date: date = date(2015, 11, 1)
-    end_date: date = date(2024, 12, 31)
+    end_date: date = date(2026, 11, 6)
     universe_filters: StockUniverseFilterConfig = field(default_factory=StockUniverseFilterConfig)
     label_horizons: tuple[int, ...] = (1, 2, 5, 10)
-    source: str = "ricequant"  # ricequant | local_backtest
+    source: str = "ricequant"  # ricequant | barra | local_backtest
     benchmark_csv: Path | None = None
     include_idiosyncratic_labels: bool = False
     dataset_id: str | None = None
     # FactorLab MCP 1d 变量全量对齐扩充字段（daily_basic 估值换手 / num_trades /
-    # 三大指数成分权重 / 日内收益率），默认关闭以保证 stocks/v1 面板零变更兼容
+    # 三大指数成分权重 / 日内收益率）
     extended_fields: bool = False
 
     def __post_init__(self) -> None:
         if self.start_date > self.end_date:
             raise ConfigError("timeline.start_date 不得晚于 end_date")
-        if self.source not in ("ricequant", "local_backtest"):
+        if self.source not in ("ricequant", "barra", "local_backtest"):
             raise ConfigError(
-                f"stocks data.source 必须为 'ricequant' 或 'local_backtest', 实际 {self.source!r}"
+                f"stocks data.source 必须为 'ricequant' 或 'barra', 实际 {self.source!r}"
             )
         if self.price_basis not in ("hfq", "raw"):
             raise ConfigError(
@@ -875,7 +875,7 @@ class StockExecutionConfig:
 class StockBarraConfig:
     """`configs/stocks/barra.yaml`：Barra 风险库与动态特质方差契约。"""
 
-    risk_dataset: str = "lb_barra_v1"
+    risk_dataset: str = "barra"
     risk_store_dir: Path | None = None
     return_clock: str = "vwap_open_30m"
     min_eigenvalue: float = 1.0e-10
@@ -925,15 +925,49 @@ class StockBarraConfig:
 
 
 @dataclass(frozen=True)
+class StockSignalBridgeConfig:
+    """`configs/stocks/backtest.yaml` 的信号桥接配置段。"""
+
+    enabled: bool = True
+    source_dataset: str = "rq"  # rq | barra | external_parquet
+    external_signal_path: Path | None = None
+    input_signal_alignment: str = "T_close"  # T_close | T_exec
+    min_symbol_match_ratio: float = 0.90
+
+    def __post_init__(self) -> None:
+        if self.input_signal_alignment not in ("T_close", "T_exec"):
+            raise ConfigError(
+                "signal_bridge.input_signal_alignment 必须为 'T_close' 或 'T_exec', "
+                f"实际 {self.input_signal_alignment!r}"
+            )
+        if not (0.0 <= float(self.min_symbol_match_ratio) <= 1.0):
+            raise ConfigError(
+                "signal_bridge.min_symbol_match_ratio 必须位于 [0, 1], "
+                f"实际 {self.min_symbol_match_ratio}"
+            )
+
+
+@dataclass(frozen=True)
 class StockBacktestConfig:
     capital: CapitalConfig = field(default_factory=CapitalConfig)
     portfolio: StockPortfolioConfig = field(default_factory=StockPortfolioConfig)
     execution: StockExecutionConfig = field(default_factory=StockExecutionConfig)
-    # `strategy` 段：信号塑形与风控守卫参数（同时驱动原生优化器与 factorsim 策略导出）
+    # `strategy` 段：信号塑形与风控守卫参数（同时驱动原生优化器与策略导出）
     strategy: dict[str, Any] = field(default_factory=dict)
+    dataset: str = "barra"
+    signal_bridge: StockSignalBridgeConfig = field(default_factory=StockSignalBridgeConfig)
+    start_date: date | None = None
+    end_date: date | None = None
+    profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        sb = out.get("signal_bridge")
+        if isinstance(sb, dict) and sb.get("external_signal_path") is not None:
+            sb["external_signal_path"] = str(sb["external_signal_path"])
+        out["start_date"] = self.start_date.isoformat() if self.start_date is not None else None
+        out["end_date"] = self.end_date.isoformat() if self.end_date is not None else None
+        return out
 
 
 def _parse_single_stock_dataset(
@@ -955,7 +989,7 @@ def _parse_single_stock_dataset(
     kwargs: dict[str, Any] = {
         "raw_dir": _resolve(raw["raw_dir"], root),
         "derived_dir": _resolve(raw["derived_dir"], root),
-        "panel_version": str(raw.get("panel_version", "v1")),
+        "panel_version": str(raw.get("panel_version", dataset_id or "rq")),
         "benchmark_id": str(raw.get("benchmark_id", "000985.XSHG")),
         "price_basis": str(raw.get("price_basis", "hfq")),
         "entry_window": str(raw.get("entry_window", "open")),
@@ -1020,7 +1054,7 @@ def load_stock_data_config(
         return datasets_map[default_ds]
     if dataset in datasets_map:
         return datasets_map[dataset]
-    # 支持按 panel_version 匹配 (例如 "v1" -> "rq_v1")
+    # 支持按 panel_version 匹配 (例如 "rq" / "barra")
     for cfg in datasets_map.values():
         if cfg.panel_version == dataset:
             return cfg
@@ -1030,9 +1064,11 @@ def load_stock_data_config(
 
 
 def load_stock_fees_config(path: Path) -> StockFeesConfig:
-    """加载并校验 ``configs/stocks/fees.yaml``。"""
+    """加载并校验 ``configs/stocks/fees.yaml``（兼容 fees 子段与顶层 fee_mode/fee_rate）。"""
     raw = _load_yaml(path)
     fees = _section(raw, "fees")
+    fee_mode = str(fees.get("fee_mode", raw.get("fee_mode", "asymmetric")))
+    fee_rate = float(fees.get("fee_rate", raw.get("fee_rate", 0.0)))
     return StockFeesConfig(
         market=str(raw.get("market", "stocks")),
         lot_size=int(raw.get("lot_size", 100)),
@@ -1043,26 +1079,136 @@ def load_stock_fees_config(path: Path) -> StockFeesConfig:
         transfer_fee_rate=float(fees.get("transfer_fee_rate", 0.00001)),
         slip_ticks=float(fees.get("slip_ticks", 1.0)),
         slip_bps=float(fees.get("slip_bps", 0.0)),
-        fee_mode=str(fees.get("fee_mode", "asymmetric")),
-        fee_rate=float(fees.get("fee_rate", 0.0)),
+        fee_mode=fee_mode,
+        fee_rate=fee_rate,
     )
 
 
-def load_stock_backtest_config(path: Path) -> StockBacktestConfig:
+def load_stock_backtest_config(path: Path, root: Path | None = None) -> StockBacktestConfig:
     """加载并校验 ``configs/stocks/backtest.yaml``。"""
     raw = _load_yaml(path)
+    base = Path(root) if root is not None else Path(".")
     cap_sec = _section(raw, "capital")
     port_sec = _section(raw, "portfolio")
     exec_sec = _section(raw, "execution")
+    sb_sec = _section(raw, "signal_bridge")
+    tl_sec = _section(raw, "timeline")
     strategy_sec = raw.get("strategy") or {}
     if not isinstance(strategy_sec, dict):
         raise ConfigError("stocks backtest.yaml 的 'strategy' 必须为映射")
+    profiles_sec = raw.get("profiles") or {}
+    if not isinstance(profiles_sec, dict):
+        raise ConfigError("stocks backtest.yaml 的 'profiles' 必须为映射")
+
+    ext_sig_raw = sb_sec.get("external_signal_path")
+    signal_bridge = StockSignalBridgeConfig(
+        enabled=bool(sb_sec.get("enabled", True)),
+        source_dataset=str(sb_sec.get("source_dataset", "rq")),
+        external_signal_path=_resolve(ext_sig_raw, base) if ext_sig_raw else None,
+        input_signal_alignment=str(sb_sec.get("input_signal_alignment", "T_close")),
+        min_symbol_match_ratio=float(sb_sec.get("min_symbol_match_ratio", 0.90)),
+    )
+
+    sd_raw = tl_sec.get("start_date")
+    ed_raw = tl_sec.get("end_date")
+    start_d = _parse_date(sd_raw, "timeline.start_date") if sd_raw else None
+    end_d = _parse_date(ed_raw, "timeline.end_date") if ed_raw else None
+    if start_d is not None and end_d is not None and start_d > end_d:
+        raise ConfigError("stocks backtest.yaml timeline.start_date 不得晚于 end_date")
+
     return StockBacktestConfig(
         capital=CapitalConfig(**cap_sec),
         portfolio=StockPortfolioConfig(**port_sec),
         execution=StockExecutionConfig(**exec_sec),
         strategy=dict(strategy_sec),
+        dataset=str(raw.get("dataset", "barra")),
+        signal_bridge=signal_bridge,
+        start_date=start_d,
+        end_date=end_d,
+        profiles={str(k): dict(v) for k, v in profiles_sec.items() if isinstance(v, dict)},
     )
+
+
+def apply_stock_backtest_profile(
+    bt_cfg: StockBacktestConfig,
+    fees_cfg: StockFeesConfig,
+    profile_name: str | None = None,
+    *,
+    root: Path | None = None,
+) -> tuple[StockBacktestConfig, StockFeesConfig]:
+    """将 ``backtest.yaml`` 中 ``profiles.<name>`` 预设合并至 ``StockBacktestConfig`` 与 ``StockFeesConfig``。"""
+    from dataclasses import replace
+
+    name = profile_name or "default"
+    if not bt_cfg.profiles:
+        return bt_cfg, fees_cfg
+    if name not in bt_cfg.profiles:
+        if profile_name is None:
+            return bt_cfg, fees_cfg
+        raise ConfigError(
+            f"stocks backtest.yaml 未定义预设 profile={name!r}, 可选: {sorted(bt_cfg.profiles.keys())}"
+        )
+
+    prof = bt_cfg.profiles[name]
+    base = Path(root) if root is not None else Path(".")
+
+    cap = bt_cfg.capital
+    if "init_cash" in prof and prof["init_cash"] is not None:
+        cap = replace(cap, init_cash=float(prof["init_cash"]))
+
+    port = bt_cfg.portfolio
+    if "portfolio_mode" in prof and prof["portfolio_mode"] is not None:
+        port = replace(port, mode=str(prof["portfolio_mode"]))
+
+    exe = bt_cfg.execution
+    if "reserve_cash" in prof and prof["reserve_cash"] is not None:
+        exe = replace(exe, reserve_cash=float(prof["reserve_cash"]))
+
+    sb = bt_cfg.signal_bridge
+    sb_updates: dict[str, Any] = {}
+    if "source_dataset" in prof and prof["source_dataset"] is not None:
+        sb_updates["source_dataset"] = str(prof["source_dataset"])
+    if "external_signal_path" in prof:
+        ext_p = prof["external_signal_path"]
+        sb_updates["external_signal_path"] = _resolve(ext_p, base) if ext_p else None
+    if "input_signal_alignment" in prof and prof["input_signal_alignment"] is not None:
+        sb_updates["input_signal_alignment"] = str(prof["input_signal_alignment"])
+    if sb_updates:
+        sb = replace(sb, **sb_updates)
+
+    start_d = bt_cfg.start_date
+    end_d = bt_cfg.end_date
+    if "start_date" in prof:
+        start_d = (
+            _parse_date(prof["start_date"], f"profiles.{name}.start_date")
+            if prof["start_date"]
+            else None
+        )
+    if "end_date" in prof:
+        end_d = (
+            _parse_date(prof["end_date"], f"profiles.{name}.end_date") if prof["end_date"] else None
+        )
+    if start_d is not None and end_d is not None and start_d > end_d:
+        raise ConfigError(f"profiles.{name}.start_date 不得晚于 end_date")
+
+    fee_updates: dict[str, Any] = {}
+    if "fee_mode" in prof and prof["fee_mode"] is not None:
+        fee_updates["fee_mode"] = str(prof["fee_mode"])
+    if "fee_rate" in prof and prof["fee_rate"] is not None:
+        fee_updates["fee_rate"] = float(prof["fee_rate"])
+    if fee_updates:
+        fees_cfg = replace(fees_cfg, **fee_updates)
+
+    bt_cfg = replace(
+        bt_cfg,
+        capital=cap,
+        portfolio=port,
+        execution=exe,
+        signal_bridge=sb,
+        start_date=start_d,
+        end_date=end_d,
+    )
+    return bt_cfg, fees_cfg
 
 
 def load_stock_barra_config(path: Path, root: Path | None = None) -> StockBarraConfig:
@@ -1076,7 +1222,7 @@ def load_stock_barra_config(path: Path, root: Path | None = None) -> StockBarraC
     store_dir = raw.get("risk_store_dir")
     style = exposures.get("style_factors") or StockBarraConfig.style_factors
     return StockBarraConfig(
-        risk_dataset=str(raw.get("risk_dataset", "lb_barra_v1")),
+        risk_dataset=str(raw.get("risk_dataset", "barra")),
         risk_store_dir=_resolve(store_dir, base) if store_dir else None,
         return_clock=str(raw.get("return_clock", "vwap_open_30m")),
         min_eigenvalue=float(fcov.get("min_eigenvalue", 1.0e-10)),

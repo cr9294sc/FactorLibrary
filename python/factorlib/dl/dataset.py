@@ -325,7 +325,7 @@ def prepare_dl_panel_data(
     """从 `Panel` 严格无前视地构造 1d DL 特征立方体与中性化标签。"""
     if target_label not in panel.labels:
         hint = (
-            "（请使用 lb_barra_v1 数据集或先通过 RiskView.attach(..., compute_dynamic_idio=True) 挂载）"
+            "（请使用 barra 数据集或先通过 RiskView.attach(..., compute_dynamic_idio=True) 挂载）"
             if str(target_label).startswith("y_idio_")
             else ""
         )

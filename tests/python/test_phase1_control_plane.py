@@ -613,9 +613,9 @@ def test_run_gp_stocks_recipe_isolation(tmp_path: Path) -> None:
         mask=np.asfortranarray(panel_raw.mask[:, :5]),
         labels={"y_5": np.asfortranarray(panel_raw.labels["y_5"][:, :5])},
         aux_fields={"open_raw": np.asfortranarray(panel_raw.fields["open"][:, :5])},
-        meta={"panel_version": "stk_v1", "market": "stocks"},
+        meta={"panel_version": "rq", "market": "stocks"},
     )
-    _save_panel_as_parquet_dir(panel, tmp_path / "data" / "derived" / "stocks" / "v1")
+    _save_panel_as_parquet_dir(panel, tmp_path / "data" / "derived" / "stocks" / "rq")
     db_path = tmp_path / "data" / "registry" / "factors.sqlite"
     runs_dir = tmp_path / "runs"
 

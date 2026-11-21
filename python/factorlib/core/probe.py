@@ -510,7 +510,7 @@ def probe_factor(
                 )
                 errors.append(
                     f"数据集 {ds_name!r} 缺少上市天数字段，不支持 'dropNewStock' 算子"
-                    "（建议在 rq_v1 域求值后通过 SignalBridge 桥接）"
+                    "（建议在 rq 域求值后通过 SignalBridge 桥接）"
                 )
             postprocess_vars.append(
                 {

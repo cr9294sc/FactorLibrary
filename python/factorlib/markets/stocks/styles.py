@@ -1,7 +1,7 @@
 """A 股风格因子因果计算实现 (markets/stocks/styles.py)。
 
 支持自适应双模式：
-1. 若面板包含官方 Barra CNE5 暴露（``barra_*``，例如 ``lb_barra_v1`` 或通过 ``RiskView``
+1. 若面板包含官方 Barra CNE5 暴露（``barra_*``，例如 ``barra`` 或通过 ``RiskView``
    挂载的 ``rq`` 面板），直接返回全部 **10 维 Barra CNE5 风格矩阵**
    (``BETA``, ``BTOP``, ``EARNYILD``, ``GROWTH``, ``LEVERAGE``, ``LIQUIDTY``,
    ``MOMENTUM``, ``RESVOL``, ``SIZE``, ``SIZENL``)，并保留兼容别名

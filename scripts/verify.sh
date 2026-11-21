@@ -228,6 +228,7 @@ check_scripts() {
     python scripts/run_gp.py --help > /dev/null
     python scripts/run_ml.py --help > /dev/null
     python scripts/run_backtest.py --help > /dev/null
+    python scripts/run_stocks_backtest.py --help > /dev/null
     python scripts/run_pipeline.py --help > /dev/null
     python scripts/catalog.py --help > /dev/null
     python scripts/run_web.py --help > /dev/null

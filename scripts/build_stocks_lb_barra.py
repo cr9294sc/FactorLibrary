@@ -25,7 +25,7 @@ from factorlib.markets.stocks.ares_bridge import build_lb_barra_panel
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="将 local_backtest (.ares + CNE5) 转换为独立标准面板 data/derived/stocks/lb_barra_v1/"
+        description="将 Barra (.ares + CNE5) 转换为独立标准面板 data/derived/stocks/barra/"
     )
     parser.add_argument(
         "--config",
@@ -36,14 +36,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         type=str,
-        default="lb_barra_v1",
-        help="目标数据集名称 (默认: lb_barra_v1)",
+        default="barra",
+        help="目标数据集名称 (默认: barra)",
     )
     parser.add_argument(
         "--raw-dir",
         type=Path,
         default=None,
-        help="覆盖 local_backtest/runtime_assets 根目录",
+        help="覆盖 data/raw/stocks/barra 根目录",
     )
     parser.add_argument(
         "--derived-dir",

@@ -287,7 +287,7 @@ def load_shared_stock_data(
 ) -> StockPanelData:
     """通过标准 A 股面板加载器加载全市场日频行情与掩码。"""
     print("[2/4] 正在通过 StockPanelLoader 构建标准 A 股多字段截面面板与掩码矩阵...")
-    loader = StockPanelLoader("data/raw/stocks")
+    loader = StockPanelLoader("data/raw/stocks/rq")
     panel_data = loader.load(
         start_date=start_date,
         end_date=end_date,

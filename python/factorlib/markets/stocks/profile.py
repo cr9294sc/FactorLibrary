@@ -29,10 +29,10 @@ from factorlib.markets.profile import (
     PanelSpec,
     ResearchPaths,
 )
-from factorlib.markets.stocks.ares_bridge import load_lb_barra_panel
+from factorlib.markets.stocks.ares_bridge import BARRA_STYLE_FACTORS, load_lb_barra_panel
 from factorlib.markets.stocks.backtest import StocksBacktester
 from factorlib.markets.stocks.barra import BarraRiskModelStore
-from factorlib.markets.stocks.bridge import BridgeAuditReport, SignalBridge
+from factorlib.markets.stocks.bridge import BridgeAuditReport, RiskView, SignalBridge
 from factorlib.markets.stocks.extensions import StocksMinutePackBuilder
 from factorlib.markets.stocks.panel_loader import STOCK_AUX_BACKTEST_FIELDS, StockPanelLoader
 from factorlib.markets.stocks.portfolio import build_stocks_portfolio_weights
@@ -167,8 +167,8 @@ def normalize_optimizer_config(
     return flat
 
 
-def _default_rq_capabilities(version: str = "v1") -> dict[str, Any]:
-    ds_id = version if str(version).startswith("rq_") else f"rq_{version}"
+def _default_rq_capabilities(version: str = "rq") -> dict[str, Any]:
+    ds_id = "rq" if version in ("rq", "v1", "v2") else str(version)
     return {
         "dataset_id": ds_id,
         "source": "ricequant",
@@ -193,17 +193,21 @@ class StocksProfile:
         self.root = Path(root) if root is not None else Path(".")
 
     def _resolve_panel_version(self, version: str) -> str:
-        """将逻辑数据集名（如 ``rq_v1`` / ``lb_barra_v1``）映射为物理目录版本名。"""
+        """将逻辑数据集名（如 ``rq`` / ``barra``）映射为物理目录版本名。"""
         cfg_path = self.root / "configs" / "stocks" / "data.yaml"
         if cfg_path.exists():
             try:
-                _, ds_map = load_stock_datasets_config(cfg_path, root=self.root)
+                default_ds, ds_map = load_stock_datasets_config(cfg_path, root=self.root)
                 if version in ds_map:
                     return ds_map[version].panel_version
+                if version == "v1" and "v1" not in ds_map:
+                    return ds_map[default_ds].panel_version
             except ConfigError:
                 pass
-        if version == "rq_v1":
-            return "v1"
+        if version in ("v1", "v2", "rq_v1", "rq_v2"):
+            return "rq"
+        if version == "lb_barra_v1":
+            return "barra"
         return version
 
     def list_datasets(self, data_config_path: Path | None = None) -> dict[str, StockDataConfig]:
@@ -219,13 +223,13 @@ class StocksProfile:
         dataset: str | None = None,
         data_config_path: Path | None = None,
     ) -> StockDataConfig:
-        """读取指定数据集（如 ``rq_v1`` / ``lb_barra_v1``）的配置对象。"""
+        """读取指定数据集（如 ``rq`` / ``barra``）的配置对象。"""
         cfg_path = data_config_path or (self.root / "configs" / "stocks" / "data.yaml")
         return load_stock_data_config(cfg_path, root=self.root, dataset=dataset)
 
     def load_risk_model(
         self,
-        version: str = "lb_barra_v1",
+        version: str = "barra",
         *,
         risk_store_dir: Path | None = None,
     ) -> BarraRiskModelStore:
@@ -252,7 +256,7 @@ class StocksProfile:
         start_date: Any | None = None,
         end_date: Any | None = None,
     ) -> tuple[np.ndarray, BridgeAuditReport]:
-        """运行期轻量单向信号桥接（如 ``rq_v1 -> lb_barra_v1``）。"""
+        """运行期轻量单向信号桥接（如 ``rq -> barra``）。"""
         return SignalBridge.from_panel(
             source_panel=source_panel,
             scores_src=scores_src,
@@ -263,13 +267,20 @@ class StocksProfile:
             end_date=end_date,
         )
 
-    def paths(self, version: str = "v1") -> ResearchPaths:
+    def paths(self, version: str = "rq") -> ResearchPaths:
         phys_version = self._resolve_panel_version(version)
         derived_dir = self.root / "data" / "derived" / "stocks"
+        raw_sub = "barra" if phys_version == "barra" else "rq"
+        raw_candidate = self.root / "data" / "raw" / "stocks" / raw_sub
+        raw_dir = (
+            raw_candidate
+            if raw_candidate.exists() or not (self.root / "data" / "raw" / "stocks").exists()
+            else (self.root / "data" / "raw" / "stocks")
+        )
         return ResearchPaths(
             market="stocks",
             version=phys_version,
-            raw_dir=self.root / "data" / "raw" / "stocks",
+            raw_dir=raw_dir,
             derived_dir=derived_dir,
             panel_dir=derived_dir / phys_version,
             db_path=self.root / "data" / "registry" / "factors.sqlite",
@@ -292,8 +303,66 @@ class StocksProfile:
             raise ValueError(f"未知的配置类型 {kind!r}，可选: {sorted(mapping.keys())}")
         return self.paths().config_dir / fname
 
+    def _maybe_attach_barra_risk_view(
+        self, panel: Panel, spec: PanelSpec, panel_dir: Path | None = None
+    ) -> None:
+        """加载 `rq` 面板时自动只读挂载同级 `barra` 面板的 vwap_open_30m 标签与 CNE5 风格暴露。"""
+        if spec.extra.get("attach_risk_view") is False:
+            return
+        ds_id = str(panel.meta.get("dataset_id") or panel.meta.get("panel_version") or "")
+        src = str(panel.meta.get("source") or "ricequant")
+        if src != "ricequant" or "barra" in ds_id:
+            return
+
+        barra_dir = (
+            (panel_dir.parent / "barra")
+            if (spec.panel_dir is not None and panel_dir is not None)
+            else self.paths("barra").panel_dir
+        )
+        if not (barra_dir / "panel_daily.parquet").exists():
+            return
+
+        risk_fields = [
+            *(f"barra_{f.lower()}" for f in BARRA_STYLE_FACTORS),
+            "barra_industry",
+            "mkt_cap",
+        ]
+        if spec.fields_subset is None:
+            req_fields: list[str] | None = risk_fields
+        else:
+            req_fields = [f for f in risk_fields if f in set(spec.fields_subset)]
+
+        if not req_fields and not spec.load_labels:
+            return
+
+        barra_panel = Panel.load(
+            barra_dir,
+            fields_subset=req_fields if req_fields else [risk_fields[0]],
+            load_labels=bool(spec.load_labels),
+            aux_field_names=(),
+        )
+        # 无日期交集时不覆盖原面板标签，避免合成/错位测试面板被全 NaN 污染
+        src_dates = {str(d)[:10] for d in barra_panel.dates}
+        tgt_dates = {str(d)[:10] for d in panel.dates}
+        if not (src_dates & tgt_dates):
+            return
+
+        label_names = list(barra_panel.labels.keys()) if spec.load_labels else None
+        RiskView.attach(
+            panel,
+            barra_panel,
+            fields=req_fields or (),
+            labels=label_names,
+            overwrite=True,
+        )
+        if spec.load_labels and label_names:
+            panel.meta["labels_clock"] = "vwap_open_30m"
+        caps = panel.meta.get("capabilities")
+        if isinstance(caps, dict) and req_fields:
+            caps["has_barra_exposures"] = True
+
     def load_panel(self, spec: PanelSpec | None = None) -> Panel:
-        s = spec or PanelSpec()
+        s = spec or PanelSpec(version="rq")
         p_info = self.paths(s.version)
         panel_dir = s.panel_dir or p_info.panel_dir
         if (panel_dir / "panel_daily.parquet").exists():
@@ -306,6 +375,7 @@ class StocksProfile:
             panel.meta.setdefault("market", self.name)
             panel.meta.setdefault("panel_version", p_info.version)
             panel.meta.setdefault("capabilities", _default_rq_capabilities(p_info.version))
+            self._maybe_attach_barra_risk_view(panel, s, panel_dir=panel_dir)
             if s.extensions:
                 self.attach_extensions(panel, s.extensions)
             return panel
@@ -328,20 +398,20 @@ class StocksProfile:
             dcfg = None
             raw_dir = s.raw_dir or p_info.raw_dir
             start_d = s.start_date or "2015-11-01"
-            end_d = s.end_date or "2024-12-31"
+            end_d = s.end_date or "2026-11-06"
             bench_id = "000985.XSHG"
             exec_mode = "open_adj"
             horizons = (1, 2, 5, 10)
-            source = "local_backtest" if "lb_barra" in s.version else "ricequant"
+            source = "barra" if "barra" in s.version else "ricequant"
 
-        if source == "local_backtest":
+        if source in ("barra", "local_backtest"):
             from dataclasses import replace
 
             lb_cfg = dcfg or StockDataConfig(
                 raw_dir=raw_dir,
                 derived_dir=p_info.derived_dir,
                 panel_version=p_info.version,
-                source="local_backtest",
+                source=source,
                 benchmark_id="000905.SH",
                 entry_window="vwap_open_30m",
                 exec_price_mode="vwap_open_30m_adj",
@@ -382,6 +452,7 @@ class StocksProfile:
         )
         panel = sdata.to_panel(horizons=horizons)
         panel.meta.setdefault("capabilities", _default_rq_capabilities(p_info.version))
+        self._maybe_attach_barra_risk_view(panel, s)
         if s.extensions:
             self.attach_extensions(panel, s.extensions)
         return panel
@@ -452,7 +523,7 @@ class StocksProfile:
         return compute_stocks_styles(panel)
 
     def default_postprocess(self, version: str | None = None) -> PostprocessSpec:
-        if version is not None and "lb_barra" in version:
+        if version is not None and "barra" in version:
             return [
                 "baseUniMask",
                 "trdMask",
@@ -474,7 +545,7 @@ class StocksProfile:
         ]
 
     def execution_rules(self, version: str | None = None) -> ExecutionRules:
-        entry_win = "vwap_open_30m" if (version is not None and "lb_barra" in version) else "open"
+        entry_win = "vwap_open_30m" if (version is not None and "barra" in version) else "open"
         return ExecutionRules(
             t_plus_one=True,
             allow_short=False,
@@ -564,11 +635,9 @@ class StocksProfile:
         barra_cfg = self.barra_config()
         risk_store = None
         try:
-            risk_dir = barra_cfg.risk_store_dir or (
-                self.paths("lb_barra_v1").panel_dir / "risk_store"
-            )
+            risk_dir = barra_cfg.risk_store_dir or (self.paths("barra").panel_dir / "risk_store")
             if Path(risk_dir).exists() and any(Path(risk_dir).glob("store.json")):
-                risk_store = self.load_risk_model("lb_barra_v1", risk_store_dir=Path(risk_dir))
+                risk_store = self.load_risk_model("barra", risk_store_dir=Path(risk_dir))
         except Exception:
             risk_store = None
 

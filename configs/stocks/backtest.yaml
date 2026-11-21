@@ -1,31 +1,36 @@
 # configs/stocks/backtest.yaml
-# 支持「单源直跑」与「SignalBridge 跨源回测」两种模式；组合构建支持分位等权与 Barra 凸优化双轨。
-dataset: "lb_barra_v1"               # 回测执行数据集: "rq_v1" | "rq_v2" | "lb_barra_v1"
+# A 股统一回测契约：所有 A 股执行统一落盘至 `barra`（vwap_open_30m 时钟）进行组合优化与 Rust 撮合；
+# `rq` 域因子/模型或外部宽表信号统一通过 SignalBridge 自动投影至 `barra` 网格。
+dataset: "barra"                     # 唯一回测执行数据集（固定为 "barra"）
 
 signal_bridge:
-  enabled: false                     # true 时接收来自 rq_v1/rq_v2 或外部文件的信号投影至 dataset
-  source_dataset: "rq_v2"            # "rq_v1" | "rq_v2" | "external_parquet"
-  external_signal_path: null         # 如 "./local_backtest/runtime_assets/combo/signal/signal_data/shifted_signal.parquet"
+  enabled: true                      # 统一经 SignalBridge 将 rq/外部信号投影至 barra
+  source_dataset: "rq"               # "rq" | "barra" | "external_parquet"
+  external_signal_path: null         # 如 "./data/raw/stocks/barra/combo/signal/signal_data/shifted_signal.parquet"
   input_signal_alignment: "T_close"  # "T_close" (FactorLibrary 标准) | "T_exec" (shifted_signal 自动前移 1 日)
   min_symbol_match_ratio: 0.90       # 映射覆盖率低于 90% 时显式告警/拦截
+
+timeline:
+  start_date: null                   # null 表示使用 barra 全历史起止；可显式指定 "YYYY-MM-DD"
+  end_date: null
 
 capital:
   init_cash: 10000000.0
 
 portfolio:
-  mode: "quantile"                   # "quantile" (分位等权基线) | "barra_qp" (模块化融合凸优化)
+  mode: "barra_qp"                   # "quantile" (分位等权基线) | "barra_qp" (模块化融合凸优化)
   top_quantile: 0.10                 # 多头等权分位比例 (默认 Top 10%)
-  industry_neutral: false            # 是否按申万一级行业内等选
+  industry_neutral: false            # 是否按行业内等选
   max_single_weight: 0.05            # 单只个股最大权重上限 5%
   max_gross_leverage: 1.0            # 纯多头现货最大总仓位 100%
   rebalance_buffer: 0.005            # 0.5% 换手缓冲带
   long_only: true
 
-  # --- barra_qp 模式专属参数（需 lb_barra_v1 或挂载 RiskStore）---
+  # --- barra_qp 模式专属参数（直连 barra 与 RiskStore）---
   optimizer:
     barra_config: "./configs/stocks/barra.yaml"
     benchmark_weight_mode: "mkt_cap_proxy"   # "constituent" | "mkt_cap_proxy" | "absolute_neutral"
-    benchmark_weights_path: null             # 补充米筐 index_weights 后切换 constituent 模式
+    benchmark_weights_path: null             # 补充指数成分权重后可切换 constituent 模式
     proxy_rank_range: [301, 800]             # 市值段模拟中证 500 (null 表示全市场市值加权)
 
     objective:
@@ -48,12 +53,12 @@ portfolio:
 
     solver:
       priority: ["MOSEK", "CLARABEL", "OSQP"]
-      mosek_license_file: "./local_backtest/service/config/mosek.lic"
+      mosek_license_file: "./configs/stocks/mosek.lic"
       mosek_num_threads: 1
       allow_slack_fallback: true
       slack_penalty: 1000.0
 
-# 信号塑形层 + 动态风控守卫参数（同时驱动原生优化器与 factorsim 策略一键导出）
+# 信号塑形层 + 动态风控守卫参数（同时驱动原生优化器与策略导出）
 strategy:
   h_max: 0.00625                     # 单票权重上限（指数增强顶格仓位）
   tvr: 0.5                           # 单日双边换手硬上限
@@ -83,6 +88,35 @@ execution:
   lot_size: 100
   t_plus_one: true
   allow_short: false
-  entry_window: "open"               # rq_v1/rq_v2 用 "open"; lb_barra_v1 用 "vwap_open_30m"
+  entry_window: "vwap_open_30m"      # 与 barra 执行时钟严格一致
   price_basis: "hfq"
   reserve_cash: 1.0                  # 现金预留比例（<1 时按该比例归一化真实漂移持仓，如 0.9）
+
+# 内置一键作业预设（由 scripts/run_stocks_backtest.py --profile 调用，免去每次手动改配置）
+profiles:
+  default:
+    description: "主平台标准实盘闭环（Barra QP + A 股非对称税费）"
+    portfolio_mode: "barra_qp"
+    fee_mode: "asymmetric"
+    init_cash: 10000000.0
+    reserve_cash: 1.0
+    input_signal_alignment: "T_close"
+  quantile:
+    description: "快速分位等权基线（仍在 barra vwap_open_30m 统一撮合）"
+    portfolio_mode: "quantile"
+    fee_mode: "asymmetric"
+    init_cash: 10000000.0
+    reserve_cash: 1.0
+    input_signal_alignment: "T_close"
+  factorsim_match:
+    description: "吸收原 local_backtest/config.yaml 全部作业参数（统一单边 0.003 费率与 0.9 仓位）"
+    portfolio_mode: "barra_qp"
+    fee_mode: "flat"
+    fee_rate: 0.003
+    init_cash: 20000000.0
+    reserve_cash: 0.9
+    start_date: "2020-07-02"
+    end_date: "2025-07-02"
+    source_dataset: "external_parquet"
+    external_signal_path: "./data/raw/stocks/barra/combo/signal/signal_data/shifted_signal.parquet"
+    input_signal_alignment: "T_exec"

@@ -223,10 +223,23 @@ class StocksBacktester:
         )
         if isinstance(config, StockBacktestConfig):
             bt_cfg = config
-        elif self.backtest_config_path.exists():
-            bt_cfg = load_stock_backtest_config(self.backtest_config_path)
         else:
-            bt_cfg = StockBacktestConfig()
+            bt_cfg = (
+                load_stock_backtest_config(self.backtest_config_path)
+                if self.backtest_config_path.exists()
+                else StockBacktestConfig()
+            )
+            # 未显式传 config 时，按传入 panel 实际持有的执行时钟字段自动对齐（保持对显式 config 的严格拦截）
+            from dataclasses import replace
+
+            has_vwap30 = panel.has_any_field("vwap_open_30m_adj") or panel.has_any_field(
+                "vwap_open_30m_raw"
+            )
+            if not has_vwap30 and bt_cfg.execution.entry_window == "vwap_open_30m":
+                bt_cfg = replace(
+                    bt_cfg,
+                    execution=replace(bt_cfg.execution, entry_window="open"),
+                )
 
         return run_stock_backtest_pipeline(
             panel=panel,

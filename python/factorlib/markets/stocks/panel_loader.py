@@ -279,7 +279,7 @@ class StockPanelData:
 class StockPanelLoader:
     """A 股全市场标准 Parquet 行情加载器与面板构建器。"""
 
-    def __init__(self, raw_dir: Path | str = "data/raw/stocks") -> None:
+    def __init__(self, raw_dir: Path | str = "data/raw/stocks/rq") -> None:
         self.raw_dir = Path(raw_dir)
         if not self.raw_dir.exists():
             raise FileNotFoundError(f"A 股原始数据根目录不存在: {self.raw_dir.resolve()}")

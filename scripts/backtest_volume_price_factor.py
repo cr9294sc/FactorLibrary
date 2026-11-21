@@ -391,7 +391,7 @@ def load_local_stock_data(
 ) -> StockPanelData:
     """通过 StockPanelLoader 加载本地全市场日频行情与基础信息。"""
     print("[2/5] 正在通过 StockPanelLoader 构建 A 股标准截面面板与掩码矩阵...")
-    loader = StockPanelLoader("data/raw/stocks")
+    loader = StockPanelLoader("data/raw/stocks/rq")
     panel_data = loader.load(
         start_date=start_date,
         end_date=end_date,

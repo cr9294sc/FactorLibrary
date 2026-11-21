@@ -2,7 +2,7 @@
 
 连接前端多市场工作区、FastAPI REST API 与后端 Rust/Python 核心引擎：
 - 双市场隔离与惰性面板缓存 (`futures` | `stocks`)：期货优先加载 `data/derived/futures/v1`，
-  A 股优先加载 `data/derived/stocks/v1`，缺失时自动提供合成演示面板并支持按需切换真实数据；
+  A 股优先加载 `data/derived/stocks/rq`（自动挂载 `barra` 风险标签与风格视图），缺失时自动提供合成演示面板并支持按需切换真实数据；
 - P1 数据与特征池中心：面板体检、1d 真实 K 线/组合浏览、`1m` 扩展特征包挂载、命名 `FeatureSet` CRUD；
 - P2 单因子实验室：统一 `FactorCatalog` 检索、双模态定义 (`expression` / `code`)、市场专属模板与预设、毫秒级静态探针；
 - P3 回测结果与多因子 A/B 对比：Layer 1 v4 统计归因 + Layer 2 持仓回测 + 2~6 因子严格交集 OOS A/B 同台对比；
@@ -297,7 +297,7 @@ class FactorWorkbenchService:
     ) -> None:
         self.market = _normalize_market(market)
         default_futures_dir = Path("data/derived/futures/v1")
-        default_stocks_dir = Path("data/derived/stocks/v1")
+        default_stocks_dir = Path("data/derived/stocks/rq")
         if panel_dir is None:
             eff_panel_dir = default_stocks_dir if self.market == "stocks" else default_futures_dir
         else:

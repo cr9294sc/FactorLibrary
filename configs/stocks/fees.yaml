@@ -2,13 +2,12 @@ market: "stocks"
 lot_size: 100                        # A 股最小交易单位 1 手 = 100 股
 tick_size: 0.01                      # 最小报价单位 0.01 元
 
-# 双费率模式：
-#   asymmetric (默认): A 股真实非对称税费（买入佣金+过户费，卖出加征印花税）
-#   flat            : 买卖双边统一单边费率，用于与 factorsim 作业回测对账（fee_rate 生效）
-fee_mode: "asymmetric"
-fee_rate: 0.003                      # flat 模式下的统一单边费率（对账口径）
-
 fees:
+  # 双费率模式：
+  #   asymmetric (默认): A 股真实非对称税费（买入佣金+过户费，卖出加征印花税）
+  #   flat            : 买卖双边统一单边费率，用于与 factorsim 作业回测对账（fee_rate 生效）
+  fee_mode: "asymmetric"
+  fee_rate: 0.003                    # flat 模式下的统一单边费率（对账口径）
   commission_rate: 0.0001            # 券商佣金率 (万分之 1)
   min_commission: 5.0                # 最低佣金 5 元
   stamp_duty_rate: 0.0005            # 卖出单边印花税 (万分之 5)

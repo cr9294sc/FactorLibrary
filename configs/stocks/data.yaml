@@ -1,32 +1,12 @@
-# configs/stocks/data.yaml (双数据源独立托管版)
-default_dataset: "rq_v1"                 # 默认研究数据集: "rq_v1" | "rq_v2" | "lb_barra_v1"
+# configs/stocks/data.yaml (A 股双数据源独立托管版：逻辑名 == 目录名)
+default_dataset: "rq"                    # 默认研究/特征挖掘数据集: "rq" | "barra"
 
 datasets:
-  rq_v1:
+  rq:
     source: "ricequant"
-    raw_dir: "./data/raw/stocks"
+    raw_dir: "./data/raw/stocks/rq"
     derived_dir: "./data/derived/stocks"
-    panel_version: "v1"                  # 物理路径 data/derived/stocks/v1 (向下兼容)
-    benchmark_id: "000985.XSHG"
-    price_basis: "hfq"
-    entry_window: "open"
-    exec_price_mode: "open_adj"
-    timeline:
-      start_date: "2015-11-01"
-      end_date: "2024-12-31"
-    universe_filters:
-      exclude_suspended: true            # 剔除停牌日
-      exclude_st: true                   # 剔除 ST / *ST 标的
-      min_listed_days: 120               # 新股剔除自然日天数阈值
-    labels:
-      horizons: [1, 2, 5, 10]
-      include_idiosyncratic: false       # rq 域默认仅算总收益标签, 可选通过 RiskView 动态算
-
-  rq_v2:
-    source: "ricequant"
-    raw_dir: "./data/raw/stocks"
-    derived_dir: "./data/derived/stocks"
-    panel_version: "v2"                  # 物理路径 data/derived/stocks/v2
+    panel_version: "rq"                  # 物理路径 data/derived/stocks/rq (50+ 全量 1d 字段)
     benchmark_id: "000985.XSHG"
     price_basis: "hfq"
     entry_window: "open"
@@ -34,28 +14,28 @@ datasets:
     extended_fields: true                # 合入 daily_basic / num_trades / 三大指数权重 / intra 收益
     timeline:
       start_date: "2015-11-01"
-      end_date: "2026-11-06"             # 与 data/raw/stocks 已落盘最大交易日对齐
+      end_date: "2026-11-06"             # 与 data/raw/stocks/rq 已落盘最大交易日对齐
     universe_filters:
-      exclude_suspended: true
-      exclude_st: true
-      min_listed_days: 120
+      exclude_suspended: true            # 剔除停牌日
+      exclude_st: true                   # 剔除 ST / *ST 标的
+      min_listed_days: 120               # 新股剔除自然日天数阈值
     labels:
       horizons: [1, 2, 5, 10]
-      include_idiosyncratic: false
+      include_idiosyncratic: false       # 运行期加载 rq 时自动通过 RiskView 挂载 barra 的 vwap_open_30m 标签
 
-  lb_barra_v1:
-    source: "local_backtest"
-    raw_dir: "./local_backtest/runtime_assets"
+  barra:
+    source: "barra"
+    raw_dir: "./data/raw/stocks/barra"
     derived_dir: "./data/derived/stocks"
-    panel_version: "lb_barra_v1"         # 独立物理路径 data/derived/stocks/lb_barra_v1
+    panel_version: "barra"               # 物理路径 data/derived/stocks/barra (含 risk_store/)
     benchmark_id: "000905.SH"
-    benchmark_csv: "./local_backtest/runtime_assets/benchmark_000905_SH.csv"
+    benchmark_csv: "./data/raw/stocks/barra/benchmark_000905_SH.csv"
     price_basis: "hfq"
     entry_window: "vwap_open_30m"
     exec_price_mode: "vwap_open_30m_adj"
     timeline:
       start_date: "2016-01-06"
-      end_date: "2026-11-10"
+      end_date: "2026-11-10"             # 与 data/raw/stocks/barra 已落盘最大交易日对齐
     universe_filters:
       use_source_base_univ_mask: true    # 直接使用反极性后的 StockMask2.BaseUnivMask
       exclude_bjse: true                 # 默认剔除北交所 4/8/92 开头标的 (可按需放开)

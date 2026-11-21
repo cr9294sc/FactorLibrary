@@ -148,7 +148,7 @@ def main() -> int:
             )
             if overrides:
                 scfg = replace(scfg, **overrides)  # type: ignore[arg-type]
-            if scfg.source == "local_backtest":
+            if scfg.source in ("barra", "local_backtest"):
                 panel_df, _labels_df, meta = build_lb_barra_panel(cfg=scfg, show_progress=True)
                 title = "FactorLibrary A 股 Barra 独立研究面板构建摘要"
             else:

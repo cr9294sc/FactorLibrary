@@ -91,4 +91,5 @@ local_backtest/
 *.sqlite
 *.parquet
 *.ares
+*.lic
 Factor/data/sample_backtest_result.json

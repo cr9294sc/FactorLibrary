@@ -79,8 +79,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-dir",
         type=Path,
-        default=Path("data/raw/stocks"),
-        help="股票原始 Parquet 落盘根目录 (默认: data/raw/stocks)",
+        default=Path("data/raw/stocks/rq"),
+        help="股票原始 Parquet 落盘根目录 (默认: data/raw/stocks/rq)",
     )
     parser.add_argument(
         "--start-year",

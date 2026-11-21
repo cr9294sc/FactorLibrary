@@ -42,15 +42,13 @@ def test_rq_v2_dataset_declared_with_extended_fields():
     default_ds, datasets = load_stock_datasets_config(
         ROOT / "configs" / "stocks" / "data.yaml", root=ROOT
     )
-    assert "rq_v2" in datasets
-    cfg = datasets["rq_v2"]
-    assert cfg.panel_version == "v2"
+    assert "rq" in datasets
+    cfg = datasets["rq"]
+    assert cfg.panel_version == "rq"
     assert cfg.extended_fields is True
     assert cfg.start_date <= cfg.end_date
     assert cfg.source == "ricequant"
-    # v1 保持零变更兼容（默认不引入扩充字段）
-    assert datasets["rq_v1"].extended_fields is False
-    assert default_ds in datasets
+    assert default_ds == "rq"
 
 
 # ------------------------------------------------------------------------------
@@ -407,7 +405,7 @@ def test_probe_reports_unmapped_polarity_variable() -> None:
 
 def test_catalog_exposes_alias_entries_for_panel() -> None:
     panel = _make_linear_panel()
-    cat = FactorCatalog(panel_dir="data/derived/stocks/v1", market="stocks", panel=panel)
+    cat = FactorCatalog(panel_dir="data/derived/stocks/rq", market="stocks", panel=panel)
     alias_names = {v["name"] for v in cat.variables if v.get("category") == "factorlab_alias"}
     assert "daily_derived_returns_c2c_1d" in alias_names
     hit = cat.get_entry("daily_derived_returns_c2c_1d", catalog="variables")

@@ -173,9 +173,9 @@ def test_compute_forward_returns_logic_and_execution_simulation() -> None:
 
 def test_real_data_subset_loader_and_mask_semantics() -> None:
     """基于真实股票目录抽样加载验证 BaseUnivMask 与 LimitMask 语义。"""
-    raw_path = Path("data/raw/stocks")
+    raw_path = Path("data/raw/stocks/rq")
     if not (raw_path / "bar_1d").exists():
-        pytest.skip("data/raw/stocks 未包含日频行情数据，跳过真实数据测试")
+        pytest.skip("data/raw/stocks/rq 未包含日频行情数据，跳过真实数据测试")
 
     loader = StockPanelLoader(raw_path)
     # 加载 2024 年 1 月前两周数据

@@ -91,8 +91,8 @@ def _make_synthetic_rq_panel(T: int = 45, N: int = 6, seed: int = 31) -> Panel:
         aux_fields={"is_suspended": is_susp},
         meta={
             "market": "stocks",
-            "panel_version": "v1",
-            "dataset_id": "rq_v1",
+            "panel_version": "rq",
+            "dataset_id": "rq",
             "source": "ricequant",
         },
     )
@@ -171,9 +171,9 @@ def test_barra_risk_store_and_dynamic_specific_variance(tmp_path: Path) -> None:
     cfg = StockDataConfig(
         raw_dir=raw_dir,
         derived_dir=derived_dir,
-        panel_version="lb_barra_v1",
-        dataset_id="lb_barra_v1",
-        source="local_backtest",
+        panel_version="barra",
+        dataset_id="barra",
+        source="barra",
         benchmark_csv=fx["bench_csv"],
         entry_window="vwap_open_30m",
         exec_price_mode="vwap_open_30m_adj",
@@ -187,7 +187,7 @@ def test_barra_risk_store_and_dynamic_specific_variance(tmp_path: Path) -> None:
     build_lb_barra_panel(cfg, pack_cov=True, show_progress=False)
 
     prof = StocksProfile(root=tmp_path)
-    store = prof.load_risk_model("lb_barra_v1")
+    store = prof.load_risk_model("barra")
     assert isinstance(store, BarraRiskModelStore)
     assert len(store.factors) == len(BARRA_FACTOR_ORDER)
 
@@ -252,9 +252,9 @@ def test_signal_bridge_alignment_and_parquet_shift(tmp_path: Path) -> None:
     cfg = StockDataConfig(
         raw_dir=raw_dir,
         derived_dir=derived_dir,
-        panel_version="lb_barra_v1",
-        dataset_id="lb_barra_v1",
-        source="local_backtest",
+        panel_version="barra",
+        dataset_id="barra",
+        source="barra",
         benchmark_csv=fx["bench_csv"],
         entry_window="vwap_open_30m",
         exec_price_mode="vwap_open_30m_adj",
@@ -267,7 +267,7 @@ def test_signal_bridge_alignment_and_parquet_shift(tmp_path: Path) -> None:
     build_lb_barra_panel(cfg, pack_cov=False, show_progress=False)
 
     prof = StocksProfile(root=tmp_path)
-    lb_panel = prof.load_panel(PanelSpec(version="lb_barra_v1", panel_dir=cfg.panel_dir))
+    lb_panel = prof.load_panel(PanelSpec(version="barra", panel_dir=cfg.panel_dir))
     rq_panel = _make_synthetic_rq_panel(T=45, N=4, seed=21)
 
     # 1. T_close 桥接 + 低匹配率告警
@@ -316,9 +316,9 @@ def test_risk_view_adaptive_styles_and_ml_dl_y_idio(tmp_path: Path) -> None:
     cfg = StockDataConfig(
         raw_dir=raw_dir,
         derived_dir=derived_dir,
-        panel_version="lb_barra_v1",
-        dataset_id="lb_barra_v1",
-        source="local_backtest",
+        panel_version="barra",
+        dataset_id="barra",
+        source="barra",
         benchmark_csv=fx["bench_csv"],
         entry_window="vwap_open_30m",
         exec_price_mode="vwap_open_30m_adj",
@@ -332,7 +332,7 @@ def test_risk_view_adaptive_styles_and_ml_dl_y_idio(tmp_path: Path) -> None:
     build_lb_barra_panel(cfg, pack_cov=False, show_progress=False)
 
     prof = StocksProfile(root=tmp_path)
-    lb_panel = prof.load_panel(PanelSpec(version="lb_barra_v1", panel_dir=cfg.panel_dir))
+    lb_panel = prof.load_panel(PanelSpec(version="barra", panel_dir=cfg.panel_dir))
     rq_panel = _make_synthetic_rq_panel(T=55, N=4, seed=89)
 
     # 未挂载 RiskView 前，rq_panel 仅回退 4 维近似风格，且缺少 y_idio_5
@@ -455,3 +455,139 @@ def test_risk_view_adaptive_styles_and_ml_dl_y_idio(tmp_path: Path) -> None:
     detached = RiskView.detach(rq_panel)
     assert "barra_beta" in detached["fields"]
     assert "barra_beta" not in rq_panel.fields
+
+
+def test_rq_auto_attaches_barra_risk_view_and_cli_backtest(tmp_path: Path) -> None:
+    """验证加载 rq 时自动挂载 barra vwap_open_30m 标签与风格暴露，并打通 run_stocks_backtest.py。"""
+    import json
+    import sys
+
+    import polars as pl
+
+    from tests.python.test_stocks_lb_barra_phase1 import _make_synthetic_lb_assets
+
+    raw_dir = tmp_path / "data" / "raw" / "stocks" / "barra"
+    derived_dir = tmp_path / "data" / "derived" / "stocks"
+    fx = _make_synthetic_lb_assets(raw_dir, T=45, seed=31)
+    b_cfg = StockDataConfig(
+        raw_dir=raw_dir,
+        derived_dir=derived_dir,
+        panel_version="barra",
+        dataset_id="barra",
+        source="barra",
+        benchmark_csv=fx["bench_csv"],
+        entry_window="vwap_open_30m",
+        exec_price_mode="vwap_open_30m_adj",
+        start_date=fx["dates"][0],
+        end_date=fx["dates"][-1],
+        universe_filters=StockUniverseFilterConfig(
+            use_source_base_univ_mask=True, exclude_bjse=False
+        ),
+        include_idiosyncratic_labels=True,
+    )
+    build_lb_barra_panel(b_cfg, pack_cov=False, show_progress=False)
+
+    # 构造落盘的 rq 面板（使用与 barra 重叠的日期与对应 .XSHE/.XSHG 代码）
+    prof = StocksProfile(root=tmp_path)
+    lb_panel = prof.load_panel(PanelSpec(version="barra"))
+    T, N = lb_panel.shape
+    rq_syms = [
+        f"{s}.XSHG"
+        if s.startswith("6")
+        else (f"{s}.XSHE" if s.startswith(("0", "3")) else f"{s}.BJ")
+        for s in lb_panel.symbols
+    ]
+    date_col = pl.Series(
+        "trading_date",
+        np.repeat(np.array(lb_panel.dates, dtype="datetime64[D]"), N),
+        dtype=pl.Date,
+    )
+    sym_col = pl.Series("symbol", np.tile(np.array(rq_syms), T), dtype=pl.String)
+    close_adj = lb_panel.fields["close_adj"]
+    rq_dir = derived_dir / "rq"
+    rq_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "trading_date": date_col,
+            "symbol": sym_col,
+            "in_universe": lb_panel.mask.reshape(-1, order="C"),
+            "close_hfq": close_adj.reshape(-1, order="C"),
+            "open_adj": close_adj.reshape(-1, order="C"),
+            "c2c_ret": lb_panel.fields["c2c_ret"].reshape(-1, order="C"),
+            "volume": np.full(T * N, 1e6, dtype=np.float64),
+            "amount": np.full(T * N, 1e7, dtype=np.float64),
+            "sector": lb_panel.fields["barra_industry"].reshape(-1, order="C"),
+            "listed_days": np.full(T * N, 500.0, dtype=np.float64),
+        }
+    ).write_parquet(rq_dir / "panel_daily.parquet")
+    pl.DataFrame(
+        {
+            "trading_date": date_col,
+            "symbol": sym_col,
+            "y_1": np.zeros(T * N, dtype=np.float64),
+            "y_5": np.zeros(T * N, dtype=np.float64),
+        }
+    ).write_parquet(rq_dir / "labels.parquet")
+    (rq_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "market": "stocks",
+                "panel_version": "rq",
+                "dataset_id": "rq",
+                "source": "ricequant",
+                "capabilities": {
+                    "dataset_id": "rq",
+                    "source": "ricequant",
+                    "symbol_format": "rq",
+                    "return_clock": "open_adj",
+                    "has_ohlcv": True,
+                    "has_volume_amount": True,
+                    "has_directional_limit": True,
+                    "has_listed_days": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # 加载 rq 时自动通过 RiskView 挂载 barra 的 vwap_open_30m 标签与风格暴露
+    rq_loaded = prof.load_panel(PanelSpec(version="rq"))
+    assert rq_loaded.meta.get("labels_clock") == "vwap_open_30m"
+    assert "y_idio_1" in rq_loaded.labels
+    assert "barra_beta" in rq_loaded.fields
+    np.testing.assert_allclose(
+        rq_loaded.labels["y_1"][5, 0],
+        lb_panel.labels["y_1"][5, 0],
+        atol=1e-12,
+    )
+
+    # 端到端验证独立 A 股统一回测脚本 run_stocks_backtest.py
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import run_stocks_backtest  # type: ignore[import-not-found]
+
+    out_dir = tmp_path / "bt_out"
+    rc = run_stocks_backtest.main(
+        [
+            "--factor",
+            "-ts_sum(c2c_ret, 3)",
+            "--postprocess",
+            "minimal",
+            "--mode",
+            "quantile",
+            "--config",
+            str(Path(__file__).resolve().parents[2] / "configs/stocks/backtest.yaml"),
+            "--fees",
+            str(Path(__file__).resolve().parents[2] / "configs/stocks/fees.yaml"),
+            "--output-dir",
+            str(out_dir),
+        ],
+        root_dir=tmp_path,
+    )
+    assert rc == 0
+    metrics = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["entry_window"] == "vwap_open_30m"
+    assert "bridge_audit" in metrics
+    assert metrics["bridge_audit"]["date_overlap_count"] > 0
+    assert (out_dir / "report.html").exists()

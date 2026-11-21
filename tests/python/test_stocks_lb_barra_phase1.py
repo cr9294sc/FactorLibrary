@@ -214,9 +214,9 @@ def test_build_lb_barra_panel_end_to_end_and_probe_guard(tmp_path: Path) -> None
     cfg = StockDataConfig(
         raw_dir=raw_dir,
         derived_dir=derived_dir,
-        panel_version="lb_barra_v1",
-        dataset_id="lb_barra_v1",
-        source="local_backtest",
+        panel_version="barra",
+        dataset_id="barra",
+        source="barra",
         benchmark_id="000905.SH",
         benchmark_csv=fx["bench_csv"],
         price_basis="hfq",
@@ -246,7 +246,7 @@ def test_build_lb_barra_panel_end_to_end_and_probe_guard(tmp_path: Path) -> None
 
     # 通过 StocksProfile 加载独立派生面板
     prof = StocksProfile(root=tmp_path)
-    panel = prof.load_panel(PanelSpec(version="lb_barra_v1", panel_dir=cfg.panel_dir))
+    panel = prof.load_panel(PanelSpec(version="barra", panel_dir=cfg.panel_dir))
     assert panel.shape == (44, 5)
     assert "vwap_open_30m_adj" in panel.fields
     assert "spec_ret_vwap30" in panel.fields
@@ -293,7 +293,7 @@ def test_build_lb_barra_panel_end_to_end_and_probe_guard(tmp_path: Path) -> None
             "name": "spec_rev_5",
             "factor_type": "expression",
             "expression": "-ts_sum(spec_ret_vwap30, 5)",
-            "postprocess": prof.default_postprocess("lb_barra_v1"),
+            "postprocess": prof.default_postprocess("barra"),
         },
         panel=panel,
     )
@@ -322,8 +322,8 @@ def test_lb_barra_strict_causality_perturbation(tmp_path: Path) -> None:
         cfg = StockDataConfig(
             raw_dir=rdir,
             derived_dir=pdir,
-            panel_version="lb_barra_v1",
-            source="local_backtest",
+            panel_version="barra",
+            source="barra",
             entry_window="vwap_open_30m",
             exec_price_mode="vwap_open_30m_adj",
             start_date=date(2024, 1, 2),
@@ -332,7 +332,7 @@ def test_lb_barra_strict_causality_perturbation(tmp_path: Path) -> None:
         )
         build_lb_barra_panel(cfg, pack_cov=False, show_progress=False)
         return StocksProfile(root=pdir.parent.parent).load_panel(
-            PanelSpec(version="lb_barra_v1", panel_dir=cfg.panel_dir)
+            PanelSpec(version="barra", panel_dir=cfg.panel_dir)
         )
 
     p_base = _load(raw_base, tmp_path / "derived_base")

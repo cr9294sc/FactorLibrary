@@ -1,15 +1,15 @@
-"""local_backtest (.ares + Barra CNE5 Parquet) 独立数据源构建桥 (markets/stocks/ares_bridge.py)。
+"""Barra (.ares + Barra CNE5 Parquet) 独立数据源构建桥 (markets/stocks/ares_bridge.py)。
 
 按照双数据源独立托管架构设计：
-- 零依赖 `factorsim` 二进制与米筐 `data/raw/stocks/` 目录；
-- 解析 `local_backtest/runtime_assets/Cache/AshareCache/` 下的分片 `.ares` 矩阵与
+- 零依赖 `factorsim` 二进制与米筐 `data/raw/stocks/rq/` 目录；
+- 解析 `data/raw/stocks/barra/Cache/AshareCache/` 下的分片 `.ares` 矩阵与
   `Cache/BaseCache/BarraCNE5_{RET,COV}` 风险模型资产；
 - 严格遵守因果防前视规范：
   1. 基于 `DailyKline.close` 与 `DailyKline.pre_close` 因果递推后复权因子 `ex_cum_factor`；
   2. `StockMask2.{BaseUnivMask,LimitMask,SuspendStock}` 显式反极性转换；
   3. `CNE5SpecRet[T]` 直接作为滞后 0 期的当日特质收益特征 `spec_ret_vwap30`；
   4. `y_idio_h[T]` 严格使用 `[T+2 .. T+1+h]` 的复利纯特质收益并隔离至 `labels.parquet`；
-- 落盘为独立标准面板 `data/derived/stocks/lb_barra_v1/` 与旁路 `risk_store/`。
+- 落盘为独立标准面板 `data/derived/stocks/barra/` 与旁路 `risk_store/`。
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ _ARES_TABLES: dict[str, str] = {
 }
 
 _DEFAULT_CAPABILITIES: dict[str, Any] = {
-    "dataset_id": "lb_barra_v1",
-    "source": "local_backtest",
+    "dataset_id": "barra",
+    "source": "barra",
     "symbol_format": "6digit",
     "return_clock": "vwap_open_30m",
     "has_ohlcv": False,
@@ -430,7 +430,7 @@ def _build_risk_store(
         )
 
     store_meta = {
-        "source": "local_backtest",
+        "source": "barra",
         "dataset_id": dataset_id,
         "return_clock": "vwap_open_30m",
         "variance_unit": "daily",
@@ -694,7 +694,7 @@ def build_lb_barra_panel(
     pack_cov: bool = True,
     show_progress: bool = True,
 ) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, Any]]:
-    """将 `local_backtest/runtime_assets/` 转换为独立标准面板 `data/derived/stocks/lb_barra_v1/`。"""
+    """将 `data/raw/stocks/barra/` 转换为独立标准面板 `data/derived/stocks/barra/`。"""
     del show_progress
     t0 = time.time()
     output_dir = cfg.panel_dir

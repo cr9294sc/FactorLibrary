@@ -660,8 +660,8 @@ def test_lb_barra_and_bridge_perturbation_causality(tmp_path: Path):
         cfg = StockDataConfig(
             raw_dir=rdir,
             derived_dir=pdir,
-            panel_version="lb_barra_v1",
-            source="local_backtest",
+            panel_version="barra",
+            source="barra",
             entry_window="vwap_open_30m",
             exec_price_mode="vwap_open_30m_adj",
             start_date=fx_base["dates"][0],
@@ -673,7 +673,7 @@ def test_lb_barra_and_bridge_perturbation_causality(tmp_path: Path):
         )
         build_lb_barra_panel(cfg, pack_cov=False, show_progress=False)
         return StocksProfile(root=pdir.parent.parent).load_panel(
-            PanelSpec(version="lb_barra_v1", panel_dir=cfg.panel_dir)
+            PanelSpec(version="barra", panel_dir=cfg.panel_dir)
         )
 
     p_base = _build_and_load(raw_base, tmp_path / "derived_base")

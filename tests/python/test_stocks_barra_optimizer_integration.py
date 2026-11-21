@@ -109,7 +109,7 @@ def test_backtest_yaml_optimizer_section_flattened() -> None:
 
 def test_barra_yaml_contract() -> None:
     cfg = load_stock_barra_config(ROOT / "configs" / "stocks" / "barra.yaml", root=ROOT)
-    assert cfg.risk_dataset == "lb_barra_v1"
+    assert cfg.risk_dataset == "barra"
     assert cfg.return_clock == "vwap_open_30m"
     assert len(cfg.style_factors) == 10
     assert cfg.industry_field == "barra_industry"
